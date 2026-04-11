@@ -98,6 +98,12 @@ def test_get_requests_filtered():
     assert isinstance(r.json(), list)
 
 
+def test_get_accounts_filtered():
+    r = client.get("/api/accounts", params={"propertyId": PROP_ID})
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
 def test_get_crm_state():
     r = client.get("/api/crm-state", params={"propertyId": PROP_ID})
     assert r.status_code == 200
@@ -138,3 +144,35 @@ def test_crm_state_post_roundtrip():
     )
     assert r_post.status_code == 200
     assert r_post.json().get("propertyId") == PROP_ID
+
+
+def test_accounts_sync_roundtrip():
+    baseline = client.get("/api/accounts", params={"propertyId": PROP_ID})
+    assert baseline.status_code == 200
+    prev = baseline.json() if isinstance(baseline.json(), list) else []
+
+    temp_account = {
+        "id": "A_pytest_sync",
+        "name": "Pytest Shared Account",
+        "propertyId": PROP_ID,
+        "city": "Riyadh",
+        "type": "Corporate",
+        "contacts": [],
+    }
+    sync = client.put(
+        "/api/accounts/sync",
+        json={"propertyId": PROP_ID, "accounts": [*prev, temp_account]},
+    )
+    assert sync.status_code == 200
+    assert sync.json().get("propertyId") == PROP_ID
+
+    after = client.get("/api/accounts", params={"propertyId": PROP_ID})
+    assert after.status_code == 200
+    rows = after.json()
+    assert any(str(a.get("id")) == "A_pytest_sync" for a in rows)
+
+    restore = client.put(
+        "/api/accounts/sync",
+        json={"propertyId": PROP_ID, "accounts": prev},
+    )
+    assert restore.status_code == 200

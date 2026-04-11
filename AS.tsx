@@ -221,35 +221,9 @@ const THEMES = {
     }
 };
 
-const ACCOUNTS_STORAGE_KEY = 'visatour_accounts_v1';
-const ACCOUNTS_BY_PROP_PREFIX = 'visatour_accounts_by_prop_v1::';
 const CRM_BY_PROP_PREFIX = 'visatour_crm_leads_by_prop_v1::';
-const ACCOUNTS_LEGACY_OWNER_KEY = 'visatour_accounts_legacy_owner_v1';
 const TASKS_STORAGE_KEY = 'visatour_tasks_v1';
-
-const accountsStorageKey = (propertyId: string) => `${ACCOUNTS_BY_PROP_PREFIX}${propertyId}`;
 const crmLocalStorageKey = (propertyId: string) => `${CRM_BY_PROP_PREFIX}${propertyId}`;
-
-function loadAccountsForProperty(propertyId: string): any[] {
-    try {
-        const k = accountsStorageKey(propertyId);
-        const cur = localStorage.getItem(k);
-        if (cur) {
-            const parsed = JSON.parse(cur);
-            if (Array.isArray(parsed)) return parsed;
-        }
-        const legacy = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
-        if (!legacy) return [];
-        const parsed = JSON.parse(legacy);
-        if (!Array.isArray(parsed) || parsed.length === 0) return [];
-        if (localStorage.getItem(ACCOUNTS_LEGACY_OWNER_KEY)) return [];
-        localStorage.setItem(k, legacy);
-        localStorage.setItem(ACCOUNTS_LEGACY_OWNER_KEY, propertyId);
-        return parsed;
-    } catch {
-        return [];
-    }
-}
 
 function loadTasksFromStorage(): any[] {
     try {
@@ -3236,11 +3210,23 @@ export default function AdvancedSalesDashboard() {
     const [showSalesCallModal, setShowSalesCallModal] = useState(false);
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
 
-    const skipNextAccountsPersist = useRef(false);
+    const skipNextAccountsSync = useRef(false);
     const skipNextCrmPersist = useRef(false);
     const crmHydratedForPropertyId = useRef<string | null>(null);
 
     const [accounts, setAccounts] = useState<any[]>([]);
+
+    const fetchAccountsForProperty = useCallback(async (propertyId: string): Promise<any[]> => {
+        try {
+            const res = await fetch(apiUrl(`/api/accounts?propertyId=${encodeURIComponent(propertyId)}`));
+            if (!res.ok) return [];
+            const data = await res.json();
+            return Array.isArray(data) ? data : [];
+        } catch {
+            return [];
+        }
+    }, []);
+
 
     const [crmLeads, setCrmLeads] = useState<Record<string, any[]>>(() => defaultCrmLeadBuckets());
 
@@ -3360,20 +3346,32 @@ export default function AdvancedSalesDashboard() {
             setAccounts([]);
             return;
         }
-        skipNextAccountsPersist.current = true;
-        setAccounts(loadAccountsForProperty(String(pid)));
-    }, [activeProperty?.id]);
+        let cancelled = false;
+        fetchAccountsForProperty(String(pid)).then((list) => {
+            if (cancelled) return;
+            skipNextAccountsSync.current = true;
+            setAccounts(list);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeProperty?.id, fetchAccountsForProperty]);
 
     useEffect(() => {
         const pid = activeProperty?.id;
         if (!pid) return;
-        if (skipNextAccountsPersist.current) {
-            skipNextAccountsPersist.current = false;
+        if (skipNextAccountsSync.current) {
+            skipNextAccountsSync.current = false;
             return;
         }
-        try {
-            localStorage.setItem(accountsStorageKey(String(pid)), JSON.stringify(accounts));
-        } catch { /* ignore */ }
+        const t = setTimeout(() => {
+            fetch(apiUrl('/api/accounts/sync'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ propertyId: String(pid), accounts }),
+            }).catch(() => {});
+        }, 300);
+        return () => clearTimeout(t);
     }, [accounts, activeProperty?.id]);
 
     const [sharedRequests, setSharedRequests] = useState<any[]>([]);
@@ -3470,10 +3468,12 @@ export default function AdvancedSalesDashboard() {
             .then((data) => {
                 if (cancelled) return;
                 const merged = mergeCrmBucketsFromApi(data?.leads);
-                const accs = loadAccountsForProperty(pidStr);
-                const scoped = filterCrmBucketsForPropertyContext(merged, pidStr, accs);
-                crmHydratedForPropertyId.current = pidStr;
-                setCrmLeads(scoped);
+                fetchAccountsForProperty(pidStr).then((accs) => {
+                    if (cancelled) return;
+                    const scoped = filterCrmBucketsForPropertyContext(merged, pidStr, accs);
+                    crmHydratedForPropertyId.current = pidStr;
+                    setCrmLeads(scoped);
+                });
             })
             .catch(() => {
                 if (cancelled) return;
@@ -3483,9 +3483,11 @@ export default function AdvancedSalesDashboard() {
                         const parsed = JSON.parse(raw);
                         if (parsed && typeof parsed === 'object') {
                             const merged = mergeCrmBucketsFromApi(parsed);
-                            const accs = loadAccountsForProperty(pidStr);
-                            crmHydratedForPropertyId.current = pidStr;
-                            setCrmLeads(filterCrmBucketsForPropertyContext(merged, pidStr, accs));
+                            fetchAccountsForProperty(pidStr).then((accs) => {
+                                if (cancelled) return;
+                                crmHydratedForPropertyId.current = pidStr;
+                                setCrmLeads(filterCrmBucketsForPropertyContext(merged, pidStr, accs));
+                            });
                             return;
                         }
                     }
@@ -3496,7 +3498,7 @@ export default function AdvancedSalesDashboard() {
         return () => {
             cancelled = true;
         };
-    }, [activeProperty?.id]);
+    }, [activeProperty?.id, fetchAccountsForProperty]);
 
     useEffect(() => {
         const pid = activeProperty?.id;
