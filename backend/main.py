@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # Ensure the backend directory is in the path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(BASE_DIR)
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts
 from utils import storage_mode
