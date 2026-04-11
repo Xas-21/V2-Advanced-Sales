@@ -1,33 +1,26 @@
 from fastapi import APIRouter
 from typing import Optional
-from utils import FINANCIALS_FILE, read_json_file, write_json_file
+from utils import delete_collection_row, delete_property_collection_row, list_collection_rows, upsert_collection_row
 
 router = APIRouter(prefix="/api/financials")
 
 @router.get("")
 def get_financials(propertyId: Optional[str] = None):
-    data = read_json_file(FINANCIALS_FILE)
-    if propertyId:
-        return [item for item in data if item.get("propertyId") == propertyId]
-    return data
+    return list_collection_rows("financials", propertyId)
 
 @router.post("")
 def save_financial(data: dict):
-    financials = read_json_file(FINANCIALS_FILE)
-    prop_id = str(data.get("propertyId"))
-    year = str(data.get("year"))
-    item_id = data.get("id") or f"{prop_id}_{year}"
-    data["id"] = item_id
-    idx = next((i for i, d in enumerate(financials) if str(d.get("id")) == str(item_id) or (str(d.get("propertyId")) == prop_id and str(d.get("year")) == year)), -1)
-    if idx >= 0:
-        financials[idx] = {**financials[idx], **data}
-    else:
-        financials.append(data)
-    write_json_file(FINANCIALS_FILE, financials)
-    return data
+    item = {**(data if isinstance(data, dict) else {})}
+    prop_id = str(item.get("propertyId", "")).strip()
+    year = str(item.get("year", "")).strip()
+    if not item.get("id") and prop_id and year:
+        item["id"] = f"{prop_id}_{year}"
+    return upsert_collection_row("financials", item, prefix="F", row_id_with_property=True)
 
 @router.delete("/{id}")
-def delete_financial(id: str):
-    financials = read_json_file(FINANCIALS_FILE)
-    write_json_file(FINANCIALS_FILE, [d for d in financials if str(d.get("id")) != str(id)])
+def delete_financial(id: str, propertyId: Optional[str] = None):
+    if propertyId:
+        delete_property_collection_row("financials", id, propertyId)
+    else:
+        delete_collection_row("financials", id)
     return {"message": "Deleted successfully"}

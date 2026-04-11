@@ -222,20 +222,8 @@ const THEMES = {
 };
 
 const CRM_BY_PROP_PREFIX = 'visatour_crm_leads_by_prop_v1::';
-const TASKS_STORAGE_KEY = 'visatour_tasks_v1';
+const ACTIVE_PROPERTY_STORAGE_KEY = 'visatour_active_property_id_v1';
 const crmLocalStorageKey = (propertyId: string) => `${CRM_BY_PROP_PREFIX}${propertyId}`;
-
-function loadTasksFromStorage(): any[] {
-    try {
-        const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.map((t: any) => ({ ...t, completed: Boolean(t.completed) }));
-    } catch {
-        return [];
-    }
-}
 
 const defaultCrmLeadBuckets = () => ({
     new: [] as any[],
@@ -2710,7 +2698,8 @@ const ToDoView = ({
     colors,
     theme,
     activePropertyId,
-    canMutateOperational: canMutateTodo
+    canMutateOperational: canMutateTodo,
+    currentUser,
 }: any) => {
     const [activeList, setActiveList] = useState('All');
 
@@ -2727,17 +2716,27 @@ const ToDoView = ({
         { id: 'Progress', icon: Activity, label: 'Progress Insights', color: colors.cyan }
     ];
 
+    const currentUserId = String(currentUser?.id ?? '').trim();
+    const currentUserName = String(currentUser?.name ?? '').trim().toLowerCase();
+    const isAssignedToCurrentUser = (t: any) => {
+        const assignedUserId = String(t?.assignedToUserId ?? '').trim();
+        if (assignedUserId && currentUserId && assignedUserId === currentUserId) return true;
+        const assignedToName = String(t?.assignedTo ?? '').trim().toLowerCase();
+        return !!assignedToName && !!currentUserName && assignedToName === currentUserName;
+    };
+
     const filteredTasks = scopedTasks.filter((t: any) => {
         if (activeList === 'Important') return t.star && !t.completed;
         if (activeList === 'Planned') return t.date && !t.completed;
+        if (activeList === 'Assigned') return isAssignedToCurrentUser(t) && !t.completed;
         if (activeList === 'Completed') return t.completed;
         return !t.completed;
     });
 
-    const toggleStar = (id: number, e: any) => {
+    const toggleStar = (id: string | number, e: any) => {
         e.stopPropagation();
         if (!canMutateTodo) return;
-        setTasks((prev: any) => prev.map((t: any) => t.id === id ? { ...t, star: !t.star } : t));
+        setTasks((prev: any) => prev.map((t: any) => String(t.id) === String(id) ? { ...t, star: !t.star } : t));
     };
 
     return (
@@ -2757,6 +2756,7 @@ const ToDoView = ({
                             {scopedTasks.filter((t: any) => {
                                 if (list.id === 'Important') return t.star && !t.completed;
                                 if (list.id === 'Planned') return t.date && !t.completed;
+                                if (list.id === 'Assigned') return isAssignedToCurrentUser(t) && !t.completed;
                                 if (list.id === 'Completed') return t.completed;
                                 return !t.completed;
                             }).length}
@@ -3212,6 +3212,8 @@ export default function AdvancedSalesDashboard() {
 
     const skipNextAccountsSync = useRef(false);
     const accountsHydratedForPropertyId = useRef<string | null>(null);
+    const skipNextTasksSync = useRef(false);
+    const tasksHydratedForPropertyId = useRef<string | null>(null);
     const skipNextCrmPersist = useRef(false);
     const crmHydratedForPropertyId = useRef<string | null>(null);
 
@@ -3270,7 +3272,7 @@ export default function AdvancedSalesDashboard() {
     const [showEventsDatePicker, setShowEventsDatePicker] = useState(false);
 
     // Task Management State
-    const [tasks, setTasks] = useState(() => loadTasksFromStorage());
+    const [tasks, setTasks] = useState<any[]>([]);
     const [showTaskModal, setShowTaskModal] = useState(false);
     const [editingTask, setEditingTask] = useState<any>(null);
     const [taskFormData, setTaskFormData] = useState({
@@ -3283,14 +3285,6 @@ export default function AdvancedSalesDashboard() {
         category: 'Follow-up',
         star: false
     });
-
-    useEffect(() => {
-        try {
-            localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-        } catch {
-            /* ignore quota / private mode */
-        }
-    }, [tasks]);
 
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
     const [properties, setProperties] = useState<any[]>([]);
@@ -3377,6 +3371,51 @@ export default function AdvancedSalesDashboard() {
         }, 300);
         return () => clearTimeout(t);
     }, [accounts, activeProperty?.id]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        tasksHydratedForPropertyId.current = null;
+        if (!pid) {
+            setTasks([]);
+            return;
+        }
+        let cancelled = false;
+        fetch(apiUrl(`/api/tasks?propertyId=${encodeURIComponent(String(pid))}`))
+            .then((res) => (res.ok ? res.json() : []))
+            .then((data) => {
+                if (cancelled) return;
+                skipNextTasksSync.current = true;
+                tasksHydratedForPropertyId.current = String(pid);
+                setTasks(Array.isArray(data) ? data : []);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                skipNextTasksSync.current = true;
+                tasksHydratedForPropertyId.current = String(pid);
+                setTasks([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid) return;
+        if (tasksHydratedForPropertyId.current !== String(pid)) return;
+        if (skipNextTasksSync.current) {
+            skipNextTasksSync.current = false;
+            return;
+        }
+        const t = setTimeout(() => {
+            fetch(apiUrl('/api/tasks/sync'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ propertyId: String(pid), tasks }),
+            }).catch(() => {});
+        }, 300);
+        return () => clearTimeout(t);
+    }, [tasks, activeProperty?.id]);
 
     const [sharedRequests, setSharedRequests] = useState<any[]>([]);
     const [propertyFinancialKpis, setPropertyFinancialKpis] = useState<any[]>([]);
@@ -3529,6 +3568,15 @@ export default function AdvancedSalesDashboard() {
         return () => clearTimeout(t);
     }, [crmLeads, activeProperty?.id]);
 
+    const canAccessProperty = useCallback(
+        (prop: any) =>
+            !!prop &&
+            (String(prop.id) === String(currentUser?.propertyId ?? '') ||
+                (Array.isArray(prop.assignedUserIds) &&
+                    prop.assignedUserIds.some((id: any) => String(id) === String(currentUser?.id)))),
+        [currentUser?.id, currentUser?.propertyId]
+    );
+
     // Initial load properties globally for user
     useEffect(() => {
         fetch(apiUrl('/api/properties'))
@@ -3536,19 +3584,26 @@ export default function AdvancedSalesDashboard() {
             .then(data => {
                 if (Array.isArray(data)) {
                     setProperties(data);
-                    const userPropId = currentUser?.propertyId;
-                    
-                    // Try to find the user's assigned property first
-                    const assignedProp = data.find(p => p.id === userPropId || (p.assignedUserIds || []).includes(currentUser?.id));
-                    if (assignedProp) {
-                        setActiveProperty(assignedProp);
-                    } else if (data.length > 0) {
-                        setActiveProperty(data[0]);
-                    }
+                    const allowed = data.filter((p: any) => canAccessProperty(p));
+                    const savedPropertyId = localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
+                    const savedProp = savedPropertyId
+                        ? allowed.find((p: any) => String(p.id) === String(savedPropertyId))
+                        : null;
+                    const userProp = allowed.find((p: any) => String(p.id) === String(currentUser?.propertyId ?? ''));
+                    if (savedProp) setActiveProperty(savedProp);
+                    else if (userProp) setActiveProperty(userProp);
+                    else if (allowed.length > 0) setActiveProperty(allowed[0]);
+                    else if (data.length > 0) setActiveProperty(data[0]);
                 }
             })
             .catch(err => console.error("Error fetching properties globally:", err));
-    }, [currentUser]);
+    }, [currentUser, canAccessProperty]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid) return;
+        localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, String(pid));
+    }, [activeProperty?.id]);
 
     const [taxonomyRefresh, setTaxonomyRefresh] = useState(0);
     useEffect(() => {
@@ -4019,10 +4074,16 @@ export default function AdvancedSalesDashboard() {
         if (!taskFormData.task) return;
 
         if (editingTask) {
-            setTasks(prev => prev.map(t => t.id === editingTask.id ? { ...t, ...taskFormData } : t));
+            setTasks(prev =>
+                prev.map(t =>
+                    String(t.id) === String(editingTask.id)
+                        ? { ...t, ...taskFormData, propertyId: t.propertyId || activeProperty?.id || null }
+                        : t
+                )
+            );
         } else {
             const newTask = {
-                id: Date.now(),
+                id: `T${Date.now()}`,
                 ...taskFormData,
                 completed: false,
                 propertyId: activeProperty?.id || null
@@ -4035,15 +4096,15 @@ export default function AdvancedSalesDashboard() {
     const handleDeleteTask = () => {
         if (!editingTask || !canDeleteTasks(currentUser)) return;
         if (!window.confirm('Delete this task permanently?')) return;
-        setTasks((prev) => prev.filter((t: any) => t.id !== editingTask.id));
+        setTasks((prev) => prev.filter((t: any) => String(t.id) !== String(editingTask.id)));
         setShowTaskModal(false);
         setEditingTask(null);
     };
 
-    const handleToggleTaskComplete = (id: number, e: React.MouseEvent) => {
+    const handleToggleTaskComplete = (id: string | number, e: React.MouseEvent) => {
         e.stopPropagation();
         if (!canMutateOperational(currentUser)) return;
-        setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+        setTasks(prev => prev.map(t => String(t.id) === String(id) ? { ...t, completed: !t.completed } : t));
     };
 
     const taskModalReadOnly =
@@ -4907,10 +4968,7 @@ export default function AdvancedSalesDashboard() {
                                         <div className="p-4 space-y-3">
                                             <h5 className="text-[9px] uppercase font-black tracking-[0.2em] opacity-40 px-1" style={{ color: colors.textMain }}>Switch Property</h5>
                                             <div className="space-y-1">
-                                                {properties.filter(prop => 
-                                                    prop.id === currentUser?.propertyId || 
-                                                    (prop.assignedUserIds || []).includes(currentUser?.id)
-                                                ).map(prop => (
+                                                {properties.filter((prop: any) => canAccessProperty(prop)).map(prop => (
                                                     <button
                                                         key={prop.id}
                                                         onClick={() => { setActiveProperty(prop); setUserDropdownOpen(false); }}
@@ -5069,7 +5127,7 @@ export default function AdvancedSalesDashboard() {
                             currency={currentCurrency}
                         />
                     ) : currentView === 'todo' ? (
-                        <ToDoView tasks={tasks} setTasks={setTasks} handleOpenTaskModal={handleOpenTaskModal} handleToggleTaskComplete={handleToggleTaskComplete} colors={colors} theme={theme} activePropertyId={activeProperty?.id} canMutateOperational={canMutateOperational(currentUser)} />
+                        <ToDoView tasks={tasks} setTasks={setTasks} handleOpenTaskModal={handleOpenTaskModal} handleToggleTaskComplete={handleToggleTaskComplete} colors={colors} theme={theme} activePropertyId={activeProperty?.id} canMutateOperational={canMutateOperational(currentUser)} currentUser={currentUser} />
                     ) : currentView === 'requests' ? (
                         <RequestsManager key={`requests-${requestsSubView}-${requestsNavNonce}`} theme={theme} subView={requestsSubView} searchParams={requestSearchParams} setSearchParams={(p: any) => {
                             if (p && p.subView) {

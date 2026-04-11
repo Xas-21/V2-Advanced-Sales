@@ -19,6 +19,7 @@ FINANCIALS_FILE = os.path.join(DATA_DIR, "financials.json")
 REQUESTS_FILE = os.path.join(DATA_DIR, "requests.json")
 CRM_STATE_FILE = os.path.join(DATA_DIR, "crm_state.json")
 ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
+TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
 
 _DB_SCHEMA_READY = False
 _SPECIAL_TABLES_READY = False
@@ -27,7 +28,7 @@ _GENERAL_TABLES_READY = False
 _GENERAL_MIGRATION_DONE = False
 _POOL: ConnectionPool | None = None
 
-_ROW_COLLECTIONS = {"users", "properties", "room_types", "venues", "taxes", "financials"}
+_ROW_COLLECTIONS = {"users", "properties", "room_types", "venues", "taxes", "financials", "tasks"}
 _MAP_COLLECTIONS = {"crm_state"}
 
 
@@ -676,6 +677,177 @@ def sync_accounts_rows(property_id: str, incoming: list[dict], allow_clear: bool
                 )
             conn.commit()
     return {"message": "Synced", "saved": len([x for x in incoming if isinstance(x, dict)]), "propertyId": pid}
+
+
+def list_collection_rows(collection_name: str, property_id: str | None = None) -> list[dict]:
+    _ensure_general_migration()
+    cname = str(collection_name).strip()
+    if not cname:
+        return []
+    pool = _get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            if property_id:
+                cur.execute(
+                    """
+                    SELECT payload
+                    FROM app_collection_rows
+                    WHERE collection_name = %s AND property_id = %s
+                    ORDER BY updated_at DESC, row_id ASC;
+                    """,
+                    (cname, str(property_id)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT payload
+                    FROM app_collection_rows
+                    WHERE collection_name = %s
+                    ORDER BY updated_at DESC, row_id ASC;
+                    """,
+                    (cname,),
+                )
+            rows = cur.fetchall()
+    return [r["payload"] for r in rows]
+
+
+def upsert_collection_row(
+    collection_name: str,
+    data: dict,
+    prefix: str = "R",
+    row_id_with_property: bool = False,
+) -> dict:
+    _ensure_general_migration()
+    cname = str(collection_name).strip()
+    if not cname:
+        return data if isinstance(data, dict) else {}
+    item = {**(data if isinstance(data, dict) else {})}
+    item_id = str(item.get("id") or f"{prefix}{uuid.uuid4().hex[:8]}")
+    item["id"] = item_id
+    property_id = str(item.get("propertyId") or "")
+    row_id = f"{property_id}::{item_id}" if row_id_with_property and property_id else item_id
+    pool = _get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app_collection_rows (collection_name, row_id, property_id, payload, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (collection_name, row_id) DO UPDATE
+                SET property_id = EXCLUDED.property_id,
+                    payload = EXCLUDED.payload,
+                    updated_at = NOW();
+                """,
+                (cname, row_id, property_id, Json(item)),
+            )
+            conn.commit()
+    return item
+
+
+def delete_collection_row(collection_name: str, row_id: str):
+    _ensure_general_migration()
+    cname = str(collection_name).strip()
+    rid = str(row_id or "").strip()
+    if not cname or not rid:
+        return
+    pool = _get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM app_collection_rows WHERE collection_name = %s AND row_id = %s;",
+                (cname, rid),
+            )
+            conn.commit()
+
+
+def delete_property_collection_row(collection_name: str, item_id: str, property_id: str):
+    _ensure_general_migration()
+    cname = str(collection_name).strip()
+    iid = str(item_id or "").strip()
+    pid = str(property_id or "").strip()
+    if not cname or not iid or not pid:
+        return
+    rid = f"{pid}::{iid}"
+    pool = _get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM app_collection_rows
+                WHERE collection_name = %s
+                  AND (
+                    row_id = %s
+                    OR (property_id = %s AND payload->>'id' = %s)
+                  );
+                """,
+                (cname, rid, pid, iid),
+            )
+            conn.commit()
+
+
+def sync_collection_rows(
+    collection_name: str,
+    property_id: str,
+    incoming: list[dict],
+    allow_clear: bool = False,
+    prefix: str = "R",
+    row_id_with_property: bool = False,
+) -> dict:
+    _ensure_general_migration()
+    cname = str(collection_name).strip()
+    pid = str(property_id).strip()
+    if not cname or not pid:
+        return {"message": "collection_name and propertyId required", "saved": 0}
+    if not isinstance(incoming, list):
+        incoming = []
+    pool = _get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM app_collection_rows
+                WHERE collection_name = %s AND property_id = %s;
+                """,
+                (cname, pid),
+            )
+            existing_count = int(cur.fetchone()["c"])
+            if len(incoming) == 0 and existing_count > 0 and not allow_clear:
+                return {
+                    "message": "Skipped empty sync to protect existing rows",
+                    "saved": existing_count,
+                    "propertyId": pid,
+                    "collection": cname,
+                    "protected": True,
+                }
+
+            cur.execute(
+                "DELETE FROM app_collection_rows WHERE collection_name = %s AND property_id = %s;",
+                (cname, pid),
+            )
+            saved = 0
+            for row in incoming:
+                if not isinstance(row, dict):
+                    continue
+                item = {**row}
+                item_id = str(item.get("id") or f"{prefix}{uuid.uuid4().hex[:8]}")
+                item["id"] = item_id
+                item["propertyId"] = pid
+                row_id = f"{pid}::{item_id}" if row_id_with_property else item_id
+                cur.execute(
+                    """
+                    INSERT INTO app_collection_rows (collection_name, row_id, property_id, payload, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (collection_name, row_id) DO UPDATE
+                    SET property_id = EXCLUDED.property_id,
+                        payload = EXCLUDED.payload,
+                        updated_at = NOW();
+                    """,
+                    (cname, row_id, pid, Json(item)),
+                )
+                saved += 1
+            conn.commit()
+    return {"message": "Synced", "saved": saved, "propertyId": pid, "collection": cname}
 
 
 def delete_account_row(account_id: str):

@@ -7,6 +7,7 @@ import {
     MoreHorizontal, Moon, Bed, Tag, X, Settings, CreditCard, RefreshCw, Printer
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
+import ConfirmDialog from './ConfirmDialog';
 import { contactDisplayName } from './accountLeadMapping';
 import { loadSegmentsForProperty, loadAccountTypesForProperty } from './propertyTaxonomy';
 import {
@@ -225,6 +226,8 @@ export default function RequestsManager({
     const [searchResults, setSearchResults] = useState<any[] | null>(null);
     const [showCancelModal, setShowCancelModal] = useState(false);
     const [showStatusModal, setShowStatusModal] = useState(false);
+    const [showDeleteRequestConfirm, setShowDeleteRequestConfirm] = useState(false);
+    const [pendingDeleteRequest, setPendingDeleteRequest] = useState<any | null>(null);
     const [cancelReason, setCancelReason] = useState('Price too high');
     const [cancelNote, setCancelNote] = useState('');
     const [showBeoModal, setShowBeoModal] = useState(false);
@@ -2789,10 +2792,10 @@ export default function RequestsManager({
                         <button 
                             onClick={() => {
                                 const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
-                                if (req && window.confirm("Are you sure you want to logically delete this request completely?")) {
-                                    deleteRequest(req.id);
-                                    setActiveOptionsMenu(null);
-                                }
+                                if (!req) return;
+                                setPendingDeleteRequest(req);
+                                setShowDeleteRequestConfirm(true);
+                                setActiveOptionsMenu(null);
                             }}
                             className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-red-500/10 text-red-500 text-left transition-all active:scale-[0.98]">
                             <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500">
@@ -2824,6 +2827,27 @@ export default function RequestsManager({
                     onSave={handleSaveAccountFromModal}
                     theme={theme}
                     accountTypeOptions={effectiveAccountTypeOptions}
+                />
+                <ConfirmDialog
+                    isOpen={showDeleteRequestConfirm}
+                    title="Confirm Request Deletion"
+                    message={
+                        pendingDeleteRequest
+                            ? `You are about to delete this request permanently.\n\nRequest ID: ${pendingDeleteRequest.id || 'N/A'}\nRequest Name: ${pendingDeleteRequest.requestName || 'Unnamed request'}\n\nDo you wish to continue?`
+                            : 'Do you wish to continue?'
+                    }
+                    confirmLabel="Delete Request"
+                    danger
+                    onConfirm={async () => {
+                        if (!pendingDeleteRequest) return;
+                        await deleteRequest(pendingDeleteRequest.id);
+                        setPendingDeleteRequest(null);
+                        setShowDeleteRequestConfirm(false);
+                    }}
+                    onCancel={() => {
+                        setPendingDeleteRequest(null);
+                        setShowDeleteRequestConfirm(false);
+                    }}
                 />
                 
                 {showStatusModal && req && (

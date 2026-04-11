@@ -80,6 +80,12 @@ const initialVenues: any[] = [];
 
 const initialUsers: any[] = [];
 
+const defaultTaxesForProperty = (propertyId: string) => [
+    { id: 'vat', label: 'VAT (Value Added Tax)', rate: 15, scope: { accommodation: true, transport: true, foodAndBeverage: true, events: true }, propertyId },
+    { id: 'muni', label: 'Municipality Fee', rate: 10, scope: { accommodation: true, transport: false, foodAndBeverage: false, events: true }, propertyId },
+    { id: 'service', label: 'Service Fee', rate: 12, scope: { accommodation: true, transport: false, foodAndBeverage: true, events: false }, propertyId },
+];
+
 export default function Settings({
     theme,
     currentUser,
@@ -125,27 +131,6 @@ export default function Settings({
             setActiveTab('profile');
         }
     }, [appIsAdmin, activeTab]);
-
-    // Load Property-Specific Taxes
-    useEffect(() => {
-        if (managingProperty) {
-            fetch(apiUrl(`/api/taxes?propertyId=${managingProperty.id}`))
-                .then(res => res.json())
-                .then(data => {
-                    if (Array.isArray(data) && data.length > 0) {
-                        setTaxes(data);
-                    } else {
-                        // Reset to defaults if no custom taxes found
-                        setTaxes([
-                            { id: 'vat', label: 'VAT (Value Added Tax)', rate: 15, scope: { accommodation: true, transport: true, foodAndBeverage: true, events: true }, propertyId: managingProperty.id },
-                            { id: 'muni', label: 'Municipality Fee', rate: 10, scope: { accommodation: true, transport: false, foodAndBeverage: false, events: true }, propertyId: managingProperty.id },
-                            { id: 'service', label: 'Service Fee', rate: 12, scope: { accommodation: true, transport: false, foodAndBeverage: true, events: false }, propertyId: managingProperty.id }
-                        ]);
-                    }
-                })
-                .catch(err => console.error("Error fetching taxes:", err));
-        }
-    }, [managingProperty]);
 
     const [selectedUserForStats, setSelectedUserForStats] = useState<any>(null);
     const [showResetPassword, setShowResetPassword] = useState(false);
@@ -400,11 +385,13 @@ export default function Settings({
         }
         else if (type === 'room') {
             setRoomTypes(roomTypes.filter(r => r.id !== id));
-            fetch(apiUrl(`/api/rooms/${id}`), { method: 'DELETE' });
+            const suffix = managingProperty?.id ? `?propertyId=${encodeURIComponent(String(managingProperty.id))}` : '';
+            fetch(apiUrl(`/api/rooms/${id}${suffix}`), { method: 'DELETE' });
         }
         else if (type === 'venue') {
             setVenues(venues.filter(v => v.id !== id));
-            fetch(apiUrl(`/api/venues/${id}`), { method: 'DELETE' });
+            const suffix = managingProperty?.id ? `?propertyId=${encodeURIComponent(String(managingProperty.id))}` : '';
+            fetch(apiUrl(`/api/venues/${id}${suffix}`), { method: 'DELETE' });
         }
         else if (type === 'user') {
             setUsers(users.filter(u => u.id !== id));
@@ -531,6 +518,9 @@ export default function Settings({
     useEffect(() => {
         if (!managingProperty) return;
         const propId = managingProperty.id;
+        setSelectedYearDetails(null);
+        setIsEditingFinancials(false);
+        setTempYearData(null);
 
         fetch(apiUrl(`/api/rooms?propertyId=${propId}`))
             .then(res => res.json()).then(data => setRoomTypes(Array.isArray(data) ? data : []));
@@ -539,10 +529,24 @@ export default function Settings({
             .then(res => res.json()).then(data => setVenues(Array.isArray(data) ? data : []));
 
         fetch(apiUrl(`/api/taxes?propertyId=${propId}`))
-            .then(res => res.json()).then(data => { if (Array.isArray(data) && data.length > 0) setTaxes(data); });
+            .then(res => res.json())
+            .then(data => {
+                if (Array.isArray(data) && data.length > 0) {
+                    setTaxes(data);
+                } else {
+                    setTaxes(defaultTaxesForProperty(String(propId)));
+                }
+            });
 
         fetch(apiUrl(`/api/financials?propertyId=${propId}`))
-            .then(res => res.json()).then(data => { if (Array.isArray(data) && data.length > 0) setFinancialData(data); });
+            .then(res => res.json())
+            .then(data => {
+                if (Array.isArray(data) && data.length > 0) {
+                    setFinancialData(data);
+                } else {
+                    setFinancialData([{ year: new Date().getFullYear(), months: generateInitialMonths() }]);
+                }
+            });
     }, [managingProperty]);
 
     const tabs = appIsAdmin
@@ -2347,7 +2351,8 @@ export default function Settings({
                                         if (window.confirm(`Are you sure you want to delete all financial data for ${selectedYearDetails.year}?`)) {
                                             setFinancialData(financialData.filter(y => y.year !== selectedYearDetails.year));
                                             const itemId = selectedYearDetails.id || `${managingProperty?.id}_${selectedYearDetails.year}`;
-                                            fetch(apiUrl(`/api/financials/${itemId}`), { method: 'DELETE' });
+                                            const suffix = managingProperty?.id ? `?propertyId=${encodeURIComponent(String(managingProperty.id))}` : '';
+                                            fetch(apiUrl(`/api/financials/${itemId}${suffix}`), { method: 'DELETE' });
                                             setSelectedYearDetails(null);
                                             setIsEditingFinancials(false);
                                         }

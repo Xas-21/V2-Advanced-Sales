@@ -27,6 +27,7 @@ import {
     filterOpenOpportunityLeads
 } from './accountProfileData';
 import { apiUrl } from './backendApi';
+import ConfirmDialog from './ConfirmDialog';
 
 interface CRMProps {
     theme: any;
@@ -109,6 +110,9 @@ export default function CRM({
     }, [initialAction, onConsumedInitialAction, crmReadOnly]);
 
     const [showEditAccountModal, setShowEditAccountModal] = useState(false);
+    const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+    const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null);
+    const [deleteImpactMessage, setDeleteImpactMessage] = useState('');
     const flatCrmLeads = useMemo(() => flattenCrmLeads(crmLeads), [crmLeads]);
 
     const crmLeadsForView = useMemo(() => {
@@ -504,6 +508,64 @@ export default function CRM({
         setListMenuLeadId(null);
     };
 
+    const openAccountDeleteConfirm = async (accountId: string) => {
+        try {
+            const impactRes = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(accountId))}/delete-impact`));
+            const impact = impactRes.ok
+                ? await impactRes.json()
+                : { requests: [], requestsCount: 0, salesCallsCount: 0 };
+            const requestLines = Array.isArray(impact.requests)
+                ? impact.requests
+                      .slice(0, 10)
+                      .map((r: any) => `- ${r.id || 'N/A'} | ${r.requestName || 'Unnamed request'}`)
+                      .join('\n')
+                : '';
+            const more =
+                Array.isArray(impact.requests) && impact.requests.length > 10
+                    ? `\n...and ${impact.requests.length - 10} more request(s).`
+                    : '';
+            const msg =
+                `Deleting this account will also delete linked data:\n` +
+                `Requests: ${impact.requestsCount || 0}\n` +
+                `Sales calls: ${impact.salesCallsCount || 0}\n\n` +
+                `${requestLines}${more}\n\n` +
+                `Do you wish to continue?`;
+            setPendingDeleteAccountId(String(accountId));
+            setDeleteImpactMessage(msg);
+            setConfirmDeleteOpen(true);
+        } catch {
+            alert('Failed to prepare delete impact.');
+        }
+    };
+
+    const confirmDeleteAccount = async () => {
+        if (!pendingDeleteAccountId) return;
+        try {
+            const res = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(pendingDeleteAccountId))}`), {
+                method: 'DELETE',
+            });
+            if (!res.ok) {
+                alert('Failed to delete account.');
+                return;
+            }
+            setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== pendingDeleteAccountId));
+            setCrmLeads((prev) => {
+                const out = { ...prev } as Record<string, any[]>;
+                (Object.keys(out) as string[]).forEach((k) => {
+                    out[k] = (out[k] || []).filter((l: any) => l.accountId !== pendingDeleteAccountId);
+                });
+                return out;
+            });
+            setCurrentView(externalView || 'pipeline');
+        } catch {
+            alert('Failed to delete account.');
+        } finally {
+            setConfirmDeleteOpen(false);
+            setPendingDeleteAccountId(null);
+            setDeleteImpactMessage('');
+        }
+    };
+
     if (currentView === 'profile' && selectedLead) {
         const aid = selectedLead.accountId || selectedLead.id;
         const aname = selectedLead.company;
@@ -548,51 +610,7 @@ export default function CRM({
                     appendAuditLog={(action, details) => appendProfileAudit(action, details, aid)}
                     onDeleteAccount={
                         allowDeleteAccount
-                            ? async () => {
-                                  try {
-                                      const impactRes = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}/delete-impact`));
-                                      const impact = impactRes.ok
-                                          ? await impactRes.json()
-                                          : { requests: [], requestsCount: 0, salesCallsCount: 0 };
-                                      const requestLines = Array.isArray(impact.requests)
-                                          ? impact.requests
-                                                .slice(0, 10)
-                                                .map((r: any) => `- ${r.id || 'N/A'} | ${r.requestName || 'Unnamed request'}`)
-                                                .join('\n')
-                                          : '';
-                                      const more =
-                                          Array.isArray(impact.requests) && impact.requests.length > 10
-                                              ? `\n...and ${impact.requests.length - 10} more request(s).`
-                                              : '';
-                                      const msg =
-                                          `Deleting this account will also delete linked data:\n` +
-                                          `Requests: ${impact.requestsCount || 0}\n` +
-                                          `Sales calls: ${impact.salesCallsCount || 0}\n\n` +
-                                          `${requestLines}${more}\n\n` +
-                                          `Do you wish to continue?`;
-                                      if (!window.confirm(msg)) return;
-
-                                      const res = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}`), {
-                                          method: 'DELETE',
-                                      });
-                                      if (!res.ok) {
-                                          alert('Failed to delete account.');
-                                          return;
-                                      }
-
-                                      setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== aid));
-                                      setCrmLeads((prev) => {
-                                          const out = { ...prev } as Record<string, any[]>;
-                                          (Object.keys(out) as string[]).forEach((k) => {
-                                              out[k] = (out[k] || []).filter((l: any) => l.accountId !== aid);
-                                          });
-                                          return out;
-                                      });
-                                      setCurrentView(externalView || 'pipeline');
-                                  } catch {
-                                      alert('Failed to delete account.');
-                                  }
-                              }
+                            ? () => openAccountDeleteConfirm(String(aid))
                             : undefined
                     }
                 />
@@ -613,6 +631,19 @@ export default function CRM({
                         );
                         appendProfileAudit('Account updated', 'Account details saved from edit modal', data.id);
                         setShowEditAccountModal(false);
+                    }}
+                />
+                <ConfirmDialog
+                    isOpen={confirmDeleteOpen}
+                    title="Confirm Account Deletion"
+                    message={deleteImpactMessage}
+                    confirmLabel="Delete Account"
+                    danger
+                    onConfirm={confirmDeleteAccount}
+                    onCancel={() => {
+                        setConfirmDeleteOpen(false);
+                        setPendingDeleteAccountId(null);
+                        setDeleteImpactMessage('');
                     }}
                 />
             </>

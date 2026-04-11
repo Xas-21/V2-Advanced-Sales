@@ -1,32 +1,25 @@
 from fastapi import APIRouter
 from typing import Optional
-from utils import ROOM_TYPES_FILE, read_json_file, write_json_file
+from utils import delete_collection_row, delete_property_collection_row, list_collection_rows, upsert_collection_row
 import uuid
 
 router = APIRouter(prefix="/api/rooms")
 
 @router.get("")
 def get_rooms(propertyId: Optional[str] = None):
-    data = read_json_file(ROOM_TYPES_FILE)
-    if propertyId:
-        return [item for item in data if item.get("propertyId") == propertyId]
-    return data
+    return list_collection_rows("room_types", propertyId)
 
 @router.post("")
 def save_room(data: dict):
-    rooms = read_json_file(ROOM_TYPES_FILE)
-    if "id" not in data:
-        data["id"] = "R" + str(uuid.uuid4())[:6]
-    idx = next((i for i, d in enumerate(rooms) if str(d.get("id")) == str(data.get("id"))), -1)
-    if idx >= 0:
-        rooms[idx] = {**rooms[idx], **data}
-    else:
-        rooms.append(data)
-    write_json_file(ROOM_TYPES_FILE, rooms)
-    return data
+    item = {**(data if isinstance(data, dict) else {})}
+    if "id" not in item:
+        item["id"] = "R" + str(uuid.uuid4())[:6]
+    return upsert_collection_row("room_types", item, prefix="R", row_id_with_property=True)
 
 @router.delete("/{id}")
-def delete_room(id: str):
-    rooms = read_json_file(ROOM_TYPES_FILE)
-    write_json_file(ROOM_TYPES_FILE, [d for d in rooms if str(d.get("id")) != str(id)])
+def delete_room(id: str, propertyId: Optional[str] = None):
+    if propertyId:
+        delete_property_collection_row("room_types", id, propertyId)
+    else:
+        delete_collection_row("room_types", id)
     return {"message": "Deleted successfully"}
