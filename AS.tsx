@@ -1169,11 +1169,11 @@ const EventsView = ({
     const [expandedAccounts, setExpandedAccounts] = useState<string[]>([]);
     const [venuesList, setVenuesList] = useState<any[]>([]);
     const [propertyTaxes, setPropertyTaxes] = useState<any[]>([]);
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = toYmd(new Date());
     const defaultTo = (() => {
         const d = new Date();
         d.setDate(d.getDate() + 4);
-        return d.toISOString().slice(0, 10);
+        return toYmd(d);
     })();
     const [draftFrom, setDraftFrom] = useState(todayIso);
     const [draftTo, setDraftTo] = useState(defaultTo);
@@ -1386,7 +1386,7 @@ const EventsView = ({
         const end = new Date(`${b}T12:00:00`);
         let n = 0;
         while (cur <= end && n < maxCols) {
-            out.push(cur.toISOString().slice(0, 10));
+            out.push(toYmd(cur));
             cur.setDate(cur.getDate() + 1);
             n++;
         }
@@ -1468,7 +1468,7 @@ const EventsView = ({
             const cur = new Date(`${appliedGridStart.slice(0, 10)}T12:00:00`);
             const out: string[] = [];
             for (let i = 0; i < 7; i++) {
-                out.push(cur.toISOString().slice(0, 10));
+                out.push(toYmd(cur));
                 cur.setDate(cur.getDate() + 1);
             }
             return out;
@@ -4194,6 +4194,17 @@ export default function AdvancedSalesDashboard() {
     }, [currentView]);
 
     useEffect(() => {
+        if (!isAuthenticated) return;
+        if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+        // Prompt for location access on app open; if granted, refresh date-dependent state.
+        navigator.geolocation.getCurrentPosition(
+            () => setCurrentCalendarDate(new Date()),
+            () => { /* Keep local device time fallback when denied/unavailable. */ },
+            { enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 }
+        );
+    }, [isAuthenticated]);
+
+    useEffect(() => {
         const t = setInterval(() => setDashboardNowAnchor(Date.now()), 60 * 60 * 1000);
         return () => clearInterval(t);
     }, []);
@@ -4563,12 +4574,48 @@ export default function AdvancedSalesDashboard() {
                                 </div>
 
                                 {canMutateOperational(currentUser) && (
-                                    <button
-                                        onClick={() => { setEventModalSource('calendar'); setShowNewEventModal(true); }}
-                                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-transform hover:scale-105 active:scale-95 whitespace-nowrap"
-                                        style={{ backgroundColor: colors.primary, color: '#000' }}>
-                                        <Plus size={12} /> New Event
-                                    </button>
+                                    <div className="relative" ref={eventTypeMenuRef}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowEventTypeMenu((v) => !v)}
+                                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-transform hover:scale-105 active:scale-95 whitespace-nowrap"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                        >
+                                            <Plus size={12} /> New Event
+                                            <ChevronDown size={12} className="opacity-70" />
+                                        </button>
+                                        {showEventTypeMenu && (
+                                            <div
+                                                className="absolute right-0 top-full mt-1 py-1 rounded-xl border shadow-xl z-[100] min-w-[220px]"
+                                                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-white/5 transition-colors"
+                                                    style={{ color: colors.textMain }}
+                                                    onClick={() => {
+                                                        setEventsEmbeddedRequestType('event');
+                                                        setShowEventsRequestModal(true);
+                                                        setShowEventTypeMenu(false);
+                                                    }}
+                                                >
+                                                    Event
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-white/5 transition-colors border-t border-white/5"
+                                                    style={{ color: colors.textMain }}
+                                                    onClick={() => {
+                                                        setEventsEmbeddedRequestType('event_rooms');
+                                                        setShowEventsRequestModal(true);
+                                                        setShowEventTypeMenu(false);
+                                                    }}
+                                                >
+                                                    Event with accommodation
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                         ) : currentView === 'events' ? (
