@@ -3584,14 +3584,16 @@ export default function AdvancedSalesDashboard() {
 
     // Initial load properties globally for user
     useEffect(() => {
-        if (!currentUser?.id) return;
+        if (!currentUser) return;
         fetch(apiUrl('/api/properties'))
             .then(res => res.json())
             .then(data => {
                 if (Array.isArray(data)) {
                     setProperties(data);
                     const allowed = data.filter((p: any) => canAccessProperty(p));
-                    const savedPropertyId = localStorage.getItem(getActivePropertyStorageKey(currentUser));
+                    const savedPropertyId =
+                        localStorage.getItem(getActivePropertyStorageKey(currentUser)) ||
+                        localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
                     const savedProp = savedPropertyId
                         ? allowed.find((p: any) => String(p.id) === String(savedPropertyId))
                         : null;
@@ -3605,10 +3607,11 @@ export default function AdvancedSalesDashboard() {
     }, [currentUser, canAccessProperty]);
 
     useEffect(() => {
-        if (!currentUser?.id) return;
+        if (!currentUser) return;
         const pid = activeProperty?.id;
         if (!pid) return;
         localStorage.setItem(getActivePropertyStorageKey(currentUser), String(pid));
+        localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, String(pid));
     }, [activeProperty?.id, currentUser]);
 
     const [taxonomyRefresh, setTaxonomyRefresh] = useState(0);
