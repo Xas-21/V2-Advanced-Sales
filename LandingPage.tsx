@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { ArrowRight, CheckCircle2, BarChart3, CalendarDays, Users, Palette } from 'lucide-react';
-import { apiUrl } from './apiBase';
+import { apiUrl } from './backendApi';
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip } from 'recharts';
 
 interface LandingPageProps {

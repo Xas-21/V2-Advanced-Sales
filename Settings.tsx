@@ -10,7 +10,7 @@ import {
     TrendingUp, Calculator, CalendarDays, ChevronLeft, CheckSquare, Zap, CheckCircle2, Download, Clock,
     UserMinus, RefreshCw, Tags, UtensilsCrossed
 } from 'lucide-react';
-import { apiUrl } from './apiBase';
+import { apiUrl } from './backendApi';
 import {
     loadSegmentsForProperty,
     saveSegmentsForProperty,

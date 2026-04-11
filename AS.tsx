@@ -55,7 +55,7 @@ import {
     Download,
     Trash2
 } from 'lucide-react';
-import { apiUrl } from './apiBase';
+import { apiUrl } from './backendApi';
 import {
     AreaChart,
     Area,
@@ -2357,7 +2357,7 @@ const RequestsView = ({ theme, subView, setSubView, searchParams, setSearchParam
                                             {req.venue}
                                             <div className="text-[9px]">Full Board</div>
                                         </td>
-                                        <td className="p-4 text-right font-mono font-bold" style={{ color: colors.textMain }}>{`${currentCurrency} ${req.cost}`}</td>
+                                        <td className="p-4 text-right font-mono font-bold" style={{ color: colors.textMain }}>{`${selectedCurrency} ${req.cost}`}</td>
                                         <td className="p-4 text-right">
                                             <StatusBadge status={req.status} theme={theme} />
                                         </td>
@@ -2441,6 +2441,7 @@ const MiniStatCard = ({ label, value, colorKey, colors }: any) => {
 
 const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'SAR' }: any) => {
     const selectedCurrency = resolveCurrencyCode(currency);
+    const formatMoneyCompact = (amountSar: number) => formatCompactCurrency(amountSar, selectedCurrency);
     const perf = performanceData || {};
     const rooms = perf.rooms || {};
     const fnb = perf.fnb || {};

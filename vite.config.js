@@ -9,6 +9,10 @@ export default defineConfig({
         }),
     ],
     server: {
+        // Listen on all interfaces so http://127.0.0.1:5173 works (default [::1]-only breaks IPv4 on Windows).
+        host: true,
+        port: 5173,
+        strictPort: true,
         proxy: {
             '/api': {
                 target: 'http://127.0.0.1:8000',
