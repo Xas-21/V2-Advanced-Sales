@@ -3211,6 +3211,7 @@ export default function AdvancedSalesDashboard() {
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
 
     const skipNextAccountsSync = useRef(false);
+    const accountsHydratedForPropertyId = useRef<string | null>(null);
     const skipNextCrmPersist = useRef(false);
     const crmHydratedForPropertyId = useRef<string | null>(null);
 
@@ -3342,6 +3343,7 @@ export default function AdvancedSalesDashboard() {
 
     useEffect(() => {
         const pid = activeProperty?.id;
+        accountsHydratedForPropertyId.current = null;
         if (!pid) {
             setAccounts([]);
             return;
@@ -3350,6 +3352,7 @@ export default function AdvancedSalesDashboard() {
         fetchAccountsForProperty(String(pid)).then((list) => {
             if (cancelled) return;
             skipNextAccountsSync.current = true;
+            accountsHydratedForPropertyId.current = String(pid);
             setAccounts(list);
         });
         return () => {
@@ -3360,6 +3363,7 @@ export default function AdvancedSalesDashboard() {
     useEffect(() => {
         const pid = activeProperty?.id;
         if (!pid) return;
+        if (accountsHydratedForPropertyId.current !== String(pid)) return;
         if (skipNextAccountsSync.current) {
             skipNextAccountsSync.current = false;
             return;

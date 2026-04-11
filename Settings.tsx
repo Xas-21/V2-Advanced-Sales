@@ -44,6 +44,7 @@ import {
     countCallsInYear,
     countOpenPipelineInYmdRange,
     countRequestsInYmdRange,
+    filterUserAccounts,
     filterUserCrmLeads,
     monthlySalesCallTarget,
     monthRangeRevenueSeries,
@@ -672,10 +673,10 @@ export default function Settings({
         const callsKpi = viewMode === 'year' ? yearCalls : monthCalls;
 
         const userAccountsCount = useMemo(() => {
-            return (accounts || []).filter(
+            return filterUserAccounts(accounts || [], mergedUser).filter(
                 (a: any) => !scopePropId || !a?.propertyId || String(a.propertyId) === String(scopePropId)
             ).length;
-        }, [accounts, scopePropId]);
+        }, [accounts, mergedUser, scopePropId]);
 
         const userTasks = useMemo(() => {
             return (tasks || []).filter(
@@ -1031,7 +1032,15 @@ export default function Settings({
                                         itemStyle={{ color: colors.primary }}
                                         formatter={(value: any) => formatMoney(Number(value || 0), 0)}
                                     />
-                                    <Area type="monotone" dataKey="revenue" stroke={colors.primary} strokeWidth={3} fillOpacity={1} fill={`url(#${revGradId})`} />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="revenue"
+                                        stroke={colors.primary}
+                                        strokeWidth={3}
+                                        fillOpacity={1}
+                                        fill={`url(#${revGradId})`}
+                                        isAnimationActive={false}
+                                    />
                                 </AreaChart>
                             </ResponsiveContainer>
                         </div>

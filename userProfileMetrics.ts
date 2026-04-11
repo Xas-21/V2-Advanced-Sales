@@ -89,6 +89,11 @@ export function requestAttributedToUser(req: any, user: any): boolean {
 export function accountAttributedToUser(acc: any, user: any): boolean {
     if (!user?.id) return false;
     if (acc?.createdByUserId != null && String(acc.createdByUserId) === String(user.id)) return true;
+    if (acc?.ownerUserId != null && String(acc.ownerUserId) === String(user.id)) return true;
+
+    // Legacy fallback only when owner/creator ids are missing.
+    if (acc?.createdByUserId != null || acc?.ownerUserId != null) return false;
+
     const acts = Array.isArray(acc?.activities) ? acc.activities : [];
     for (const a of acts) {
         const t = String(a?.title || a?.action || '').toLowerCase();

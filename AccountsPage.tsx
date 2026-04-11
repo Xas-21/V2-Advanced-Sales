@@ -29,6 +29,7 @@ import {
     isSystemAdmin,
 } from './userPermissions';
 import type { CurrencyCode } from './currency';
+import { apiUrl } from './backendApi';
 
 const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v1';
 const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email'];
@@ -277,17 +278,49 @@ export default function AccountsPage({
                     currency={currency}
                     onDeleteAccount={
                         allowDeleteAccount
-                            ? () => {
-                                  if (!window.confirm('Delete this account and remove its CRM cards? This cannot be undone.')) return;
-                                  setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== aid));
-                                  setCrmLeads((prev) => {
-                                      const out = { ...prev } as Record<string, any[]>;
-                                      (Object.keys(out) as string[]).forEach((k) => {
-                                          out[k] = (out[k] || []).filter((l: any) => l.accountId !== aid);
+                            ? async () => {
+                                  try {
+                                      const impactRes = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}/delete-impact`));
+                                      const impact = impactRes.ok
+                                          ? await impactRes.json()
+                                          : { requests: [], requestsCount: 0, salesCallsCount: 0 };
+                                      const requestLines = Array.isArray(impact.requests)
+                                          ? impact.requests
+                                                .slice(0, 10)
+                                                .map((r: any) => `- ${r.id || 'N/A'} | ${r.requestName || 'Unnamed request'}`)
+                                                .join('\n')
+                                          : '';
+                                      const more =
+                                          Array.isArray(impact.requests) && impact.requests.length > 10
+                                              ? `\n...and ${impact.requests.length - 10} more request(s).`
+                                              : '';
+                                      const msg =
+                                          `Deleting this account will also delete linked data:\n` +
+                                          `Requests: ${impact.requestsCount || 0}\n` +
+                                          `Sales calls: ${impact.salesCallsCount || 0}\n\n` +
+                                          `${requestLines}${more}\n\n` +
+                                          `Do you wish to continue?`;
+                                      if (!window.confirm(msg)) return;
+
+                                      const res = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}`), {
+                                          method: 'DELETE',
                                       });
-                                      return out;
-                                  });
-                                  setProfileLead(null);
+                                      if (!res.ok) {
+                                          alert('Failed to delete account.');
+                                          return;
+                                      }
+                                      setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== aid));
+                                      setCrmLeads((prev) => {
+                                          const out = { ...prev } as Record<string, any[]>;
+                                          (Object.keys(out) as string[]).forEach((k) => {
+                                              out[k] = (out[k] || []).filter((l: any) => l.accountId !== aid);
+                                          });
+                                          return out;
+                                      });
+                                      setProfileLead(null);
+                                  } catch {
+                                      alert('Failed to delete account.');
+                                  }
                               }
                             : undefined
                     }

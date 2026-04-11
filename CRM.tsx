@@ -26,6 +26,7 @@ import {
     filterSalesCallsForAccount,
     filterOpenOpportunityLeads
 } from './accountProfileData';
+import { apiUrl } from './backendApi';
 
 interface CRMProps {
     theme: any;
@@ -233,6 +234,12 @@ export default function CRM({
     const pipelineValue = allLeads.reduce((sum: number, l: any) => sum + Number(l.value || 0), 0);
     const avgDealSize = totalLeads > 0 ? pipelineValue / totalLeads : 0;
     const wonThisMonth = crmLeadsForView.won?.length || 0;
+    const highPotentialCount =
+        (crmLeadsForView.proposal?.length || 0) + (crmLeadsForView.negotiation?.length || 0);
+    const followUpRequiredCount = allLeads.filter(
+        (lead: any) =>
+            Boolean(String(lead?.followUpDate || '').trim()) || Boolean(lead?.followUpRequired)
+    ).length;
 
     const openLeadProfile = (lead: any) => {
         const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
@@ -541,17 +548,50 @@ export default function CRM({
                     appendAuditLog={(action, details) => appendProfileAudit(action, details, aid)}
                     onDeleteAccount={
                         allowDeleteAccount
-                            ? () => {
-                                  if (!window.confirm('Delete this account and remove its CRM cards? This cannot be undone.')) return;
-                                  setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== aid));
-                                  setCrmLeads((prev) => {
-                                      const out = { ...prev } as Record<string, any[]>;
-                                      (Object.keys(out) as string[]).forEach((k) => {
-                                          out[k] = (out[k] || []).filter((l: any) => l.accountId !== aid);
+                            ? async () => {
+                                  try {
+                                      const impactRes = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}/delete-impact`));
+                                      const impact = impactRes.ok
+                                          ? await impactRes.json()
+                                          : { requests: [], requestsCount: 0, salesCallsCount: 0 };
+                                      const requestLines = Array.isArray(impact.requests)
+                                          ? impact.requests
+                                                .slice(0, 10)
+                                                .map((r: any) => `- ${r.id || 'N/A'} | ${r.requestName || 'Unnamed request'}`)
+                                                .join('\n')
+                                          : '';
+                                      const more =
+                                          Array.isArray(impact.requests) && impact.requests.length > 10
+                                              ? `\n...and ${impact.requests.length - 10} more request(s).`
+                                              : '';
+                                      const msg =
+                                          `Deleting this account will also delete linked data:\n` +
+                                          `Requests: ${impact.requestsCount || 0}\n` +
+                                          `Sales calls: ${impact.salesCallsCount || 0}\n\n` +
+                                          `${requestLines}${more}\n\n` +
+                                          `Do you wish to continue?`;
+                                      if (!window.confirm(msg)) return;
+
+                                      const res = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(String(aid))}`), {
+                                          method: 'DELETE',
                                       });
-                                      return out;
-                                  });
-                                  setCurrentView(externalView || 'pipeline');
+                                      if (!res.ok) {
+                                          alert('Failed to delete account.');
+                                          return;
+                                      }
+
+                                      setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== aid));
+                                      setCrmLeads((prev) => {
+                                          const out = { ...prev } as Record<string, any[]>;
+                                          (Object.keys(out) as string[]).forEach((k) => {
+                                              out[k] = (out[k] || []).filter((l: any) => l.accountId !== aid);
+                                          });
+                                          return out;
+                                      });
+                                      setCurrentView(externalView || 'pipeline');
+                                  } catch {
+                                      alert('Failed to delete account.');
+                                  }
                               }
                             : undefined
                     }
@@ -607,11 +647,11 @@ export default function CRM({
                     </div>
                     <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                         <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>High Potential Client</p>
-                        <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{crmLeads.proposal.length + crmLeads.negotiation.length}</p>
+                        <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{highPotentialCount}</p>
                     </div>
                     <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                         <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Follow up Required</p>
-                        <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{crmLeads.new.length + crmLeads.qualified.length}</p>
+                        <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{followUpRequiredCount}</p>
                     </div>
                     <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                         <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>

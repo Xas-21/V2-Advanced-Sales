@@ -11,7 +11,7 @@ sys.path.append(BASE_DIR)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts
-from utils import storage_mode
+from utils import close_database, init_database, storage_mode
 
 app = FastAPI(title="VisaTour ERP Backend", version="1.0.0", redirect_slashes=False)
 
@@ -35,6 +35,17 @@ app.include_router(reqs.router)
 app.include_router(crm_state.router)
 app.include_router(contact.router)
 app.include_router(accounts.router)
+
+
+@app.on_event("startup")
+def on_startup():
+    if storage_mode() == "postgres":
+        init_database()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    close_database()
 
 @app.get("/api/health")
 def health():
