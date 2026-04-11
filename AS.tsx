@@ -3044,6 +3044,11 @@ function getPersistedUserCurrency(user: any): CurrencyCode {
     return resolveCurrencyCode(user?.preferredCurrency);
 }
 
+function getActivePropertyStorageKey(user: any): string {
+    const userKey = String(user?.id || user?.username || user?.email || '').trim().toLowerCase();
+    return userKey ? `${ACTIVE_PROPERTY_STORAGE_KEY}::${userKey}` : ACTIVE_PROPERTY_STORAGE_KEY;
+}
+
 export default function AdvancedSalesDashboard() {
     const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('as_themeId') || 'light');
     const [isSidebarPinned, setIsSidebarPinned] = useState(false);
@@ -3579,13 +3584,14 @@ export default function AdvancedSalesDashboard() {
 
     // Initial load properties globally for user
     useEffect(() => {
+        if (!currentUser?.id) return;
         fetch(apiUrl('/api/properties'))
             .then(res => res.json())
             .then(data => {
                 if (Array.isArray(data)) {
                     setProperties(data);
                     const allowed = data.filter((p: any) => canAccessProperty(p));
-                    const savedPropertyId = localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
+                    const savedPropertyId = localStorage.getItem(getActivePropertyStorageKey(currentUser));
                     const savedProp = savedPropertyId
                         ? allowed.find((p: any) => String(p.id) === String(savedPropertyId))
                         : null;
@@ -3593,17 +3599,17 @@ export default function AdvancedSalesDashboard() {
                     if (savedProp) setActiveProperty(savedProp);
                     else if (userProp) setActiveProperty(userProp);
                     else if (allowed.length > 0) setActiveProperty(allowed[0]);
-                    else if (data.length > 0) setActiveProperty(data[0]);
                 }
             })
             .catch(err => console.error("Error fetching properties globally:", err));
     }, [currentUser, canAccessProperty]);
 
     useEffect(() => {
+        if (!currentUser?.id) return;
         const pid = activeProperty?.id;
         if (!pid) return;
-        localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, String(pid));
-    }, [activeProperty?.id]);
+        localStorage.setItem(getActivePropertyStorageKey(currentUser), String(pid));
+    }, [activeProperty?.id, currentUser]);
 
     const [taxonomyRefresh, setTaxonomyRefresh] = useState(0);
     useEffect(() => {
