@@ -1,0 +1,3865 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { apiUrl } from './apiBase';
+import {
+    LayoutList, Search, Plus, Calendar, User, FileText, Check, DollarSign,
+    Box, Users, Clock, Coffee, Utensils, Music, Bus, Car, BedDouble,
+    Trash2, Save, ChevronDown, ChevronRight, Calculator, Filter,
+    MoreHorizontal, Moon, Bed, Tag, X, Settings, CreditCard, RefreshCw, Printer
+} from 'lucide-react';
+import AddAccountModal from './AddAccountModal';
+import { contactDisplayName } from './accountLeadMapping';
+import { loadSegmentsForProperty, loadAccountTypesForProperty } from './propertyTaxonomy';
+import {
+    loadMealPlansForProperty,
+    loadEventPackagesForProperty,
+    MEALS_PACKAGES_CHANGED_EVENT,
+    getAgendaTimingSlotsForPackageName,
+    defaultEventPackageName,
+    normalizeAgendaRowTimes,
+    DEFAULT_EVENT_PACKAGES,
+} from './propertyMealsPackages';
+import { canDeleteRequestPayments as userCanDeleteRequestPayments } from './userPermissions';
+import {
+    sumPaymentAmounts,
+    calculateNights,
+    normalizeRequestTypeKey,
+    calculateEventAgendaDays,
+    inclusiveCalendarDays,
+    getEventDateWindow,
+    formatAgendaPackageSummary,
+    formatAgendaRowCoffeeBreak,
+    formatAgendaRowLunch,
+    formatAgendaRowDinner,
+    formatAgendaRowSessionNotes,
+    formatBeoSpecialRequestsCombined,
+    getAccountForRequest,
+    printBeoDocument,
+    calculateAccFinancialsForRequest,
+} from './beoShared';
+import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+
+interface RequestsManagerProps {
+    theme: any;
+    subView: string;
+    searchParams: any;
+    setSearchParams: (val: any) => void;
+    initialRequestType?: string | null;
+    activeProperty?: any;
+    accounts: any[];
+    setAccounts: React.Dispatch<React.SetStateAction<any[]>>;
+    pendingOpenRequestId?: string | null;
+    onConsumedPendingOpenRequest?: () => void;
+    onAfterRequestsMutate?: () => void;
+    /** When true, only the new-request wizard is shown (for modal overlay from Events page). */
+    embedded?: boolean;
+    onEmbeddedComplete?: () => void;
+    onEmbeddedCancel?: () => void;
+    /** Request segment choices for the active property (Settings). */
+    segmentOptions?: string[];
+    accountTypeOptions?: string[];
+    /** Head of Sales + Admin: full logical delete from options menu. */
+    canDeleteRequest?: boolean;
+    /** General Manager style: hide modify/cancel/delete in request options. */
+    readOnlyOperational?: boolean;
+    currentUser?: any;
+    /** Admin / Head of Sales (+ grants): remove payment lines from a request. */
+    canDeleteRequestPayments?: boolean;
+    currency?: CurrencyCode;
+}
+
+const DEFAULT_ROOM_TYPE_OPTIONS = ['Standard', 'Deluxe', 'Suite', 'Villa', 'Executive'];
+
+const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft'] as const;
+
+// Initial Form States
+const initialAccommodation = {
+    id: 'REQ-' + Math.floor(Math.random() * 100000),
+    requestName: '',
+    accountName: '',
+    accountId: '',
+    receivedDate: new Date().toISOString().split('T')[0],
+    confirmationNo: '',
+    checkIn: '',
+    checkOut: '',
+    nights: 0,
+    offerDeadline: '',
+    depositDeadline: '',
+    paymentDeadline: '',
+    mealPlan: 'RO',
+    rooms: [
+        { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
+    ],
+    transportation: [] as any[],
+    agenda: [] as any[],
+    invoices: {
+        inv1: null,
+        inv2: null,
+        inv3: null,
+        agreement: null
+    },
+    note: '',
+    status: 'Inquiry',
+    payments: [] as any[],
+    logs: [] as any[],
+    segment: ''
+};
+
+const initialEvent = {
+    requestName: '', leadId: '', accountId: '', confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000), requestDate: new Date().toISOString().split('T')[0],
+    status: 'Draft', offerDate: '', depositDate: '', paymentDate: '',
+    agenda: [{
+        id: 1,
+        startDate: '', endDate: '', venue: '', shape: 'Theater',
+        startTime: '', endTime: '',
+        coffee1: '', coffee2: '', lunchTime: '', dinnerTime: '',
+        rate: 0, pax: 0, rental: 0,
+        package: DEFAULT_EVENT_PACKAGES[0].name,
+        notes: '',
+    }],
+    payments: [] as any[],
+    logs: [] as any[],
+    segment: ''
+};
+
+export default function RequestsManager({
+    theme,
+    subView,
+    searchParams,
+    setSearchParams,
+    initialRequestType,
+    activeProperty,
+    accounts,
+    setAccounts,
+    pendingOpenRequestId,
+    onConsumedPendingOpenRequest,
+    onAfterRequestsMutate,
+    embedded = false,
+    onEmbeddedComplete,
+    onEmbeddedCancel,
+    segmentOptions,
+    accountTypeOptions,
+    canDeleteRequest = false,
+    readOnlyOperational = false,
+    currentUser,
+    canDeleteRequestPayments: canDeletePaymentsProp,
+    currency = 'SAR',
+}: RequestsManagerProps) {
+    const colors = theme.colors;
+    const selectedCurrency = resolveCurrencyCode(currency);
+    const formatMoney = (amountSar: number, maxFractionDigits = 2) =>
+        formatCurrencyAmount(amountSar, selectedCurrency, { maximumFractionDigits: maxFractionDigits });
+    const requestLogUser =
+        currentUser?.name || currentUser?.username || currentUser?.email || 'User';
+    const canDeletePayments =
+        (canDeletePaymentsProp ?? userCanDeleteRequestPayments(currentUser)) && !readOnlyOperational;
+
+    const effectiveSegmentOptions = useMemo(
+        () => (segmentOptions?.length ? segmentOptions : loadSegmentsForProperty(activeProperty?.id || '')),
+        [segmentOptions, activeProperty?.id]
+    );
+    const effectiveAccountTypeOptions = useMemo(
+        () => (accountTypeOptions?.length ? accountTypeOptions : loadAccountTypesForProperty(activeProperty?.id || '')),
+        [accountTypeOptions, activeProperty?.id]
+    );
+
+    const [mealsPackagesRev, setMealsPackagesRev] = useState(0);
+    useEffect(() => {
+        const onMeals = () => setMealsPackagesRev((n) => n + 1);
+        window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        return () => window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+    }, []);
+
+    const mealPlansForProperty = useMemo(() => {
+        void mealsPackagesRev;
+        return loadMealPlansForProperty(activeProperty?.id || '');
+    }, [activeProperty?.id, mealsPackagesRev]);
+
+    const eventPackagesForProperty = useMemo(() => {
+        void mealsPackagesRev;
+        return loadEventPackagesForProperty(activeProperty?.id || '');
+    }, [activeProperty?.id, mealsPackagesRev]);
+
+    const [requests, setRequests] = useState<any[]>([]);
+    const [taxesList, setTaxesList] = useState<any[]>([]);
+    const [propertyVenues, setPropertyVenues] = useState<any[]>([]);
+    const [propertyRoomNames, setPropertyRoomNames] = useState<string[]>([]);
+    const [isLoading, setIsLoading] = useState(false);
+
+    // View State
+    const [viewMode, setViewMode] = useState<'search' | 'list' | 'kanban'>('list');
+
+    // Form Wizard State
+    const [step, setStep] = useState(initialRequestType ? 2 : 1); // Skip to step 2 if type provided
+    const [requestType, setRequestType] = useState<string | null>(initialRequestType || null);
+
+    // React to prop changes
+    useEffect(() => {
+        if (initialRequestType) {
+            setRequestType(initialRequestType);
+            setStep(2);
+        }
+    }, [initialRequestType]);
+
+    // Form Data States
+    const [accForm, setAccForm] = useState(initialAccommodation);
+    const [evtForm, setEvtForm] = useState(initialEvent);
+    // Combined/Series forms would use similar structures or composite
+
+    // Table state for All Requests view
+    const [columnOrder, setColumnOrder] = useState<string[]>(['options', 'details', 'requestName', 'account', 'type', 'meal', 'status', 'dates', 'stay_info', 'paid_amount', 'total_cost']);
+    const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
+    const [expandedLog, setExpandedLog] = useState<number | null>(null);
+    const [selectedRequest, setSelectedRequest] = useState<any>(null);
+    const [activeOptionsMenu, setActiveOptionsMenu] = useState<number | null>(null);
+    const [isEditing, setIsEditing] = useState(false);
+
+    // Search and UI state
+    const [accountSearch, setAccountSearch] = useState('');
+    const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+    const [showPaymentModal, setShowPaymentModal] = useState(false);
+    const [paymentModalSource, setPaymentModalSource] = useState<'form' | 'opts'>('opts');
+    const [newPayment, setNewPayment] = useState({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+    const [showLogs, setShowLogs] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [searchFormExpanded, setSearchFormExpanded] = useState(true);
+    const [searchResults, setSearchResults] = useState<any[] | null>(null);
+    const [showCancelModal, setShowCancelModal] = useState(false);
+    const [showStatusModal, setShowStatusModal] = useState(false);
+    const [cancelReason, setCancelReason] = useState('Price too high');
+    const [cancelNote, setCancelNote] = useState('');
+    const [showBeoModal, setShowBeoModal] = useState(false);
+    const [beoTargetRequestId, setBeoTargetRequestId] = useState<string | null>(null);
+    const [beoNotesDraft, setBeoNotesDraft] = useState('');
+
+    const getSearchOnlyParams = (params: any = {}) => {
+        const { subView, ...rest } = params || {};
+        return rest;
+    };
+
+    const updateSearchParams = (patch: any) => {
+        setSearchParams({ ...getSearchOnlyParams(searchParams), ...patch });
+    };
+
+    const listPageRequests = useMemo(() => {
+        const quick = (searchTerm || '').toLowerCase().trim();
+        if (!quick) return requests;
+        return requests.filter((req: any) =>
+            String(req.id || '').toLowerCase().includes(quick) ||
+            String(req.account || req.accountName || '').toLowerCase().includes(quick) ||
+            String(req.confirmationNo || '').toLowerCase().includes(quick) ||
+            String(req.requestName || '').toLowerCase().includes(quick)
+        );
+    }, [requests, searchTerm]);
+
+    const [listPageSize, setListPageSize] = useState<20 | 50 | 100>(20);
+    const [listCurrentPage, setListCurrentPage] = useState(1);
+
+    useEffect(() => {
+        setListCurrentPage(1);
+    }, [searchTerm]);
+
+    const listTotalPages = Math.max(1, Math.ceil(listPageRequests.length / listPageSize));
+
+    useEffect(() => {
+        setListCurrentPage((p) => Math.min(Math.max(1, p), listTotalPages));
+    }, [listPageRequests.length, listPageSize, listTotalPages]);
+
+    const listPagedRequests = useMemo(() => {
+        const start = (listCurrentPage - 1) * listPageSize;
+        return listPageRequests.slice(start, start + listPageSize);
+    }, [listPageRequests, listCurrentPage, listPageSize]);
+
+    const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+
+    const handleSaveAccountFromModal = (accountData: any) => {
+        if (readOnlyOperational) return;
+        if (!accountData?.name) return;
+        const newAccount = { id: `A${Date.now()}`, ...accountData };
+        setAccounts((prev: any[]) => [newAccount, ...prev]);
+        setShowAddAccountModal(false);
+        setAccountSearch(newAccount.name);
+        setAccForm(prev => ({ ...prev, accountName: newAccount.name, accountId: newAccount.id }));
+        setEvtForm(prev => ({ ...prev, leadId: newAccount.name, accountId: newAccount.id }));
+    };
+
+    // Reset workflow when entering new_request mode (only for fresh new requests)
+    useEffect(() => {
+        if (embedded) return;
+        if (readOnlyOperational && subView === 'new_request') {
+            setIsEditing(false);
+            setRequestType(null);
+            setStep(1);
+            setSearchParams({
+                ...searchParams,
+                subView: 'list',
+                editRequestId: undefined,
+            });
+            return;
+        }
+        if (subView === 'new_request' && !isEditing && !searchParams?.editRequestId) {
+            setStep(1);
+            setRequestType(null);
+            
+            // CLEAR FORM DATA FOR NEW REQUEST
+            setAccForm({ 
+                ...initialAccommodation, 
+                id: 'REQ-' + Math.floor(Math.random() * 100000),
+                rooms: [{ id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }],
+                payments: [],
+                logs: [],
+                transportation: [],
+                agenda: [],
+                requestName: '',
+                accountName: '',
+                accountId: '',
+                confirmationNo: '',
+                segment: ''
+            });
+
+            setEvtForm({
+                ...initialEvent,
+                confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000),
+                requestName: '',
+                leadId: '',
+                accountId: '',
+                segment: '',
+                agenda: [{
+                    id: 1,
+                    startDate: '', endDate: '', venue: '', shape: 'Theater',
+                    startTime: '', endTime: '',
+                    coffee1: '', coffee2: '', lunchTime: '', dinnerTime: '',
+                    rate: 0, pax: 0, rental: 0,
+                    package: defaultEventPackageName(loadEventPackagesForProperty(activeProperty?.id || '')),
+                    notes: '',
+                }],
+            });
+
+            // CLEAR UI STATE FOR NEW REQUEST
+            setAccountSearch('');
+            setShowAccountDropdown(false);
+        }
+        
+        // Reset isEditing only when we are fully in the list view without any selection
+        if (subView === 'list' && !selectedRequest) {
+            setIsEditing(false);
+        }
+        setExpandedLog(null);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty?.id]);
+
+    // Fetch Requests from Backend
+    const fetchRequests = async () => {
+        setIsLoading(true);
+        try {
+            const url = activeProperty 
+                ? apiUrl(`/api/requests?propertyId=${activeProperty.id}`)
+                : apiUrl('/api/requests');
+            const res = await fetch(url);
+            const data = await res.json();
+            if (Array.isArray(data)) setRequests(data);
+        } catch (err) {
+            console.error("Error fetching requests:", err);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const fetchTaxes = async () => {
+        try {
+            const url = activeProperty 
+                ? apiUrl(`/api/taxes?propertyId=${activeProperty.id}`)
+                : apiUrl('/api/taxes');
+            const res = await fetch(url);
+            const data = await res.json();
+            if (Array.isArray(data)) setTaxesList(data);
+        } catch (err) {
+            console.error("Error fetching taxes:", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchRequests();
+        fetchTaxes();
+    }, [subView, activeProperty]);
+
+    useEffect(() => {
+        const loadVenuesRooms = async () => {
+            if (!activeProperty?.id) {
+                setPropertyVenues([]);
+                setPropertyRoomNames([]);
+                return;
+            }
+            try {
+                const [vRes, rRes] = await Promise.all([
+                    fetch(apiUrl(`/api/venues?propertyId=${encodeURIComponent(activeProperty.id)}`)),
+                    fetch(apiUrl(`/api/rooms?propertyId=${encodeURIComponent(activeProperty.id)}`))
+                ]);
+                const vData = vRes.ok ? await vRes.json() : [];
+                const rData = rRes.ok ? await rRes.json() : [];
+                if (Array.isArray(vData)) setPropertyVenues(vData);
+                if (Array.isArray(rData)) {
+                    const names = rData.map((x: any) => x.name).filter(Boolean);
+                    setPropertyRoomNames(names);
+                }
+            } catch {
+                setPropertyVenues([]);
+                setPropertyRoomNames([]);
+            }
+        };
+        loadVenuesRooms();
+    }, [activeProperty?.id]);
+
+    const venueOptions = propertyVenues.length
+        ? propertyVenues
+        : [{ id: 'placeholder', name: '— Add venues in Property Settings —' }];
+
+    const roomTypeSelectOptions = propertyRoomNames.length ? propertyRoomNames : DEFAULT_ROOM_TYPE_OPTIONS;
+
+    const defaultVenueName = () => (propertyVenues[0] as any)?.name || '';
+
+    const openRequestForEdit = (req: any) => {
+        if (readOnlyOperational) return;
+        if (!req?.id) return;
+        setIsEditing(true);
+        setSearchParams({
+            ...getSearchOnlyParams(searchParams),
+            subView: 'new_request',
+            editRequestId: req.id,
+        });
+        setActiveOptionsMenu(null);
+    };
+
+    useEffect(() => {
+        if (!pendingOpenRequestId || isLoading) return;
+        const r = requests.find((x: any) => String(x.id) === String(pendingOpenRequestId));
+        if (r) {
+            setSelectedRequest(r);
+            onConsumedPendingOpenRequest?.();
+        }
+    }, [pendingOpenRequestId, requests, isLoading, onConsumedPendingOpenRequest]);
+
+    useEffect(() => {
+        if (readOnlyOperational) return;
+        const editId = searchParams?.editRequestId;
+        if (subView !== 'new_request' || !editId || !requests.length) return;
+        const req = requests.find((x: any) => String(x.id) === String(editId));
+        if (!req) return;
+        const type = normalizeRequestTypeKey(req.requestType);
+        const accountName = req.accountName || req.account || '';
+        const savedPayments = Array.isArray(req.payments) && req.payments.length > 0
+            ? req.payments
+            : (parseFloat(req.paidAmount?.toString() || '0') > 0
+                ? [{ id: Date.now(), date: req.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0], method: 'Bank Transfer', note: 'Deposit on file', amount: parseFloat(req.paidAmount?.toString().replace(/,/g, '') || '0') }]
+                : []);
+
+        setIsEditing(true);
+        setRequestType(type);
+        setStep(2);
+        setAccountSearch(accountName);
+        // Event-only, event+rooms, and series all use renderAccommodationForm() + accForm — populate accForm.
+        if (type === 'event' || type === 'event_rooms' || type === 'series') {
+            setAccForm({
+                ...initialAccommodation,
+                ...req,
+                accountName,
+                accountId: req.accountId || '',
+                receivedDate: req.receivedDate || req.requestDate || initialAccommodation.receivedDate,
+                requestName: req.requestName || '',
+                confirmationNo: req.confirmationNo || initialAccommodation.confirmationNo,
+                agenda: Array.isArray(req.agenda)
+                    ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
+                    : initialAccommodation.agenda,
+                rooms: Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms,
+                transportation: Array.isArray(req.transportation) ? req.transportation : [],
+                payments: savedPayments,
+                logs: req.logs || [],
+                segment: req.segment || '',
+            });
+            if (type === 'event') {
+                setEvtForm({
+                    ...initialEvent,
+                    ...req,
+                    leadId: req.account || req.accountName || accountName,
+                    accountId: req.accountId || '',
+                    requestName: req.requestName || '',
+                    requestDate: req.requestDate || req.receivedDate || new Date().toISOString().split('T')[0],
+                    confirmationNo: req.confirmationNo || initialEvent.confirmationNo,
+                    agenda: Array.isArray(req.agenda)
+                        ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
+                        : initialEvent.agenda,
+                    payments: savedPayments,
+                    logs: req.logs || [],
+                    segment: req.segment || '',
+                });
+            }
+        } else {
+            setAccForm({
+                ...initialAccommodation,
+                ...req,
+                accountName,
+                accountId: req.accountId || '',
+                payments: savedPayments,
+                logs: req.logs || [],
+                segment: req.segment || '',
+            });
+        }
+        setSearchParams({
+            ...getSearchOnlyParams(searchParams),
+            subView: 'new_request',
+        });
+    }, [subView, searchParams?.editRequestId, requests, readOnlyOperational]);
+
+    const handleSaveRequest = async (formData: any, type: string) => {
+        if (readOnlyOperational) return;
+        setIsLoading(true);
+        try {
+            // Always recalculate financial metrics to ensure they match current form state (handle updates)
+            const normalizedType = normalizeRequestTypeKey(type);
+            const fin = normalizedType === 'event'
+                ? (Array.isArray(formData?.agenda) ? calculateAccFinancials(formData) : calculateEvtFinancials(formData))
+                : calculateAccFinancials(formData);
+            const resolvedTotalCost = (fin.grandTotalWithTax !== undefined ? fin.grandTotalWithTax : fin.totalCostWithTax) || 0;
+            const resolvedGrandTotalNoTax = Number(fin.grandTotalNoTax ?? fin.eventCostNoTax ?? 0) || 0;
+            const resolvedNights = fin.nights || calculateNights(formData.checkIn, formData.checkOut);
+            
+            const existingReq = formData.id ? requests.find((r: any) => r.id === formData.id) : null;
+            const isUpdate = !!existingReq;
+            let updatedLogs = [...(formData.logs || [])];
+
+            if (!isUpdate) {
+                updatedLogs.unshift({
+                    date: new Date().toISOString(),
+                    user: requestLogUser,
+                    action: 'Request Created',
+                    details: `Initial ${type} request created for ${formData.accountName || formData.account || 'Unknown'}.`
+                });
+            } else {
+                const changes: string[] = [];
+                const oldName = existingReq.requestName || '';
+                const newName = formData.requestName || '';
+                if (oldName !== newName) changes.push(`Name: ${oldName} -> ${newName}`);
+
+                const oldAcc = existingReq.account || '';
+                const newAcc = formData.accountName || formData.account || '';
+                if (oldAcc !== newAcc) changes.push(`Account: ${oldAcc} -> ${newAcc}`);
+
+                if (formData.checkIn !== existingReq.checkIn || formData.checkOut !== existingReq.checkOut) {
+                    changes.push(`Dates: ${existingReq.checkIn}/${existingReq.checkOut} -> ${formData.checkIn}/${formData.checkOut}`);
+                }
+                if (Number(formData.nights) !== Number(existingReq.nights)) {
+                    changes.push(`Nights: ${existingReq.nights} -> ${formData.nights}`);
+                }
+                if (Number(fin.totalRooms) !== Number(existingReq.totalRooms)) {
+                    changes.push(`Total Rooms: ${existingReq.totalRooms} -> ${fin.totalRooms}`);
+                }
+                if (formData.status !== existingReq.status) {
+                    changes.push(`Status: ${existingReq.status} -> ${formData.status}`);
+                }
+
+                // Robust Room Tracking (Handles additions/modifications/removals)
+                if (Array.isArray(formData.rooms)) {
+                    formData.rooms.forEach((room: any) => {
+                        const oldRoom = Array.isArray(existingReq.rooms) 
+                            ? existingReq.rooms.find((r: any) => r.type === room.type) 
+                            : null;
+                        
+                        if (!oldRoom) {
+                            changes.push(`Added Room Type: ${room.type} (${room.count} @ ${room.rate})`);
+                        } else {
+                            if (Number(room.rate) !== Number(oldRoom.rate)) {
+                                changes.push(`${room.type} Price: ${oldRoom.rate} -> ${room.rate}`);
+                            }
+                            if (Number(room.count) !== Number(oldRoom.count)) {
+                                changes.push(`${room.type} Count: ${oldRoom.count} -> ${room.count}`);
+                            }
+                        }
+                    });
+                    
+                    // Track removed rooms
+                    if (Array.isArray(existingReq.rooms)) {
+                        existingReq.rooms.forEach((oldRoom: any) => {
+                            const stillExists = formData.rooms.some((r: any) => r.type === oldRoom.type);
+                            if (!stillExists) {
+                                changes.push(`Removed Room Type: ${oldRoom.type}`);
+                            }
+                        });
+                    }
+                }
+
+                // Track total cost changes with precision normalization
+                const oldTotal = parseFloat(existingReq.totalCost?.toString().replace(/,/g, '') || '0');
+                if (resolvedTotalCost.toFixed(2) !== oldTotal.toFixed(2)) {
+                    changes.push(`Grand Total: ${oldTotal.toLocaleString()} -> ${resolvedTotalCost.toLocaleString()}`);
+                }
+
+                if (changes.length > 0) {
+                    updatedLogs.unshift({
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Modified Details',
+                        details: changes.join('\n')
+                    });
+                }
+            }
+
+            const resolvedAccountId = formData.accountId
+                || (formData.accommodation && formData.accommodation.accountId)
+                || '';
+            const resolvedSegment = String(
+                formData?.accommodation?.segment
+                ?? formData?.event?.segment
+                ?? formData?.segment
+                ?? ''
+            ).trim();
+            const paymentsForStatus = Array.isArray(formData.payments)
+                ? formData.payments
+                : Array.isArray(formData.accommodation?.payments)
+                    ? formData.accommodation.payments
+                    : [];
+            const paymentSum = paymentsForStatus.reduce((acc: number, p: any) => acc + Number(p?.amount || 0), 0);
+            const defaultPipelineStatus = normalizedType === 'event' ? 'Draft' : 'Inquiry';
+            const initialPipelineStatus =
+                String(formData.status || formData.accommodation?.status || defaultPipelineStatus).trim() ||
+                defaultPipelineStatus;
+            let resolvedStatus = initialPipelineStatus;
+            if (paymentSum > 0 && initialPipelineStatus === 'Inquiry') {
+                resolvedStatus = 'Tentative';
+                updatedLogs = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: 'Payment recorded while status was Inquiry — set to Tentative.',
+                    },
+                    ...updatedLogs,
+                ];
+            }
+            const payload = {
+                ...formData,
+                id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
+                requestName: formData.requestName || 'Unnamed Request',
+                account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
+                accountId: resolvedAccountId,
+                confirmationNo: formData.confirmationNo || 'N/A',
+                requestType: normalizedType === 'event_rooms'
+                    ? 'Event with Rooms'
+                    : normalizedType.charAt(0).toUpperCase() + normalizedType.slice(1),
+                status: resolvedStatus,
+                propertyId: activeProperty?.id || 'P-GLOBAL',
+                createdAt: formData.createdAt || new Date().toISOString(),
+                totalCost: resolvedTotalCost.toFixed(2),
+                grandTotalNoTax: resolvedGrandTotalNoTax,
+                nights: resolvedNights,
+                totalRooms: fin.totalRooms || 0,
+                adr: fin.adr || 0,
+                paidAmount: fin.paidAmount.toFixed(2),
+                payments: formData.payments || [],
+                logs: updatedLogs,
+                paymentStatus: fin.paymentStatus, // Unpaid, Deposit, Paid
+                segment: resolvedSegment,
+                ...(isUpdate ? {} : { createdByUserId: currentUser?.id }),
+            };
+
+            const url = apiUrl('/api/requests');
+            
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                await fetchRequests();
+                onAfterRequestsMutate?.();
+                if (embedded) {
+                    onEmbeddedComplete?.();
+                } else {
+                    setSearchParams({ subView: 'list' });
+                    setStep(1);
+                    setRequestType(null);
+                }
+            } else {
+                alert("Failed to save request. Status: " + res.status);
+            }
+        } catch (err) {
+            console.error("Error saving request:", err);
+            alert("Error saving request. Please check console.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // Reset when subView changes to list
+    useEffect(() => {
+        if (embedded) return;
+        if (subView !== 'new_request') {
+            setStep(1);
+            setRequestType(null);
+        }
+    }, [subView, embedded]);
+
+    const updateRequest = async (id: string, partialData: any) => {
+        setIsLoading(true);
+        try {
+            // Find existing request to perform a full-payload update (Backend might be overwrite-only)
+            const existing = requests.find(r => r.id === id);
+            if (!existing) {
+                console.warn("Attempted to update non-existent request:", id);
+                return;
+            }
+
+            const payload = { ...existing, ...partialData };
+            
+            const res = await fetch(apiUrl('/api/requests'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                await fetchRequests();
+                onAfterRequestsMutate?.();
+            } else {
+                alert("Failed to update. Status: " + res.status);
+            }
+        } catch (err) {
+            console.error("Error updating request:", err);
+            alert("Error updating request.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const renderActivities = (logs: any[]) => (
+        <div className="p-8 rounded-[2rem] border-2 space-y-6 animate-in slide-in-from-top-4 duration-500" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <Clock className="text-primary" size={18} />
+                    <h4 className="text-sm font-black uppercase tracking-widest opacity-60">Activities</h4>
+                </div>
+            </div>
+            <div className="space-y-4 text-left">
+                {(!logs || logs.length === 0) ? (
+                    <div className="text-center py-12 opacity-30 italic text-xs">
+                        No activities found for this request.
+                    </div>
+                ) : (
+                    logs.map((log: any, idx: number) => (
+                        <div key={idx} 
+                            onClick={() => log.details && setExpandedLog(expandedLog === idx ? null : idx)}
+                            className={`flex flex-col gap-2 p-4 rounded-2xl bg-white/5 border border-white/5 transition-all ${log.details ? 'cursor-pointer hover:bg-white/10' : ''}`}>
+                            <div className="flex gap-4 items-start">
+                                <span className="opacity-30 whitespace-nowrap pt-0.5 font-mono text-[9px]">
+                                    {new Date(log.date).toLocaleString()}
+                                </span>
+                                <div className="flex flex-col gap-1 flex-1">
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-bold text-primary text-[10px] uppercase tracking-wider">{log.user || 'System'}:</span>
+                                        {log.details && (
+                                            <span className="text-[9px] opacity-40 font-bold uppercase tracking-tighter">
+                                                {expandedLog === idx ? 'Click to hide' : 'Click for details'}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <span className="opacity-70 leading-relaxed text-[11px] font-medium">{log.action}</span>
+                                </div>
+                            </div>
+                            {expandedLog === idx && log.details && (
+                                <div className="mt-2 pt-3 border-t border-white/10 animate-in fade-in slide-in-from-top-1 duration-300">
+                                    <pre className="text-[10px] opacity-60 leading-relaxed font-mono whitespace-pre-wrap py-2 px-3 rounded-lg bg-black/20">
+                                        {log.details}
+                                    </pre>
+                                </div>
+                            )}
+                        </div>
+                    ))
+                )}
+            </div>
+        </div>
+    );
+
+    const deleteRequest = async (id: string) => {
+        if (readOnlyOperational) return;
+        setIsLoading(true);
+        try {
+            const res = await fetch(apiUrl(`/api/requests/${id}`), {
+                method: 'DELETE'
+            });
+            if (res.ok) {
+                await fetchRequests();
+                onAfterRequestsMutate?.();
+            } else {
+                alert("Failed to delete. Status: " + res.status);
+            }
+        } catch (err) {
+            console.error("Error deleting request:", err);
+            alert("Error deleting request.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // --- Helpers ---
+
+    /** Inclusive calendar span from earliest agenda start to latest agenda end (whole-event length). */
+    const agendaSpanInclusiveDays = (agenda: any[] = []) => {
+        if (!Array.isArray(agenda) || agenda.length === 0) return 0;
+        let minD = '';
+        let maxD = '';
+        for (const item of agenda) {
+            const s = String(item?.startDate || '').trim().slice(0, 10);
+            const e = String(item?.endDate || item?.startDate || '').trim().slice(0, 10);
+            if (!s) continue;
+            if (!minD || s < minD) minD = s;
+            const end = e || s;
+            if (!maxD || end > maxD) maxD = end;
+        }
+        if (!minD || !maxD) return 0;
+        return inclusiveCalendarDays(minD, maxD);
+    };
+
+    const calculateAccFinancials = (data?: any) =>
+        calculateAccFinancialsForRequest(data ?? accForm, taxesList, requestType);
+
+    const calculateEvtFinancials = (data?: any) => {
+        const form = data || evtForm;
+        const eventCostNoTax = (form.agenda || []).reduce((acc: number, item: any) =>
+            acc + (Number(item.rate) * Number(item.pax)) + Number(item.rental), 0);
+        
+        let eventTaxMultiplier = 0;
+        taxesList.forEach(tax => {
+            const rate = Number(tax.rate) / 100;
+            if (tax.scope?.events || tax.scope?.foodAndBeverage) eventTaxMultiplier += rate;
+        });
+
+        const totalCostWithTax = eventCostNoTax * (1 + eventTaxMultiplier);
+        const paidAmountVal = (form.payments || []).reduce((acc: number, p: any) => acc + Number(p.amount), 0);
+
+        let paymentStatus = 'Unpaid';
+        if (totalCostWithTax > 0) {
+            if (paidAmountVal >= totalCostWithTax) paymentStatus = 'Paid';
+            else if (paidAmountVal > 0) paymentStatus = 'Deposit';
+        }
+
+        return {
+            eventCostNoTax,
+            eventCostWithTax: totalCostWithTax,
+            totalCostWithTax,
+            grandTotalWithTax: totalCostWithTax,
+            grandTotalNoTax: eventCostNoTax,
+            revenue: eventCostNoTax,
+            totalPax: (form.agenda || []).reduce((acc: number, item: any) => acc + Number(item.pax), 0),
+            totalEventDays: calculateEventAgendaDays(form.agenda || []),
+            nights: 0,
+            totalRooms: 0,
+            adr: 0,
+            paidAmount: paidAmountVal,
+            paymentStatus
+        };
+    };
+
+    // --- Render Components ---
+
+    const renderTypeSelection = () => (
+        <div className="flex flex-col items-center justify-center h-full p-8 animate-in zoom-in duration-300">
+            <h2 className="text-2xl font-bold mb-8" style={{ color: colors.textMain }}>Select Request Type</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl w-full">
+                {[
+                    { id: 'accommodation', label: 'Accommodation', icon: BedDouble, desc: 'Room bookings & transfers' },
+                    { id: 'event', label: 'Event Only', icon: Music, desc: 'Venues, catering & setups' },
+                    { id: 'event_rooms', label: 'Event with Rooms', icon: Box, desc: 'Combined accommodation & event' },
+                    { id: 'series', label: 'Series Group', icon: Users, desc: 'Recurring groups & allocations' }
+                ].map((type) => (
+                    <button
+                        key={type.id}
+                        onClick={() => {
+                            setRequestType(type.id);
+                            setStep(2);
+                            // Ensure rooms have series fields if needed
+                            if (type.id === 'series') {
+                                setAccForm(prev => ({
+                                    ...prev,
+                                    rooms: prev.rooms.map(r => ({
+                                        ...r as any,
+                                        arrival: (r as any).arrival || prev.checkIn || '',
+                                        departure: (r as any).departure || prev.checkOut || ''
+                                    }))
+                                }));
+                            }
+                        }}
+                        className="p-6 rounded-xl border flex flex-col items-center gap-4 hover:scale-[1.05] hover:shadow-xl hover:-translate-y-1 transition-all group text-center animate-in fade-in zoom-in duration-300"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <div className="w-16 h-16 rounded-full flex items-center justify-center bg-white/5 group-hover:bg-primary/20 transition-colors"
+                            style={{ color: colors.primary }}>
+                            <type.icon size={32} />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-lg" style={{ color: colors.textMain }}>{type.label}</h3>
+                            <p className="text-sm opacity-70" style={{ color: colors.textMuted }}>{type.desc}</p>
+                        </div>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+
+    const renderFormLayout = ({ title, icon: Icon, children, onBack, onSave }: any) => (
+        <div className="h-full flex flex-col relative" style={{ backgroundColor: colors.bg }}>
+            <div className="flex-1 overflow-y-auto p-6">
+                <div className="max-w-4xl mx-auto space-y-6 pb-12">
+                    {/* Header */}
+                    <div className="flex items-center justify-between p-4 rounded-lg border bg-current/5" style={{ borderColor: colors.border }}>
+                        <h2 className="text-xl font-bold flex items-center gap-2" style={{ color: colors.textMain }}>
+                            <Icon /> {title}
+                        </h2>
+                        <span className="font-mono text-sm opacity-50" style={{ color: colors.textMuted }}>REQ-DRAFT</span>
+                    </div>
+
+                    {children}
+
+                    {/* Footer Buttons integrated into form */}
+                    <div className="flex items-center justify-end gap-3 pt-8 mt-8 border-t" style={{ borderColor: colors.border }}>
+                        <button type="button" onClick={onBack} className="px-6 py-3 rounded-xl border font-bold text-xs uppercase tracking-widest hover:bg-white/5 transition-all"
+                            style={{ borderColor: colors.border, color: colors.textMain }}>Back</button>
+                        {!readOnlyOperational && (
+                            <button type="button" onClick={onSave} className="px-10 py-3 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl flex items-center gap-2 hover:brightness-110 hover:-translate-y-0.5 transition-all active:scale-95"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}>
+                                <Save size={16} /> Save Request
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+
+    const renderAccommodationForm = () => {
+        const fin = calculateAccFinancials();
+        const eventAgendaSpanDays = agendaSpanInclusiveDays(accForm.agenda || []);
+        const eventDayDenomForm = Math.max(1, fin.totalEventDays || (accForm.checkIn && accForm.checkOut ? inclusiveCalendarDays(accForm.checkIn, accForm.checkOut) : 1));
+        const eventCostPerDayForm = fin.eventCostWithTax / eventDayDenomForm;
+        const remainingBalanceForm = Math.max(0, (fin.grandTotalWithTax || 0) - (fin.paidAmount || 0));
+
+        const addRoom = () => {
+            const newRoom = requestType === 'series'
+                ? { id: Date.now(), arrival: accForm.checkIn || '', departure: accForm.checkOut || '', type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
+                : { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 };
+
+            setAccForm({
+                ...accForm,
+                rooms: [...accForm.rooms, newRoom]
+            });
+        };
+
+        const deleteRoom = (id: number) => {
+            setAccForm({
+                ...accForm,
+                rooms: accForm.rooms.filter(r => r.id !== id)
+            });
+        };
+
+        const updateRoom = (id: number, field: string, value: any) => {
+            setAccForm({
+                ...accForm,
+                rooms: accForm.rooms.map(r => r.id === id ? { ...r, [field]: value } : r)
+            });
+        };
+
+        const addTrip = () => {
+            setAccForm({
+                ...accForm,
+                transportation: [...accForm.transportation, { id: Date.now(), type: 'Sedan', pax: 1, costPerWay: 0, timing: '', notes: '' }]
+            });
+        };
+
+        const deleteTrip = (id: number) => {
+            setAccForm({
+                ...accForm,
+                transportation: accForm.transportation.filter(t => t.id !== id)
+            });
+        };
+
+        const updateTrip = (id: number, field: string, value: any) => {
+            setAccForm({
+                ...accForm,
+                transportation: accForm.transportation.map(t => t.id === id ? { ...t, [field]: value } : t)
+            });
+        };
+
+        const addAgendaRow = () => {
+            const defPkg = defaultEventPackageName(eventPackagesForProperty);
+            setAccForm({
+                ...accForm,
+                agenda: [
+                    ...(accForm.agenda || []),
+                    {
+                        id: Date.now(),
+                        startDate: '',
+                        endDate: '',
+                        venue: defaultVenueName(),
+                        shape: 'Theater',
+                        startTime: '',
+                        endTime: '',
+                        coffee1: '',
+                        coffee2: '',
+                        lunchTime: '',
+                        dinnerTime: '',
+                        rate: 0,
+                        pax: 0,
+                        rental: 0,
+                        package: defPkg,
+                        notes: '',
+                    },
+                ],
+            });
+        };
+
+        const deleteAgendaRow = (id: number) => {
+            setAccForm({
+                ...accForm,
+                agenda: (accForm.agenda || []).filter((item: any) => item.id !== id)
+            });
+        };
+
+        const updateAgendaRow = (id: number, field: string, value: any) => {
+            setAccForm({
+                ...accForm,
+                agenda: (accForm.agenda || []).map((item: any) => item.id === id ? { ...item, [field]: value } : item)
+            });
+        };
+
+        const handlePostPayment = () => {
+            const amount = Number(newPayment.amount);
+            if (isNaN(amount) || amount === 0) return;
+
+            const wasInquiry = String(accForm.status || '').trim() === 'Inquiry';
+            const autoLog = wasInquiry
+                ? [
+                      {
+                          date: new Date().toISOString(),
+                          user: requestLogUser,
+                          action: 'Status auto-updated',
+                          details: 'Payment posted while status was Inquiry — set to Tentative.',
+                      },
+                  ]
+                : [];
+
+            setAccForm({
+                ...accForm,
+                payments: [...accForm.payments, { ...newPayment, id: Date.now(), amount }],
+                status: wasInquiry ? 'Tentative' : accForm.status,
+                logs: [
+                    ...accForm.logs,
+                    ...autoLog,
+                    { date: new Date().toISOString(), user: requestLogUser, action: `Posted payment of ${amount} via ${newPayment.method}` },
+                ],
+            });
+            setShowPaymentModal(false);
+            setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+        };
+
+        const offsetPayment = (payment: any) => {
+            const amt = Number(payment.amount);
+            if (!(amt > 0)) return;
+            const netPaid = sumPaymentAmounts(accForm.payments);
+            if (netPaid < amt) {
+                window.alert('There is no remaining paid balance to offset for this amount.');
+                return;
+            }
+            setAccForm({
+                ...accForm,
+                payments: [
+                    ...accForm.payments,
+                    {
+                        ...payment,
+                        id: Date.now(),
+                        amount: -amt,
+                        note: `Offset for payment #${payment.id}`,
+                    },
+                ],
+                logs: [
+                    ...accForm.logs,
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: `Offset payment of ${amt}`,
+                    },
+                ],
+            });
+        };
+
+        const removePaymentLine = (payment: any) => {
+            if (!payment?.id) return;
+            if (!window.confirm('Remove this payment line from the request?')) return;
+            setAccForm({
+                ...accForm,
+                payments: accForm.payments.filter((p: any) => p.id !== payment.id),
+                logs: [
+                    ...accForm.logs,
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Payment line removed',
+                        details: `${formatMoney(Number(payment.amount || 0), 0)} — ${payment.method || ''} — ${payment.note || ''}`.trim(),
+                    },
+                ],
+            });
+        };
+
+        const getFormTitle = () => {
+            if (requestType === 'event') return 'Event Request';
+            if (requestType === 'event_rooms') return 'Event with Rooms';
+            if (requestType === 'series') return 'Series Group Request';
+            return 'Accommodation Request';
+        };
+
+        const getFormIcon = () => {
+            if (requestType === 'event') return Music;
+            if (requestType === 'event_rooms') return Box;
+            return BedDouble;
+        };
+
+        return renderFormLayout({ title: getFormTitle(), icon: getFormIcon(),
+            onBack: () => { setStep(1); setRequestType(null); },
+            onSave: () => {
+                handleSaveRequest(accForm, requestType || 'accommodation');
+            },
+            children: (
+                <>
+
+                {/* Section 1: Basic Information */}
+                <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                        <User size={16} /> Section 1: Basic Information
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <div>
+                            <label className="text-xs font-bold opacity-50 block mb-2" style={{ color: colors.textMain }}>REQUEST NAME</label>
+                            <input
+                                type="text"
+                                value={accForm.requestName}
+                                onChange={(e) => setAccForm({ ...accForm, requestName: e.target.value })}
+                                className="w-full px-4 py-2.5 rounded-xl border opacity-50 focus:opacity-100 transition-all font-bold"
+                                style={{ backgroundColor: 'transparent', borderColor: colors.border, color: colors.textMain }}
+                                placeholder="e.g. VIP Delegation"
+                            />
+                        </div>
+                        <div className="relative">
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Account Name</label>
+                            <div className="flex gap-2">
+                                <div className="relative flex-1">
+                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
+                                    <input
+                                        className="w-full pl-10 pr-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all"
+                                        placeholder="Search Account..."
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        value={accountSearch || accForm.accountName}
+                                        onChange={(e) => {
+                                            setAccountSearch(e.target.value);
+                                            setShowAccountDropdown(true);
+                                        }}
+                                        onFocus={() => setShowAccountDropdown(true)}
+                                    />
+                                    {showAccountDropdown && (
+                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto"
+                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                            {accounts.filter((a: any) => String(a.name || '').toLowerCase().includes((accountSearch || '').toLowerCase())).map((acc: any) => (
+                                                <button
+                                                    key={acc.id}
+                                                    type="button"
+                                                    className="w-full px-4 py-2 text-left hover:bg-white/5 text-sm transition-colors"
+                                                    onClick={() => {
+                                                        setAccForm({ ...accForm, accountName: acc.name, accountId: acc.id });
+                                                        setAccountSearch(acc.name);
+                                                        setShowAccountDropdown(false);
+                                                    }}
+                                                >
+                                                    {acc.name} <span className="text-[10px] opacity-40 ml-2">({acc.type})</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAddAccountModal(true)}
+                                    className="p-2 rounded bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg"
+                                    title="Create New Account"
+                                >
+                                    <Plus size={20} />
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Received Date</label>
+                            <input type="date" value={accForm.receivedDate} onChange={e => setAccForm({ ...accForm, receivedDate: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Confirmation Number</label>
+                            <input type="text" value={accForm.confirmationNo} onChange={e => setAccForm({ ...accForm, confirmationNo: e.target.value })}
+                                placeholder="Enter Confirmation #"
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Segment</label>
+                            <select
+                                value={accForm.segment || ''}
+                                onChange={(e) => setAccForm({ ...accForm, segment: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <option value="">Select segment…</option>
+                                {effectiveSegmentOptions.map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Request status</label>
+                            <select
+                                value={accForm.status || 'Inquiry'}
+                                onChange={(e) => setAccForm({ ...accForm, status: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                {REQUEST_FORM_STATUS_OPTIONS.map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Section 2: Stay and Deadline Date (standard for all request types) */}
+                <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                        <Calendar size={16} /> Section 2: Stay & Deadlines
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {requestType === 'event' ? (
+                            <div className="md:col-span-3">
+                                <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
+                                    Total Event Days (from Section 5: Event Agenda)
+                                </label>
+                                <div className="px-3 py-2 rounded border bg-black/10 font-bold flex items-center gap-2 max-w-md" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                    <Moon size={14} className="opacity-40" /> {eventAgendaSpanDays || 0} Day(s)
+                                </div>
+                                <p className="text-[10px] mt-2 opacity-50" style={{ color: colors.textMuted }}>Set start and end dates on each agenda row; span is from the earliest start to the latest end.</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div>
+                                    <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
+                                        {requestType === 'series' ? 'Series Start' : 'Check-in Date'}
+                                    </label>
+                                    <input type="date" value={accForm.checkIn} onChange={e => setAccForm({ ...accForm, checkIn: e.target.value })}
+                                        className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
+                                        {requestType === 'series' ? 'Series End' : 'Check-out Date'}
+                                    </label>
+                                    <input type="date" value={accForm.checkOut} onChange={e => setAccForm({ ...accForm, checkOut: e.target.value })}
+                                        className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
+                                        Total Nights
+                                    </label>
+                                    <div className="px-3 py-2 rounded border bg-black/10 font-bold flex items-center gap-2" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        <Moon size={14} className="opacity-40" /> {fin.nights} Night(s)
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Offer Acceptance Deadline</label>
+                            <input type="date" value={accForm.offerDeadline} onChange={e => setAccForm({ ...accForm, offerDeadline: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Deposit Deadline</label>
+                            <input type="date" value={accForm.depositDeadline} onChange={e => setAccForm({ ...accForm, depositDeadline: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Full Payment Deadline</label>
+                            <input type="date" value={accForm.paymentDeadline} onChange={e => setAccForm({ ...accForm, paymentDeadline: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Section 3: Request Details - Hide for Event Only */}
+                {requestType !== 'event' && (
+                    <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="flex justify-between items-center">
+                            <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                                <BedDouble size={16} /> Section 3: {requestType === 'series' ? 'Group Details' : 'Room Request Details'}
+                            </h3>
+                            <div className="flex items-center gap-4">
+                                {requestType !== 'series' && (
+                                    <div className="flex items-center gap-2">
+                                        <label className="text-xs font-bold uppercase opacity-50">Meal Plan:</label>
+                                        <select value={accForm.mealPlan} onChange={e => setAccForm({ ...accForm, mealPlan: e.target.value })}
+                                            className="px-2 py-1 text-xs rounded border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                            {mealPlansForProperty.map((m) => (
+                                                <option key={m.id} value={m.code}>{m.name} ({m.code})</option>
+                                            ))}
+                                            {accForm.mealPlan &&
+                                            !mealPlansForProperty.some((m) => m.code === accForm.mealPlan) ? (
+                                                <option value={accForm.mealPlan}>{accForm.mealPlan} (saved)</option>
+                                            ) : null}
+                                        </select>
+                                    </div>
+                                )}
+                                <button onClick={addRoom}
+                                    className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                                    <Plus size={16} /> {requestType === 'series' ? 'Add Group' : 'Add Room'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3">
+                            {requestType === 'series' ? (
+                                <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
+                                    <div className="col-span-2">Arrival</div>
+                                    <div className="col-span-2">Departure</div>
+                                    <div className="col-span-1 text-center">Nts</div>
+                                    <div className="col-span-2">Room Type</div>
+                                    <div className="col-span-2">Occupancy</div>
+                                    <div className="col-span-1 text-center">Qty</div>
+                                    <div className="col-span-1 text-right">Rate</div>
+                                    <div className="col-span-1"></div>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
+                                    <div className="col-span-3">Room Type</div>
+                                    <div className="col-span-3">Occupancy</div>
+                                    <div className="col-span-2 text-center">Qty</div>
+                                    <div className="col-span-3 text-right">Rate / Night</div>
+                                    <div className="col-span-1"></div>
+                                </div>
+                            )}
+
+                            {accForm.rooms.map((room) => (
+                                <div key={room.id} className="grid grid-cols-12 gap-3 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
+                                    {requestType === 'series' && (
+                                        <>
+                                            <div className="col-span-2">
+                                                <input type="date" className="w-full px-2 py-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    value={(room as any).arrival} onChange={e => updateRoom(room.id, 'arrival', e.target.value)} />
+                                            </div>
+                                            <div className="col-span-2">
+                                                <input type="date" className="w-full px-2 py-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    value={(room as any).departure} onChange={e => updateRoom(room.id, 'departure', e.target.value)} />
+                                            </div>
+                                            <div className="col-span-1 text-center font-bold text-xs">
+                                                {calculateNights((room as any).arrival, (room as any).departure)}
+                                            </div>
+                                        </>
+                                    )}
+                                    <div className={requestType === 'series' ? "col-span-2" : "col-span-3"}>
+                                        <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                            value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
+                                            {roomTypeSelectOptions.map((name) => (
+                                                <option key={name} value={name}>{name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className={requestType === 'series' ? "col-span-2" : "col-span-3"}>
+                                        <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                            value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
+                                            <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
+                                        </select>
+                                    </div>
+                                    <div className={requestType === 'series' ? "col-span-1" : "col-span-2"}>
+                                        <input type="number" className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
+                                            value={room.count} onChange={e => updateRoom(room.id, 'count', Number(e.target.value))} />
+                                    </div>
+                                    <div className={requestType === 'series' ? "col-span-1" : "col-span-3"}>
+                                        <div className="relative">
+                                            <input type="number" className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono"
+                                                value={room.rate} onChange={e => updateRoom(room.id, 'rate', Number(e.target.value))} />
+                                        </div>
+                                    </div>
+                                    <div className="col-span-1 flex justify-center">
+                                        <button onClick={() => deleteRoom(room.id)} className="p-2 text-red-500 hover:bg-red-500/10 rounded-full transition-colors opacity-0 group-hover:opacity-100">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Section 4: Transportation Arrangements */}
+                <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="flex justify-between items-center">
+                        <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                            <Car size={16} /> Section 4: Transportation
+                        </h3>
+                        <button onClick={addTrip}
+                            className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                            <Plus size={14} /> Add Trip
+                        </button>
+                    </div>
+
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
+                            <div className="col-span-3">Vehicle Type</div>
+                            <div className="col-span-2 text-center">Pax</div>
+                            <div className="col-span-2 text-right">Cost / Way</div>
+                            <div className="col-span-2">Timing</div>
+                            <div className="col-span-2">Notes</div>
+                            <div className="col-span-1"></div>
+                        </div>
+                        {accForm.transportation.map((trip) => (
+                            <div key={trip.id} className="grid grid-cols-12 gap-4 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
+                                <div className="col-span-3">
+                                    <select className="w-full p-2 text-sm rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                        value={trip.type} onChange={e => updateTrip(trip.id, 'type', e.target.value)}>
+                                        <option>Sedan</option><option>SUV</option><option>Luxury</option><option>Mini Bus</option><option>Coach</option>
+                                    </select>
+                                </div>
+                                <div className="col-span-2 text-center">
+                                    <input type="number" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
+                                        value={trip.pax} onChange={e => updateTrip(trip.id, 'pax', Number(e.target.value))} />
+                                </div>
+                                <div className="col-span-2">
+                                    <input type="number" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono"
+                                        value={trip.costPerWay} onChange={e => updateTrip(trip.id, 'costPerWay', Number(e.target.value))} />
+                                </div>
+                                <div className="col-span-2">
+                                    <input type="text" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent focus:border-primary outline-none" placeholder="e.g. 14:00"
+                                        value={trip.timing} onChange={e => updateTrip(trip.id, 'timing', e.target.value)} />
+                                </div>
+                                <div className="col-span-2">
+                                    <input type="text" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent focus:border-primary outline-none" placeholder="..."
+                                        value={trip.notes} onChange={e => updateTrip(trip.id, 'notes', e.target.value)} />
+                                </div>
+                                <div className="col-span-1 flex justify-center">
+                                    <button onClick={() => deleteTrip(trip.id)} className="p-2 text-red-500 hover:bg-red-500/10 rounded-full transition-colors opacity-0 group-hover:opacity-100">
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Additional Section for Event/Series flows */}
+                {(requestType === 'event' || requestType === 'event_rooms' || requestType === 'series') && (
+                    <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="flex justify-between items-center">
+                            <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                                <Users size={16} /> Section 5: Event Agenda
+                            </h3>
+                            <button onClick={addAgendaRow}
+                                className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                                <Plus size={16} /> Add Agenda Row
+                            </button>
+                        </div>
+
+                        <div className="space-y-4">
+                            {(accForm.agenda || []).map((row: any) => (
+                                <div key={row.id} className="p-6 rounded-2xl bg-black/20 border border-white/5 space-y-6 relative group overflow-hidden">
+                                    <button onClick={() => deleteAgendaRow(row.id)} className="absolute top-4 right-4 p-2 text-red-500 hover:bg-red-500/10 rounded-full transition-all">
+                                        <Trash2 size={16} />
+                                    </button>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Start Date</label>
+                                            <input type="date" value={row.startDate} onChange={e => updateAgendaRow(row.id, 'startDate', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">End Date</label>
+                                            <input type="date" value={row.endDate} onChange={e => updateAgendaRow(row.id, 'endDate', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Meeting Room</label>
+                                            <select value={row.venue} onChange={e => updateAgendaRow(row.id, 'venue', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Setup Style (Shape)</label>
+                                            <select value={row.shape} onChange={e => updateAgendaRow(row.id, 'shape', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                <option>Theater</option><option>Classroom</option><option>U-Shape</option><option>Banquet</option><option>Boardroom</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Start Time</label>
+                                            <input type="time" value={row.startTime} onChange={e => updateAgendaRow(row.id, 'startTime', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">End Time</label>
+                                            <input type="time" value={row.endTime} onChange={e => updateAgendaRow(row.id, 'endTime', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+                                        <div className="relative">
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Rate / Person</label>
+                                            <input type="number" value={row.rate} onChange={e => updateAgendaRow(row.id, 'rate', Number(e.target.value))}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold text-emerald-500" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Total Persons (Pax)</label>
+                                            <input type="number" value={row.pax} onChange={e => updateAgendaRow(row.id, 'pax', Number(e.target.value))}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Rental Fees</label>
+                                            <input type="number" value={row.rental} onChange={e => updateAgendaRow(row.id, 'rental', Number(e.target.value))}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold text-amber-500" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Package</label>
+                                            <select value={row.package} onChange={e => updateAgendaRow(row.id, 'package', e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                {eventPackagesForProperty.map((p) => (
+                                                    <option key={p.id} value={p.name}>{p.name} ({p.code})</option>
+                                                ))}
+                                                {row.package && !eventPackagesForProperty.some((p) => p.name === row.package) ? (
+                                                    <option value={row.package}>{row.package} (saved)</option>
+                                                ) : null}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {getAgendaTimingSlotsForPackageName(String(row.package || ''), eventPackagesForProperty).length > 0 ? (
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                                            {getAgendaTimingSlotsForPackageName(String(row.package || ''), eventPackagesForProperty).map((slot) => (
+                                                <div key={slot.field}>
+                                                    <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">{slot.label}</label>
+                                                    <input
+                                                        type="time"
+                                                        value={String(row[slot.field] ?? '')}
+                                                        onChange={(e) => updateAgendaRow(row.id, slot.field, e.target.value)}
+                                                        className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold"
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+
+                                    <div>
+                                        <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Row Notes</label>
+                                        <textarea value={row.notes} onChange={e => updateAgendaRow(row.id, 'notes', e.target.value)}
+                                            placeholder="Specific setup requirements or catering notes for this session..."
+                                            className="w-full px-5 py-3 rounded-2xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm h-20 resize-none font-medium" />
+                                    </div>
+                                </div>
+                            ))}
+
+                            {(!accForm.agenda || accForm.agenda.length === 0) && (
+                                <div className="py-12 border-2 border-dashed border-white/5 rounded-3xl text-center opacity-30 italic text-sm">
+                                    No agenda rows added yet. Click "Add Agenda Row" to begin.
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Section 5: Documents & Note */}
+                <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
+                        <FileText size={16} /> Section 5: Documents & Notes
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                            {[
+                                { id: 'inv1', label: 'Invoice 1 Attached' },
+                                { id: 'inv2', label: 'Invoice 2 Attached' },
+                                { id: 'inv3', label: 'Invoice 3 Attached' },
+                                { id: 'agreement', label: 'Agreement Attached' }
+                            ].map(doc => (
+                                <div key={doc.id} className="flex flex-col gap-1.5">
+                                    <label className="text-[10px] font-bold uppercase opacity-50 px-1">{doc.label}</label>
+                                    <div className="group relative">
+                                        <input type="file" className="hidden" id={`file-${doc.id}`} />
+                                        <label htmlFor={`file-${doc.id}`}
+                                            className="w-full px-4 py-2 rounded-lg border border-dashed border-white/20 bg-black/5 hover:bg-white/5 hover:border-primary/50 transition-all flex items-center justify-center gap-2 cursor-pointer text-xs font-medium">
+                                            <Box size={14} className="opacity-40" /> Choose File / Drag here
+                                        </label>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex flex-col h-full">
+                            <label className="text-[10px] font-bold uppercase opacity-50 px-1 mb-1.5">Additional Note</label>
+                            <textarea
+                                className="flex-1 w-full p-4 rounded-xl border bg-black/20 outline-none focus:border-primary transition-all resize-none text-sm"
+                                placeholder="Type any special requests or notes here..."
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                value={accForm.note}
+                                onChange={e => setAccForm({ ...accForm, note: e.target.value })}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Section 6: Statistics & Payments */}
+                <div className="p-8 rounded-2xl border-2 space-y-8 relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}>
+                    <div className="absolute top-0 right-0 p-8 opacity-5">
+                        <Calculator size={150} color={colors.primary} />
+                    </div>
+
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <h3 className="text-xl font-bold flex items-center gap-2 mb-1" style={{ color: colors.textMain }}>
+                                <Calculator size={20} className="text-primary" /> Section 6: Statistics & Financials
+                            </h3>
+                            <p className="text-xs opacity-50" style={{ color: colors.textMuted }}>Automated calculations based on request details</p>
+                        </div>
+                        <div className="flex flex-col items-end">
+                            <span className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-1">Current Status</span>
+                            <div className="px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2"
+                                style={{
+                                    backgroundColor: fin.paymentStatus === 'Paid' ? colors.green + '20' : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow + '20' : colors.red + '20',
+                                    borderColor: fin.paymentStatus === 'Paid' ? colors.green : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow : colors.red,
+                                    color: fin.paymentStatus === 'Paid' ? colors.green : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow : colors.red
+                                }}>
+                                <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'currentColor' }} />
+                                {fin.paymentStatus === 'Deposit' ? 'Partial / deposit' : fin.paymentStatus}
+                            </div>
+                        </div>
+                    </div>
+
+                    {requestType === 'event_rooms' ? (
+                        <>
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                <div className="space-y-4 p-5 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
+                                    <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Accommodation</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">ADR (Avg Daily Rate)</p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(fin.adr)}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Room Nights</p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalRoomNights}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Rooms</p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalRooms}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Rooms (Incl. Tax)</p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="space-y-4 p-5 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
+                                    <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Event</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">DDR (Per Person)</p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(fin.ddr)}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Cost Per Day (Incl. Tax)</p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(eventCostPerDayForm)}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Days</p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalEventDays || eventDayDenomForm}</p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Attendees</p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalEventPax}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                    <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Paid Amount</p>
+                                    <p className="text-2xl font-mono font-bold" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
+                                </div>
+                                <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                    <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Remaining Balance</p>
+                                    <p className="text-2xl font-mono font-bold" style={{ color: remainingBalanceForm > 0 ? '#f87171' : colors.green }}>
+                                        {formatMoney(remainingBalanceForm)}
+                                    </p>
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+                            <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                    {requestType === 'event' ? 'DDR (Daily Delegate Rate)' : 'ADR (Avg Daily Rate)'}
+                                </p>
+                                <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>
+                                    {formatMoney(requestType === 'event' ? fin.ddr : fin.adr)}
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                    {requestType === 'event' ? 'Total Persons' : 'Total Room Nights'}
+                                </p>
+                                <p className="text-2xl font-bold" style={{ color: colors.textMain }}>
+                                    {requestType === 'event' ? fin.totalEventPax : fin.totalRoomNights}
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                    {requestType === 'event' ? 'Total Days' : 'Total Rooms'}
+                                </p>
+                                <p className="text-2xl font-bold" style={{ color: colors.textMain }}>
+                                    {requestType === 'event' ? fin.totalEventDays : fin.totalRooms}
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Paid Amount</p>
+                                <p className="text-2xl font-mono font-bold" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4 border-t border-white/5">
+                        <div className="space-y-4">
+                            <h4 className="text-xs font-black uppercase opacity-30 tracking-widest pl-2">Cost Breakdown</h4>
+                            {requestType === 'event_rooms' ? (
+                                <div className="space-y-6">
+                                    <div className="space-y-3">
+                                        <h5 className="text-[10px] font-black uppercase opacity-40 tracking-wider">Accommodation</h5>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Rooms Cost (Before Tax)</span>
+                                            <span className="font-mono font-bold">{formatMoney(fin.roomsCostNoTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Rooms Cost (Incl. Tax)</span>
+                                            <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Transportation (Before Tax)</span>
+                                            <span className="font-mono font-bold">{formatMoney(fin.transCostNoTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Transportation (Incl. Tax)</span>
+                                            <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.transCostWithTax)}</span>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <h5 className="text-[10px] font-black uppercase opacity-40 tracking-wider">Event</h5>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Event Cost (Before Tax)</span>
+                                            <span className="font-mono font-bold">{formatMoney(fin.eventCostNoTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Event Cost (Incl. Tax)</span>
+                                            <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.eventCostWithTax)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                            <div className="space-y-3">
+                                {requestType !== 'event' && (
+                                    <>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Rooms Cost (Before Tax)</span>
+                                            <span className="font-mono font-bold">{formatMoney(fin.roomsCostNoTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                            <span className="text-sm opacity-60">Rooms Cost (Incl. 15% Tax)</span>
+                                            <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</span>
+                                        </div>
+                                    </>
+                                )}
+                                <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                    <span className="text-sm opacity-60">Transportation (Before Tax)</span>
+                                    <span className="font-mono font-bold">{formatMoney(fin.transCostNoTax)}</span>
+                                </div>
+                                <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                    <span className="text-sm opacity-60">Transportation (Incl. 15% Tax)</span>
+                                    <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.transCostWithTax)}</span>
+                                </div>
+                                <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                    <span className="text-sm opacity-60">Event Cost (Before Tax)</span>
+                                    <span className="font-mono font-bold">{formatMoney(fin.eventCostNoTax)}</span>
+                                </div>
+                                <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                    <span className="text-sm opacity-60">Event Cost (Incl. 15% Tax)</span>
+                                    <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.eventCostWithTax)}</span>
+                                </div>
+                            </div>
+                            )}
+                        </div>
+
+                        <div className="flex flex-col justify-end gap-6">
+                            <div className="p-6 rounded-2xl bg-primary/5 border border-primary/20 flex justify-between items-center">
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-1">Grand Total Amount (Before Tax)</p>
+                                    <p className="text-2xl font-mono font-bold opacity-60">{formatMoney(fin.grandTotalNoTax)}</p>
+                                </div>
+                            </div>
+                            <div className="p-6 rounded-2xl bg-primary/10 border-2 border-primary/30 flex justify-between items-center shadow-xl shadow-primary/5">
+                                <div>
+                                    <p className="text-xs font-black uppercase tracking-widest text-primary mb-1">Grand Total Amount (Including Tax)</p>
+                                    <p className="text-4xl font-mono font-black" style={{ color: colors.textMain }}>{formatMoney(fin.grandTotalWithTax)}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Payments record */}
+                    <div className="pt-8 border-t border-white/5 space-y-4">
+                        <div className="flex justify-between items-center">
+                            <h4 className="text-xs font-black uppercase opacity-30 tracking-widest pl-2">Payment Records</h4>
+                            <button onClick={() => {
+                                setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                                setPaymentModalSource('form');
+                                setShowPaymentModal(true);
+                            }}
+                                className="px-4 py-2 rounded-xl bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-xs font-bold flex items-center gap-2 hover:bg-emerald-500/20 hover:scale-105 transition-all active:scale-95 shadow-lg shadow-emerald-500/10">
+                                <Plus size={16} /> Add Deposit
+                            </button>
+                        </div>
+                        <div className="bg-black/10 rounded-xl overflow-hidden border border-white/5">
+                            <table className="w-full text-xs">
+                                <thead>
+                                    <tr className="bg-white/5 text-[10px] font-black uppercase tracking-widest text-white/30">
+                                        <th className="px-4 py-3 text-left">Date</th>
+                                        <th className="px-4 py-3 text-left">Method</th>
+                                        <th className="px-4 py-3 text-left">Notes</th>
+                                        <th className="px-4 py-3 text-right">Amount</th>
+                                        <th className="px-4 py-3 text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {accForm.payments.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={5} className="px-4 py-8 text-center opacity-20 italic">No payments recorded yet.</td>
+                                        </tr>
+                                    ) : (
+                                        accForm.payments.map((p, idx) => (
+                                            <tr key={p.id ?? `pay-${idx}`} className="border-t border-white/5 hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-3 opacity-60">{p.date}</td>
+                                                <td className="px-4 py-3 font-bold">{p.method}</td>
+                                                <td className="px-4 py-3 opacity-60">{p.note || '-'}</td>
+                                                <td className={`px-4 py-3 text-right font-mono font-bold ${p.amount < 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                    {formatMoney(p.amount, 0)}
+                                                </td>
+                                                <td className="px-4 py-3 text-center">
+                                                    <div className="flex items-center justify-center gap-1">
+                                                        {p.amount > 0 && (
+                                                            <button type="button" onClick={() => offsetPayment(p)} className="p-1.5 hover:bg-red-500/10 text-red-400 rounded-md transition-all group relative" title="Offset payment">
+                                                                <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-500" />
+                                                            </button>
+                                                        )}
+                                                        {canDeletePayments && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removePaymentLine(p)}
+                                                                className="p-1.5 hover:bg-red-500/15 text-red-500 rounded-md transition-all"
+                                                                title="Delete payment line"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Floating Logs Button */}
+                <div className="flex justify-center pt-8">
+                    <button onClick={() => setShowLogs(!showLogs)}
+                        className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest opacity-30 hover:opacity-100 hover:text-primary transition-all">
+                        <Clock size={14} /> {showLogs ? 'Hide Activities' : 'View Activities (History)'}
+                    </button>
+                </div>
+
+                {showLogs && (
+                    <div className="mt-6">
+                        {renderActivities(accForm.logs)}
+                    </div>
+                )}
+
+
+                </>
+            )
+        });
+    };
+
+    const renderEventForm = () => {
+        const fin = calculateEvtFinancials();
+
+        return renderFormLayout({
+            title: "New Event Request",
+            icon: Music,
+            onBack: () => { setStep(1); setRequestType(null); },
+            onSave: () => { handleSaveRequest(evtForm, 'event'); },
+            children: (
+                <>
+                {/* Basic Info */}
+                <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <h3 className="font-bold text-sm uppercase tracking-wider mb-4" style={{ color: colors.textMuted }}>Basic Information</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <div>
+                            <label className="text-xs font-bold opacity-50 block mb-2" style={{ color: colors.textMain }}>REQUEST NAME</label>
+                            <input
+                                type="text"
+                                value={evtForm.requestName}
+                                onChange={(e) => setEvtForm({ ...evtForm, requestName: e.target.value })}
+                                className="w-full px-4 py-2.5 rounded-xl border opacity-50 focus:opacity-100 transition-all font-bold"
+                                style={{ backgroundColor: 'transparent', borderColor: colors.border, color: colors.textMain }}
+                                placeholder="e.g. Annual Gala"
+                            />
+                        </div>
+                        <div className="relative">
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Account / Lead</label>
+                            <div className="flex gap-2">
+                                <div className="relative flex-1">
+                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
+                                    <input
+                                        className="w-full pl-10 pr-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all"
+                                        placeholder="Search Account..."
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        value={accountSearch || evtForm.leadId || ''}
+                                        onChange={(e) => {
+                                            setAccountSearch(e.target.value);
+                                            setShowAccountDropdown(true);
+                                        }}
+                                        onFocus={() => setShowAccountDropdown(true)}
+                                    />
+                                    {showAccountDropdown && (
+                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto"
+                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                            {accounts.filter((a: any) => String(a.name || '').toLowerCase().includes((accountSearch || '').toLowerCase())).map((acc: any) => (
+                                                <button
+                                                    key={acc.id}
+                                                    type="button"
+                                                    className="w-full px-4 py-2 text-left hover:bg-white/5 text-sm transition-colors"
+                                                    onClick={() => {
+                                                        setEvtForm({ ...evtForm, leadId: acc.name, accountId: acc.id });
+                                                        setAccountSearch(acc.name);
+                                                        setShowAccountDropdown(false);
+                                                    }}
+                                                >
+                                                    {acc.name} <span className="text-[10px] opacity-40 ml-2">({acc.type})</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAddAccountModal(true)}
+                                    className="p-2 rounded bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg"
+                                    title="Create New Account"
+                                >
+                                    <Plus size={20} />
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Event Date</label>
+                            <input type="date" value={evtForm.requestDate} onChange={e => setEvtForm({ ...evtForm, requestDate: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Segment</label>
+                            <select
+                                value={evtForm.segment || ''}
+                                onChange={(e) => setEvtForm({ ...evtForm, segment: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <option value="">Select segment…</option>
+                                {effectiveSegmentOptions.map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Request status</label>
+                            <select
+                                value={evtForm.status || 'Draft'}
+                                onChange={(e) => setEvtForm({ ...evtForm, status: e.target.value })}
+                                className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                {REQUEST_FORM_STATUS_OPTIONS.map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Agenda */}
+                <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-bold text-sm uppercase tracking-wider" style={{ color: colors.textMuted }}>Event Agenda & Venues</h3>
+                        <button onClick={() => setEvtForm({ ...evtForm, agenda: [...evtForm.agenda, { ...initialEvent.agenda[0], id: Date.now() }] })}
+                            className="text-xs flex items-center gap-1 hover:text-primary transition-colors" style={{ color: colors.primary }}>
+                            <Plus size={12} /> Add Session
+                        </button>
+                    </div>
+                    <div className="space-y-4">
+                        {evtForm.agenda.map((item, idx) => (
+                            <div key={item.id} className="p-4 rounded bg-black/5 border border-transparent hover:border-white/10 transition-colors">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase opacity-50 block mb-1">Time</label>
+                                        <div className="flex gap-2">
+                                            <input type="time" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none" />
+                                            <input type="time" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none" />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase opacity-50 block mb-1">Venue</label>
+                                        <select className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none">
+                                            {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase opacity-50 block mb-1">Setup Style</label>
+                                        <select className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none">
+                                            <option>Theater</option><option>Classroom</option><option>Banquet</option><option>U-Shape</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase opacity-50 block mb-1">Pax</label>
+                                        <input type="number" className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none" defaultValue={100} />
+                                    </div>
+                                </div>
+                                <div className="flex justify-end">
+                                    <button onClick={() => {
+                                        const newAgenda = evtForm.agenda.filter((_, i) => i !== idx);
+                                        setEvtForm({ ...evtForm, agenda: newAgenda });
+                                    }} className="text-red-500 text-xs hover:underline flex items-center gap-1"><Trash2 size={12} /> Remove Session</button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                {/* Floating Activities Button */}
+                <div className="flex justify-center pt-8">
+                    <button onClick={() => setShowLogs(!showLogs)}
+                        className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest opacity-30 hover:opacity-100 hover:text-primary transition-all">
+                        <Clock size={14} /> {showLogs ? 'Hide Activities' : 'View Activities (History)'}
+                    </button>
+                </div>
+
+                {showLogs && (
+                    <div className="mt-6">
+                        {renderActivities(evtForm.logs || [])}
+                    </div>
+                )}
+                </>
+            )
+        });
+    };
+
+    const renderCombinedForm = () => renderFormLayout({
+        title: "New Request (Event + Rooms)",
+        icon: Box,
+        onBack: () => { setStep(1); setRequestType(null); },
+        onSave: () => { handleSaveRequest({ accommodation: accForm, event: evtForm }, 'event_rooms'); },
+        children: (
+            <>
+                <div className="bg-yellow-500/10 p-4 rounded text-yellow-500 text-sm mb-4">
+                    Note: This form combines both Accommodation and Event sections.
+                </div>
+                <div className="text-center opacity-50 py-10">Combined Form Sections Placeholder</div>
+            </>
+        )
+    });
+
+    // --- Main Render ---
+
+    const renderRequestDetailView = ({ request, onClose }: { request: any, onClose: () => void }) => {
+        const fin = calculateAccFinancials(request);
+        const detailType = normalizeRequestTypeKey(request.requestType);
+        const isEventOnly = detailType === 'event';
+        const isEventRooms = detailType === 'event_rooms';
+        const isEventKind = isEventOnly || isEventRooms;
+        const evWindow = getEventDateWindow(request);
+        const agenda = request.agenda || [];
+        const packageSummary = formatAgendaPackageSummary(agenda) || request.mealPlan || '—';
+        const displayEventDays = fin.totalEventDays > 0
+            ? fin.totalEventDays
+            : (evWindow.start && evWindow.end ? inclusiveCalendarDays(evWindow.start, evWindow.end) : 0);
+        const dayDenomForEventCost = Math.max(1, fin.totalEventDays || (evWindow.start && evWindow.end ? inclusiveCalendarDays(evWindow.start, evWindow.end) : 1));
+        const eventCostPerDay = fin.eventCostWithTax / dayDenomForEventCost;
+        const renderAgendaSection = () => (
+            <div className="rounded-2xl border bg-current/5 overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="p-4 border-b bg-white/5 flex items-center gap-2" style={{ borderColor: colors.border }}>
+                    <Calendar size={16} className="text-primary" />
+                    <h3 className="text-xs font-black uppercase tracking-widest opacity-60">Event agenda</h3>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs min-w-[960px]">
+                        <thead>
+                            <tr className="bg-black/20 text-[10px] font-bold uppercase opacity-40">
+                                <th className="px-4 py-3">Start</th>
+                                <th className="px-4 py-3">End</th>
+                                <th className="px-4 py-3">Session time</th>
+                                <th className="px-4 py-3">Coffee</th>
+                                <th className="px-4 py-3">Lunch</th>
+                                <th className="px-4 py-3">Dinner</th>
+                                <th className="px-4 py-3">Venue</th>
+                                <th className="px-4 py-3">Shape</th>
+                                <th className="px-4 py-3">Package</th>
+                                <th className="px-4 py-3 text-center">Pax</th>
+                                <th className="px-4 py-3 text-right">Rate</th>
+                                <th className="px-4 py-3 text-right">Rental</th>
+                                <th className="px-4 py-3 text-right">Line</th>
+                                <th className="px-4 py-3">Row notes</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                            {agenda.length === 0 ? (
+                                <tr>
+                                    <td colSpan={14} className="px-6 py-8 text-center opacity-40 italic">No agenda rows</td>
+                                </tr>
+                            ) : agenda.map((row: any, idx: number) => {
+                                const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
+                                return (
+                                    <tr key={row.id ?? idx} className="align-top">
+                                        <td className="px-4 py-3 font-bold whitespace-nowrap">{row.startDate || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{row.endDate || row.startDate || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{[row.startTime, row.endTime].filter(Boolean).join(' – ') || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
+                                        <td className="px-4 py-3 opacity-80">{row.venue || '—'}</td>
+                                        <td className="px-4 py-3 opacity-80">{row.shape || '—'}</td>
+                                        <td className="px-4 py-3">{row.package || '—'}</td>
+                                        <td className="px-4 py-3 text-center">{row.pax ?? '—'}</td>
+                                        <td className="px-4 py-3 text-right font-mono">{formatMoney(Number(row.rate || 0), 0)}</td>
+                                        <td className="px-4 py-3 text-right font-mono">{formatMoney(Number(row.rental || 0), 0)}</td>
+                                        <td className="px-4 py-3 text-right font-bold text-primary">{formatMoney(line, 0)}</td>
+                                        <td className="px-4 py-3 whitespace-pre-wrap max-w-[12rem] text-[10px] leading-snug opacity-90">{formatAgendaRowSessionNotes(row) || '—'}</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+
+        const statCard = (label: string, value: React.ReactNode, borderClass: string = 'border-primary', valueClass?: string) => (
+            <div>
+                <label className={`text-[10px] font-black uppercase tracking-widest opacity-40 mb-2 block ${valueClass || ''}`}>{label}</label>
+                <div className={`text-xl sm:text-2xl font-mono font-black border-l-4 pl-4 ${borderClass}`} style={{ color: colors.textMain }}>
+                    {value}
+                </div>
+            </div>
+        );
+
+        return (
+            <div className="h-full flex flex-col relative animate-in fade-in slide-in-from-right-8 duration-500" style={{ backgroundColor: colors.bg }}>
+                <div className="shrink-0 p-6 border-b flex justify-between items-center" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="flex items-center gap-4">
+                        <button onClick={onClose} className="p-2 rounded-full hover:bg-white/5 transition-colors" style={{ color: colors.textMuted }}>
+                            <ChevronRight size={20} className="rotate-180" />
+                        </button>
+                        <div>
+                            <h1 className="text-xl font-black flex items-center gap-2" style={{ color: colors.textMain }}>
+                                <FileText className="text-primary" /> Request Details: {request.confirmationNo}
+                            </h1>
+                            <div className="flex items-center gap-2 mt-0.5">
+                                <span className="text-[10px] font-mono opacity-40">SYSTEM ID: {request.id}</span>
+                                <span className="w-1 h-1 rounded-full bg-white/10" />
+                                <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: colors.primary }}>{request.account}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex gap-3">
+                        {!readOnlyOperational && (
+                        <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const idx = requests.findIndex(r => r.id === request.id);
+                                if (idx !== -1) setActiveOptionsMenu(idx);
+                            }}
+                            className="px-4 py-2 rounded-xl border font-bold text-xs flex items-center gap-2 hover:bg-white/5 transition-all"
+                            style={{ borderColor: colors.border, color: colors.textMain }}>
+                            <MoreHorizontal size={14} /> OPTS
+                        </button>
+                        )}
+                        <button 
+                            onClick={() => setShowLogs(!showLogs)}
+                            className="px-4 py-2 rounded-xl border font-bold text-xs flex items-center gap-2 hover:bg-white/5 transition-all"
+                            style={{ borderColor: colors.border, color: showLogs ? colors.primary : colors.textMain }}>
+                            <RefreshCw size={14} /> Activities
+                        </button>
+                        <button onClick={onClose} className="p-2 rounded-xl border hover:bg-white/5 transition-all" style={{ borderColor: colors.border, color: colors.textMain }}>
+                            <X size={20} />
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-8 bg-black/5">
+                    <div className="max-w-5xl mx-auto space-y-8">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="p-6 rounded-2xl border bg-current/5 space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Section 1: Basic</h3>
+                                <div className="space-y-4">
+                                    <div>
+                                        <p className="text-[10px] font-bold uppercase opacity-40">Account Name</p>
+                                        <p className="font-bold text-sm">{request.account}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-bold uppercase opacity-40">Received Date</p>
+                                        <p className="font-bold text-sm">{request.receivedDate || "N/A"}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-bold uppercase opacity-40">Confirmation #</p>
+                                        <p className="font-bold text-sm text-primary">{request.confirmationNo}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-6 rounded-2xl border bg-current/5 space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                {isEventOnly ? (
+                                    <>
+                                        <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Section 2: Dates</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Start</p>
+                                                <p className="font-bold text-sm">{evWindow.start || '—'}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">End</p>
+                                                <p className="font-bold text-sm">{evWindow.end || '—'}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Days</p>
+                                                <p className="font-bold text-sm">{displayEventDays || '—'}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Package</p>
+                                                <p className="font-bold text-sm">{packageSummary}</p>
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Section 2: Stay</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Check-in</p>
+                                                <p className="font-bold text-sm">{request.checkIn}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Check-out</p>
+                                                <p className="font-bold text-sm">{request.checkOut}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Nights</p>
+                                                <p className="font-bold text-sm">{fin.nights}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold uppercase opacity-40">Meal Plan</p>
+                                                <p className="font-bold text-sm">{request.mealPlan}</p>
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            <div className="p-6 rounded-2xl border bg-current/5 space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Deadlines</h3>
+                                <div className="space-y-3">
+                                    <div className="flex justify-between items-center text-xs">
+                                        <span className="opacity-40 font-bold uppercase text-[9px]">Offer Acceptance</span>
+                                        <span className="font-bold">{request.offerDeadline || "-"}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-xs">
+                                        <span className="opacity-40 font-bold uppercase text-[9px]">Deposit Due</span>
+                                        <span className="font-bold">{request.depositDeadline || "-"}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-xs border-t border-white/5 pt-2">
+                                        <span className="opacity-40 font-bold uppercase text-[9px]">Full Payment</span>
+                                        <span className="font-bold text-red-400">{request.paymentDeadline || "-"}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {isEventRooms && (
+                            <div className="p-5 rounded-2xl border grid grid-cols-2 md:grid-cols-4 gap-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase opacity-40">Event start</p>
+                                    <p className="font-bold text-sm">{evWindow.start || '—'}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase opacity-40">Event end</p>
+                                    <p className="font-bold text-sm">{evWindow.end || '—'}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase opacity-40">Event days</p>
+                                    <p className="font-bold text-sm">{displayEventDays || '—'}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase opacity-40">Event package</p>
+                                    <p className="font-bold text-sm">{packageSummary}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {!isEventOnly && (
+                            <div className="rounded-2xl border bg-current/5 overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <div className="p-4 border-b bg-white/5 flex items-center gap-2" style={{ borderColor: colors.border }}>
+                                    <BedDouble size={16} className="text-primary" />
+                                    <h3 className="text-xs font-black uppercase tracking-widest opacity-60">Section 3: Request Details (Rooms)</h3>
+                                </div>
+                                <table className="w-full text-left text-xs">
+                                    <thead>
+                                        <tr className="bg-black/20 text-[10px] font-bold uppercase opacity-40">
+                                            <th className="px-6 py-3">Room Type</th>
+                                            <th className="px-6 py-3">Occupancy</th>
+                                            <th className="px-6 py-3 text-center">Rooms</th>
+                                            <th className="px-6 py-3 text-right">Rate</th>
+                                            <th className="px-6 py-3 text-right">Subtotal</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        {(request.rooms || []).length === 0 ? (
+                                            <tr>
+                                                <td colSpan={5} className="px-6 py-8 text-center opacity-40 italic">No rooms on this request</td>
+                                            </tr>
+                                        ) : (request.rooms || []).map((r: any, idx: number) => {
+                                            const rNights = detailType === 'series' ? calculateNights(r.arrival, r.departure) : fin.nights;
+                                            const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
+                                            return (
+                                                <tr key={idx}>
+                                                    <td className="px-6 py-4 font-bold">{r.type}</td>
+                                                    <td className="px-6 py-4 opacity-70">{r.occupancy}</td>
+                                                    <td className="px-6 py-4 text-center">{r.count}</td>
+                                                    <td className="px-6 py-4 text-right font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
+                                                    <td className="px-6 py-4 text-right font-bold text-primary">{formatMoney(subtotal, 0)}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {isEventKind && renderAgendaSection()}
+
+                        {isEventOnly && (
+                            <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+                                <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
+                                    {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
+                                    {statCard('Number of days', displayEventDays || '—')}
+                                    {statCard('Total attendees', fin.totalEventPax)}
+                                    {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
+                                    <div className="col-span-2 lg:col-span-2">
+                                        {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {isEventRooms && (
+                            <>
+                                <div className="p-6 rounded-[2rem] border-2 shadow-xl" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+                                    <h4 className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-4">Accommodation</h4>
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+                                        {statCard('ADR (avg daily rate)', <>{formatMoney(fin.adr)}</>)}
+                                        {statCard('Total room nights', fin.totalRoomNights)}
+                                        {statCard('Total rooms', fin.totalRooms)}
+                                        {statCard('Rooms total (incl. tax)', <>{formatMoney(fin.roomsCostWithTax)}</>)}
+                                    </div>
+                                </div>
+                                <div className="p-6 rounded-[2rem] border-2 shadow-xl" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+                                    <h4 className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-4">Event</h4>
+                                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+                                        {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
+                                        {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
+                                        {statCard('Number of days', displayEventDays || '—')}
+                                        {statCard('Total attendees', fin.totalEventPax)}
+                                        {statCard('Event total (incl. tax)', <>{formatMoney(fin.eventCostWithTax)}</>)}
+                                    </div>
+                                </div>
+                                <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                        {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
+                                        {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {!isEventKind && (
+                            <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
+                                <div className="grid grid-cols-2 lg:grid-cols-5 gap-8">
+                                    {statCard('ADR (avg daily rate)', <>{formatMoney(fin.adr)}</>)}
+                                    {statCard('Total room nights', fin.totalRoomNights)}
+                                    {statCard('Total rooms', fin.totalRooms)}
+                                    {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
+                                    {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
+                                </div>
+                            </div>
+                        )}
+
+                        {showLogs && (
+                            <div className="mt-8">
+                                {renderActivities(request.logs)}
+                            </div>
+                        )}
+
+                        <div className="flex items-center justify-between pt-8">
+                            <button onClick={onClose} className="px-8 py-3 rounded-xl border font-bold hover:bg-white/5 transition-all"
+                                style={{ borderColor: colors.border, color: colors.textMain }}>
+                                Back to List
+                            </button>
+                            {!readOnlyOperational && (
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={() => setShowCancelModal(true)}
+                                    className="px-8 py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20 font-bold hover:bg-red-500/20 transition-all">
+                                    Cancel Request
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        openRequestForEdit(request);
+                                    }}
+                                    className="px-12 py-3 rounded-xl bg-primary text-black font-black uppercase tracking-wider shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all">
+                                    Edit Request
+                                </button>
+                            </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Cancel Request Modal */}
+                {showCancelModal && (
+                    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setShowCancelModal(false)}></div>
+                        <div className="relative w-full max-w-md rounded-[2.5rem] border-2 shadow-2xl overflow-hidden animate-in zoom-in duration-300"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+
+                            <div className="p-8 pb-4 flex justify-between items-center">
+                                <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500">
+                                    <Trash2 size={24} />
+                                </div>
+                                <button onClick={() => setShowCancelModal(false)} className="p-2 rounded-full hover:bg-white/5 transition-colors opacity-40">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            <div className="p-8 pt-0 space-y-6">
+                                <div>
+                                    <h3 className="text-2xl font-black mb-2" style={{ color: colors.textMain }}>Cancel Request?</h3>
+                                    <p className="text-sm opacity-50" style={{ color: colors.textMuted }}>Please let us know why you're cancelling this booking. This will be recorded in the system logs.</p>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40 px-1">Reason for Cancellation</label>
+                                    <select
+                                        value={cancelReason}
+                                        onChange={(e) => setCancelReason(e.target.value)}
+                                        className="w-full px-5 py-4 rounded-2xl bg-black/20 border-2 outline-none focus:border-primary transition-all text-sm font-bold appearance-none"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        <option value="Price too high">Price too high</option>
+                                        <option value="Changed dates">Changed dates</option>
+                                        <option value="Destination change">Destination change</option>
+                                        <option value="Budget issues">Budget issues</option>
+                                        <option value="Group cancelled">Group cancelled</option>
+                                        <option value="Competitor offer">Competitor offer</option>
+                                        <option value="Other">Other</option>
+                                    </select>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black uppercase tracking-widest opacity-40 px-1">Cancellation Note</label>
+                                    <textarea
+                                        value={cancelNote}
+                                        onChange={(e) => setCancelNote(e.target.value)}
+                                        placeholder="Add more details about the cancellation..."
+                                        className="w-full px-5 py-4 rounded-2xl bg-black/20 border-2 outline-none focus:border-primary transition-all text-sm h-32 resize-none"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4 pt-4">
+                                    <button
+                                        onClick={() => setShowCancelModal(false)}
+                                        className="py-4 rounded-2xl border font-black text-xs uppercase tracking-widest hover:bg-white/5 transition-all"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        No, Keep It
+                                    </button>
+                                    <button
+                                        onClick={async () => {
+                                            const newLogs = [
+                                                {
+                                                    date: new Date().toISOString(),
+                                                    user: requestLogUser,
+                                                    action: 'Cancellation: financial totals reset',
+                                                    details: 'Paid amount, payment lines, and total cost set to zero.',
+                                                },
+                                                {
+                                                    date: new Date().toISOString(),
+                                                    user: requestLogUser,
+                                                    action: `Cancelled: ${cancelReason}`,
+                                                    details: cancelNote || 'No additional notes provided.',
+                                                },
+                                                ...(request.logs || []),
+                                            ];
+                                            
+                                            const updateData = {
+                                                status: 'Cancelled',
+                                                cancelReason,
+                                                cancelNote,
+                                                logs: newLogs,
+                                                paidAmount: '0.00',
+                                                payments: [] as any[],
+                                                totalCost: '0.00',
+                                                paymentStatus: 'Unpaid',
+                                                grandTotalNoTax: 0,
+                                            };
+                                            
+                                            // Update server
+                                            await updateRequest(request.id, updateData);
+                                            
+                                            // Update local state if needed
+                                            if (selectedRequest && selectedRequest.id === request.id) {
+                                                setSelectedRequest({ ...selectedRequest, ...updateData });
+                                            }
+                                            
+                                            setShowCancelModal(false);
+                                            onClose();
+                                        }}
+                                        className="py-4 rounded-2xl bg-red-500 text-white font-black text-xs uppercase tracking-widest shadow-xl shadow-red-500/20 hover:brightness-110 hover:-translate-y-1 transition-all">
+                                        Confirm Cancellation
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // Shared Payment Modal - rendered in ALL views
+    const paymentModal = showPaymentModal ? (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowPaymentModal(false)} />
+            <div className="relative w-full max-w-md rounded-3xl border shadow-2xl overflow-hidden animate-in zoom-in duration-300"
+                style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="p-6 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                    <h3 className="font-bold text-lg flex items-center gap-2" style={{ color: colors.textMain }}>
+                        <DollarSign className="text-emerald-500" size={20} /> Add Deposit
+                    </h3>
+                    <button onClick={() => setShowPaymentModal(false)} className="opacity-30 hover:opacity-100 transition-opacity" style={{ color: colors.textMain }}>
+                        <X size={20} />
+                    </button>
+                </div>
+                <div className="p-6 space-y-5">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>Payment Date</label>
+                            <input type="date" value={newPayment.date} onChange={e => setNewPayment({ ...newPayment, date: e.target.value })}
+                                className="w-full px-4 py-3 rounded-xl border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                        <div>
+                            <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>Method</label>
+                            <select value={newPayment.method} onChange={e => setNewPayment({ ...newPayment, method: e.target.value })}
+                                className="w-full px-4 py-3 rounded-xl border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                <option>Cash</option><option>Bank Transfer</option><option>Credit Card</option><option>Cheque</option><option>Point of Sale</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>{`Amount (${selectedCurrency})`}</label>
+                        <input type="number" value={newPayment.amount || ''} onChange={e => setNewPayment({ ...newPayment, amount: Number(e.target.value) })}
+                            className="w-full px-4 py-4 rounded-xl border bg-black/20 outline-none text-2xl font-mono font-black text-right"
+                            style={{ borderColor: colors.border, color: '#10b981' }} />
+                    </div>
+                    <div>
+                        <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>Note (Optional)</label>
+                        <textarea value={newPayment.note} onChange={e => setNewPayment({ ...newPayment, note: e.target.value })}
+                            className="w-full px-4 py-3 rounded-xl border bg-black/20 outline-none h-20 resize-none text-sm"
+                            placeholder="Reference number, details..." style={{ borderColor: colors.border, color: colors.textMain }} />
+                    </div>
+                </div>
+                <div className="p-4 border-t flex gap-3" style={{ borderColor: colors.border }}>
+                    <button onClick={() => setShowPaymentModal(false)}
+                        className="flex-1 py-3 rounded-xl border font-bold text-sm transition-all hover:bg-white/5"
+                        style={{ borderColor: colors.border, color: colors.textMain }}>
+                        Cancel
+                    </button>
+                    <button
+                        onClick={async () => {
+                            const amt = Number(newPayment.amount || 0);
+                            if (paymentModalSource === 'form') {
+                                setAccForm((prev: any) => {
+                                    const wasInquiry = String(prev.status || '').trim() === 'Inquiry';
+                                    const autoLog = wasInquiry
+                                        ? [
+                                              {
+                                                  date: new Date().toISOString(),
+                                                  user: requestLogUser,
+                                                  action: 'Status auto-updated',
+                                                  details: 'Deposit posted while status was Inquiry — set to Tentative.',
+                                              },
+                                          ]
+                                        : [];
+                                    return {
+                                        ...prev,
+                                        payments: [...(prev.payments || []), { ...newPayment, id: Date.now(), amount: amt }],
+                                        status: wasInquiry ? 'Tentative' : prev.status,
+                                        logs: [
+                                            ...(prev.logs || []),
+                                            ...autoLog,
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: `Posted deposit of ${amt} via ${newPayment.method}`,
+                                            },
+                                        ],
+                                    };
+                                });
+                            } else {
+                                const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                                if (req) {
+                                    const newPayments = [...(req.payments || []), { ...newPayment, id: Date.now(), amount: amt }];
+                                    const paidSum = sumPaymentAmounts(newPayments);
+                                    const totalCost = parseFloat(String(req.totalCost ?? '0').replace(/,/g, '')) || 0;
+                                    let paymentStatus = 'Unpaid';
+                                    if (totalCost > 0) {
+                                        if (paidSum >= totalCost) paymentStatus = 'Paid';
+                                        else if (paidSum > 0) paymentStatus = 'Deposit';
+                                    }
+                                    const wasInquiry = String(req.status || '').trim() === 'Inquiry';
+                                    const autoLog = wasInquiry
+                                        ? [
+                                              {
+                                                  date: new Date().toISOString(),
+                                                  user: requestLogUser,
+                                                  action: 'Status auto-updated',
+                                                  details: 'Deposit posted while status was Inquiry — set to Tentative.',
+                                              },
+                                          ]
+                                        : [];
+                                    const newLogs = [
+                                        ...autoLog,
+                                        { date: new Date().toISOString(), user: requestLogUser, action: `Posted deposit of ${amt} via ${newPayment.method}` },
+                                        ...(req.logs || []),
+                                    ];
+                                    const updateData: Record<string, unknown> = {
+                                        paidAmount: paidSum.toFixed(2),
+                                        paymentStatus,
+                                        payments: newPayments,
+                                        logs: newLogs,
+                                    };
+                                    if (wasInquiry) updateData.status = 'Tentative';
+                                    if (selectedRequest && selectedRequest.id === req.id) {
+                                        setSelectedRequest((prev: any) => prev ? { ...prev, ...updateData } : null);
+                                    }
+                                    await updateRequest(req.id, updateData);
+                                }
+                                setActiveOptionsMenu(null);
+                            }
+                            setShowPaymentModal(false);
+                            setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                        }}
+                        className="flex-1 py-3 rounded-xl font-bold text-sm bg-emerald-500 text-white transition-all hover:bg-emerald-600 active:scale-95">
+                        Confirm Deposit
+                    </button>
+                </div>
+            </div>
+        </div>
+    ) : null;
+
+    const optionsModal = activeOptionsMenu !== null && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4" onClick={() => setActiveOptionsMenu(null)}>
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
+            <div className="relative w-full max-w-[260px] rounded-2xl border shadow-2xl overflow-hidden animate-in zoom-in duration-200"
+                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                onClick={(e) => e.stopPropagation()}>
+
+                <div className="p-3 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                    <div className="flex items-center gap-2">
+                        <span className="font-bold text-[11px] uppercase tracking-wider opacity-60" style={{ color: colors.textMain }}>Options</span>
+                    </div>
+                    <button onClick={() => setActiveOptionsMenu(null)} className="opacity-30 hover:opacity-100 transition-opacity" style={{ color: colors.textMain }}>
+                        <X size={14} />
+                    </button>
+                </div>
+
+                <div className="p-1.5 space-y-0.5">
+                    {!readOnlyOperational && (
+                        <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                                setPaymentModalSource('opts');
+                                setShowPaymentModal(true);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]" style={{ color: colors.textMain }}>
+                            <div className="w-6 h-6 rounded-md bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                                <CreditCard size={12} />
+                            </div>
+                            <span>Add Deposit</span>
+                        </button>
+                    )}
+                    {!readOnlyOperational && (
+                        <button 
+                            onClick={() => { setShowStatusModal(true); }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]" style={{ color: colors.textMain }}>
+                            <div className="w-6 h-6 rounded-md bg-amber-500/10 flex items-center justify-center text-amber-500">
+                                <RefreshCw size={12} />
+                            </div>
+                            <span>Change Status</span>
+                        </button>
+                    )}
+                    {!readOnlyOperational && (
+                        <button 
+                            onClick={() => {
+                                const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                                if (!req) return;
+                                openRequestForEdit(req);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]" style={{ color: colors.textMain }}>
+                            <div className="w-6 h-6 rounded-md bg-blue-500/10 flex items-center justify-center text-blue-500">
+                                <FileText size={12} />
+                            </div>
+                            <span>Modify Details</span>
+                        </button>
+                    )}
+                    {!readOnlyOperational &&
+                        (() => {
+                            const optReq = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                            const optKind = optReq ? normalizeRequestTypeKey(optReq.requestType) : '';
+                            if (optKind !== 'event' && optKind !== 'event_rooms') return null;
+                            return (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                                        if (!req) return;
+                                        setBeoTargetRequestId(req.id);
+                                        setBeoNotesDraft(String(req.beoNotes ?? ''));
+                                        setShowBeoModal(true);
+                                        setActiveOptionsMenu(null);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]" style={{ color: colors.textMain }}>
+                                    <div className="w-6 h-6 rounded-md bg-violet-500/10 flex items-center justify-center text-violet-500">
+                                        <Printer size={12} />
+                                    </div>
+                                    <span>BEO</span>
+                                </button>
+                            );
+                        })()}
+                    {!readOnlyOperational && (
+                        <button 
+                            onClick={() => { setShowCancelModal(true); }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-red-500/10 text-red-500 text-left transition-all active:scale-[0.98]">
+                            <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500">
+                                <Trash2 size={12} />
+                            </div>
+                            <span>Cancel</span>
+                        </button>
+                    )}
+                    {canDeleteRequest && !readOnlyOperational && (
+                        <button 
+                            onClick={() => {
+                                const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                                if (req && window.confirm("Are you sure you want to logically delete this request completely?")) {
+                                    deleteRequest(req.id);
+                                    setActiveOptionsMenu(null);
+                                }
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-red-500/10 text-red-500 text-left transition-all active:scale-[0.98]">
+                            <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500">
+                                <Trash2 size={12} />
+                            </div>
+                            <span>Delete Request</span>
+                        </button>
+                    )}
+                </div>
+                <div className="p-2.5 bg-black/10 flex justify-center border-t border-white/5" style={{ borderColor: colors.border }}>
+                    <span className="text-[8px] font-black uppercase tracking-[0.2em] opacity-20" style={{ color: colors.textMain }}>
+                        {activeOptionsMenu !== null ? requests[activeOptionsMenu]?.confirmationNo : ''}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+
+    const renderGlobalModals = () => {
+        const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+
+        return (
+            <>
+                {paymentModal}
+
+                <AddAccountModal
+                    isOpen={showAddAccountModal}
+                    onClose={() => setShowAddAccountModal(false)}
+                    onSave={handleSaveAccountFromModal}
+                    theme={theme}
+                    accountTypeOptions={effectiveAccountTypeOptions}
+                />
+                
+                {showStatusModal && req && (
+                    <div className="fixed inset-0 z-[140] flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowStatusModal(false)}></div>
+                        <div className="relative w-full max-w-sm rounded-[24px] border shadow-2xl p-6 overflow-hidden animate-in zoom-in duration-300"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="font-bold text-lg mb-4" style={{ color: colors.textMain }}>Change Status</h3>
+                            <div className="flex flex-col gap-2">
+                                {['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual'].map(status => (
+                                    <button
+                                        key={status}
+                                        onClick={async () => {
+                                            const newLogs = [{ date: new Date().toISOString(), user: requestLogUser, action: `Status changed to ${status}` }, ...(req.logs || [])];
+                                            const updateData = { status, logs: newLogs };
+                                            if (selectedRequest && selectedRequest.id === req.id) {
+                                                setSelectedRequest((prev: any) => prev ? { ...prev, ...updateData } : null);
+                                            }
+                                            await updateRequest(req.id, updateData);
+                                            setShowStatusModal(false);
+                                            setActiveOptionsMenu(null);
+                                        }}
+                                        className="px-4 py-3 rounded-xl border text-left font-bold transition-all hover:bg-white/5 active:scale-95 text-xs"
+                                        style={{ borderColor: req.status === status ? colors.primary : colors.border, color: colors.textMain }}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: getStatusColor(status) }}></div>
+                                            {status}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {showCancelModal && req && (
+                    <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowCancelModal(false)}></div>
+                        <div className="relative w-full max-w-md rounded-[24px] border shadow-2xl p-6 overflow-hidden animate-in zoom-in duration-300"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="font-bold text-lg mb-6" style={{ color: colors.textMain }}>Cancel Request</h3>
+                            <div className="space-y-4 mb-6">
+                                <select value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className="w-full px-4 py-3 rounded-xl border bg-black/20 font-bold" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                    <option value="Price too high">Price too high</option>
+                                    <option value="Booked elsewhere">Booked elsewhere</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                                <textarea value={cancelNote} onChange={(e) => setCancelNote(e.target.value)} className="w-full px-4 py-3 rounded-xl border bg-black/20 font-medium h-24" placeholder="Notes..." style={{ borderColor: colors.border, color: colors.textMain }} />
+                            </div>
+                            <div className="flex gap-3">
+                                <button onClick={() => setShowCancelModal(false)} className="flex-1 py-3 rounded-xl border font-bold text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>Keep Request</button>
+                                <button onClick={async () => {
+                                    const newLogs = [
+                                        {
+                                            date: new Date().toISOString(),
+                                            user: requestLogUser,
+                                            action: 'Cancellation: financial totals reset',
+                                            details: 'Paid amount, payment lines, and total cost set to zero.',
+                                        },
+                                        { date: new Date().toISOString(), user: requestLogUser, action: `Cancelled: ${cancelReason}`, details: cancelNote },
+                                        ...(req.logs || []),
+                                    ];
+                                    const updateData = {
+                                        status: 'Cancelled',
+                                        cancelReason,
+                                        cancelNote,
+                                        logs: newLogs,
+                                        paidAmount: '0.00',
+                                        payments: [] as any[],
+                                        totalCost: '0.00',
+                                        paymentStatus: 'Unpaid',
+                                        grandTotalNoTax: 0,
+                                    };
+                                    if (selectedRequest && selectedRequest.id === req.id) {
+                                        setSelectedRequest((prev: any) => prev ? { ...prev, ...updateData } : null);
+                                    }
+                                    await updateRequest(req.id, updateData);
+                                    setShowCancelModal(false);
+                                    setActiveOptionsMenu(null);
+                                }} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold text-xs">Confirm Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {showBeoModal && beoTargetRequestId && (() => {
+                    const beoReq = requests.find((r: any) => r.id === beoTargetRequestId) || (selectedRequest?.id === beoTargetRequestId ? selectedRequest : null);
+                    if (!beoReq) {
+                        return (
+                            <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+                                <div className="absolute inset-0 bg-black/50" onClick={() => { setShowBeoModal(false); setBeoTargetRequestId(null); }} />
+                                <div className="relative rounded-2xl border p-6 max-w-sm" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <p className="text-sm font-bold mb-4" style={{ color: colors.textMain }}>Request not found.</p>
+                                    <button type="button" onClick={() => { setShowBeoModal(false); setBeoTargetRequestId(null); }} className="w-full py-2 rounded-xl border font-bold text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>Close</button>
+                                </div>
+                            </div>
+                        );
+                    }
+                    const beoFin = calculateAccFinancials(beoReq);
+                    const beoEv = getEventDateWindow(beoReq);
+                    const beoAgenda = beoReq.agenda || [];
+                    const beoPkg = formatAgendaPackageSummary(beoAgenda) || beoReq.mealPlan || '—';
+                    const beoAcc = getAccountForRequest(beoReq, accounts);
+                    const beoFallbackDays = beoEv.start && beoEv.end ? inclusiveCalendarDays(beoEv.start, beoEv.end) : 1;
+                    const beoDayDenom = Math.max(1, beoFin.totalEventDays || beoFallbackDays);
+                    const beoEventCostPerDay = beoFin.eventCostWithTax / beoDayDenom;
+                    const beoGrand = Number(beoFin.grandTotalWithTax || 0);
+                    const beoPaid = Number(beoFin.paidAmount || 0);
+                    const beoRemaining = Math.max(0, beoGrand - beoPaid);
+                    const beoPayLabel = beoFin.paymentStatus === 'Deposit' ? 'Partial / deposit' : beoFin.paymentStatus;
+                    const beoTypeKey = normalizeRequestTypeKey(beoReq.requestType);
+                    return (
+                        <>
+                            <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+                                {/* Backdrop without click-to-close — avoids losing context after print preview / mis-clicks. Use X to close. */}
+                                <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" aria-hidden />
+                                <div className="relative w-full max-w-4xl max-h-[90vh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden animate-in zoom-in duration-200"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <div className="shrink-0 p-4 border-b flex flex-wrap items-center gap-2 justify-between" style={{ borderColor: colors.border }}>
+                                        <h3 className="font-black text-sm uppercase tracking-wider" style={{ color: colors.textMain }}>Banquet event order (BEO)</h3>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => printBeoDocument(beoReq, beoFin, beoNotesDraft, accounts)}
+                                                className="px-4 py-2 rounded-xl bg-primary text-black font-bold text-xs flex items-center gap-2">
+                                                <Printer size={14} /> Print
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    await updateRequest(beoTargetRequestId, { beoNotes: beoNotesDraft });
+                                                    if (selectedRequest?.id === beoTargetRequestId) {
+                                                        setSelectedRequest((prev: any) => prev ? { ...prev, beoNotes: beoNotesDraft } : null);
+                                                    }
+                                                }}
+                                                className="px-4 py-2 rounded-xl border font-bold text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                Save notes
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowBeoModal(false); setBeoTargetRequestId(null); }}
+                                                className="p-2 rounded-xl border" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                <X size={18} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-6 text-left" style={{ color: colors.textMain }}>
+                                        <div className="border-b pb-4 mb-4" style={{ borderColor: colors.border }}>
+                                            <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoReq.confirmationNo}</h1>
+                                            <p className="text-sm mt-1 font-bold">{beoReq.account}</p>
+                                            <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoReq.status || '—'}</span> · Type: <span className="font-bold">{beoReq.requestType || beoTypeKey}</span></p>
+                                            <p className="text-xs font-mono opacity-50 mt-1">ID: {beoReq.id}</p>
+                                        </div>
+
+                                        <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Contacts (from account)</h4>
+                                        {!beoAcc ? (
+                                            <p className="text-sm opacity-50 italic mb-4">No linked account profile — add account or link by name/ID to show phone and email.</p>
+                                        ) : (
+                                            <div className="space-y-3 mb-6">
+                                                {(Array.isArray(beoAcc.contacts) ? beoAcc.contacts : []).filter((c: any) => contactDisplayName(c) || c?.email || c?.phone).map((c: any, i: number) => (
+                                                    <div key={i} className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                        <p className="font-bold">{contactDisplayName(c) || 'Contact'}</p>
+                                                        {c.position ? <p className="text-xs opacity-60">{c.position}</p> : null}
+                                                        {c.email ? <p className="text-xs mt-1">Email: {c.email}</p> : null}
+                                                        {c.phone ? <p className="text-xs">Phone: {c.phone}</p> : null}
+                                                    </div>
+                                                ))}
+                                                {!(Array.isArray(beoAcc.contacts) ? beoAcc.contacts : []).some((c: any) => contactDisplayName(c) || c?.email || c?.phone) && (beoAcc.email || beoAcc.phone) && (
+                                                    <div className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                        {beoAcc.email ? <p className="text-xs">Email: {beoAcc.email}</p> : null}
+                                                        {beoAcc.phone ? <p className="text-xs">Phone: {beoAcc.phone}</p> : null}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-6">
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Start</span><br />{beoEv.start || '—'}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">End</span><br />{beoEv.end || '—'}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Package</span><br />{beoPkg}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Event days</span><br />{beoFin.totalEventDays || beoFallbackDays}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Attendees (pax)</span><br />{beoFin.totalEventPax}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">DDR (per person)</span><br />{formatMoney(beoFin.ddr)}</div>
+                                            <div className="md:col-span-2"><span className="font-bold uppercase text-[10px] opacity-50">Event cost per day (incl. tax)</span><br />{formatMoney(beoEventCostPerDay)}</div>
+                                        </div>
+
+                                        <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Agenda</h4>
+                                        <div className="overflow-x-auto mb-6">
+                                            <table className="w-full text-xs border-collapse min-w-[960px]">
+                                                <thead>
+                                                    <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
+                                                        <th className="text-left py-2 pr-2">Start</th>
+                                                        <th className="text-left py-2 pr-2">End</th>
+                                                        <th className="text-left py-2 pr-2">Session time</th>
+                                                        <th className="text-left py-2 pr-2">Coffee</th>
+                                                        <th className="text-left py-2 pr-2">Lunch</th>
+                                                        <th className="text-left py-2 pr-2">Dinner</th>
+                                                        <th className="text-left py-2 pr-2">Venue</th>
+                                                        <th className="text-left py-2 pr-2">Shape</th>
+                                                        <th className="text-left py-2 pr-2">Package</th>
+                                                        <th className="text-center py-2">Pax</th>
+                                                        <th className="text-right py-2">Rate</th>
+                                                        <th className="text-right py-2">Rental</th>
+                                                        <th className="text-right py-2">Line</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {beoAgenda.length === 0 ? (
+                                                        <tr><td colSpan={13} className="py-4 italic opacity-50">No agenda</td></tr>
+                                                    ) : beoAgenda.map((row: any, i: number) => {
+                                                        const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
+                                                        return (
+                                                            <tr key={row.id ?? i} className="border-b align-top" style={{ borderColor: colors.border }}>
+                                                                <td className="py-2 pr-2">{row.startDate || '—'}</td>
+                                                                <td className="py-2 pr-2">{row.endDate || row.startDate || '—'}</td>
+                                                                <td className="py-2 pr-2 whitespace-nowrap">{[row.startTime, row.endTime].filter(Boolean).join(' – ') || '—'}</td>
+                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
+                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
+                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
+                                                                <td className="py-2 pr-2">{row.venue || '—'}</td>
+                                                                <td className="py-2 pr-2">{row.shape || '—'}</td>
+                                                                <td className="py-2 pr-2">{row.package || '—'}</td>
+                                                                <td className="text-center py-2">{row.pax ?? '—'}</td>
+                                                                <td className="text-right py-2 font-mono">{Number(row.rate || 0).toLocaleString()}</td>
+                                                                <td className="text-right py-2 font-mono">{Number(row.rental || 0).toLocaleString()}</td>
+                                                                <td className="text-right py-2 font-mono font-bold text-primary">{line.toLocaleString()}</td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        {beoTypeKey === 'event_rooms' && (
+                                            <>
+                                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Accommodation (rooms)</h4>
+                                                <div className="overflow-x-auto mb-6">
+                                                    <table className="w-full text-xs border-collapse min-w-[480px]">
+                                                        <thead>
+                                                            <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
+                                                                <th className="text-left py-2 pr-2">Room type</th>
+                                                                <th className="text-left py-2 pr-2">Occupancy</th>
+                                                                <th className="text-center py-2">Rooms</th>
+                                                                <th className="text-right py-2">Rate</th>
+                                                                <th className="text-right py-2">Subtotal</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {(!(beoReq.rooms || []).length) ? (
+                                                                <tr><td colSpan={5} className="py-4 italic opacity-50">No rooms</td></tr>
+                                                            ) : (beoReq.rooms || []).map((r: any, idx: number) => {
+                                                                const rNights = beoTypeKey === 'series' ? calculateNights(r.arrival, r.departure) : beoFin.nights;
+                                                                const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
+                                                                return (
+                                                                    <tr key={idx} className="border-b" style={{ borderColor: colors.border }}>
+                                                                        <td className="py-2 pr-2 font-bold">{r.type}</td>
+                                                                        <td className="py-2 pr-2">{r.occupancy}</td>
+                                                                        <td className="text-center py-2">{r.count}</td>
+                                                                        <td className="text-right py-2 font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
+                                                                        <td className="text-right py-2 font-mono font-bold text-primary">{formatMoney(subtotal, 0)}</td>
+                                                                    </tr>
+                                                                );
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {!!(beoReq.transportation || []).length && (
+                                            <>
+                                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Transportation</h4>
+                                                <ul className="text-sm space-y-1 mb-6 opacity-90">
+                                                    {(beoReq.transportation || []).map((t: any, i: number) => (
+                                                        <li key={t.id ?? i}>{t.type || 'Trip'} — {t.timing || t.notes || '—'} · {formatMoney(Number(t.costPerWay || 0), 0)}</li>
+                                                    ))}
+                                                </ul>
+                                            </>
+                                        )}
+
+                                        {beoReq.note ? (
+                                            <div className="mb-6 p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <span className="font-bold uppercase text-[10px] opacity-50">Special requests</span>
+                                                <p className="mt-1 whitespace-pre-wrap">{beoReq.note}</p>
+                                            </div>
+                                        ) : null}
+
+                                        <div className="text-sm mb-4 space-y-1 p-4 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <p><span className="font-bold">Transport total (incl. tax):</span> {formatMoney(beoFin.transCostWithTax)}</p>
+                                            <p><span className="font-bold">Event total (incl. tax):</span> {formatMoney(beoFin.eventCostWithTax)}</p>
+                                            {beoTypeKey === 'event_rooms' && (
+                                                <p><span className="font-bold">Rooms total (incl. tax):</span> {formatMoney(beoFin.roomsCostWithTax)}</p>
+                                            )}
+                                            <p><span className="font-bold">Grand total (incl. tax):</span> {formatMoney(beoGrand)}</p>
+                                        </div>
+
+                                        <div className="p-4 rounded-xl border mb-4 space-y-2" style={{ borderColor: colors.primary + '40', backgroundColor: colors.primary + '08' }}>
+                                            <h4 className="text-xs font-black uppercase tracking-widest opacity-70">Payment</h4>
+                                            <p className="text-sm"><span className="font-bold">Status:</span> {beoPayLabel}</p>
+                                            <p className="text-sm"><span className="font-bold">Amount paid:</span> {formatMoney(beoPaid)}</p>
+                                            <p className="text-sm"><span className="font-bold">Remaining balance:</span> {formatMoney(beoRemaining)}</p>
+                                        </div>
+
+                                        <div className="mb-4">
+                                            <label className="text-[10px] font-black uppercase opacity-50">Special requests (from request)</label>
+                                            <div
+                                                className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[72px] text-sm whitespace-pre-wrap"
+                                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg + '80' }}
+                                            >
+                                                {formatBeoSpecialRequestsCombined(beoReq) || '—'}
+                                            </div>
+                                        </div>
+                                        <div className="mb-2">
+                                            <label className="text-[10px] font-black uppercase opacity-50">Operations notes (BEO)</label>
+                                            <textarea
+                                                value={beoNotesDraft}
+                                                onChange={(e) => setBeoNotesDraft(e.target.value)}
+                                                className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[100px] text-sm"
+                                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                                placeholder="Banquet / ops notes…"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    );
+                })()}
+
+                {optionsModal}
+            </>
+        );
+    };
+
+    // Workflow Screens
+    if (subView === 'new_request') {
+        let formContent: any;
+        if (step === 1) formContent = renderTypeSelection();
+        else if (requestType === 'accommodation') formContent = renderAccommodationForm();
+        else if (requestType === 'event') formContent = renderAccommodationForm();
+        else if (requestType === 'event_rooms') formContent = renderAccommodationForm();
+        else if (requestType === 'series') formContent = renderAccommodationForm();
+        else formContent = renderAccommodationForm();
+        if (embedded) {
+            return (
+                <div className="flex flex-col h-full min-h-0 max-h-[88vh] rounded-2xl overflow-hidden border shadow-2xl" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                    <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <h2 className="text-sm font-black uppercase tracking-widest" style={{ color: colors.textMain }}>
+                            {requestType === 'event_rooms' ? 'Event with accommodation' : requestType === 'event' ? 'Event' : 'New request'}
+                        </h2>
+                        <button type="button" onClick={() => onEmbeddedCancel?.()} className="p-2 rounded-lg hover:bg-white/10 transition-colors" style={{ color: colors.textMuted }} aria-label="Close">
+                            <X size={20} />
+                        </button>
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto">{formContent}</div>
+                    {renderGlobalModals()}
+                </div>
+            );
+        }
+        return <>{formContent}{renderGlobalModals()}</>;
+    }
+
+    if (selectedRequest) {
+        return <>{renderRequestDetailView({ request: selectedRequest, onClose: () => setSelectedRequest(null) })}{renderGlobalModals()}</>;
+    }
+
+    // Mock requests data - No longer needed, using requests state
+
+    const columnLabels: any = {
+        options: '',
+        details: 'Confirmation No.',
+        requestName: 'Request Name',
+        account: 'Account',
+        type: 'Type',
+        meal: 'Meal',
+        status: 'Status',
+        dates: 'Dates',
+        stay_info: 'Info',
+        paid_amount: 'Paid Amount',
+        total_cost: 'Total Cost'
+    };
+
+    const getInitials = (name: string) => {
+        return name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    };
+
+    const getAvatarColor = (name: string) => {
+        const colors = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'];
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        return colors[Math.abs(hash) % colors.length];
+    };
+
+    const getStatusColor = (status: string) => {
+        switch (status) {
+            case 'Inquiry': return colors.textMuted;
+            case 'Accepted': return colors.yellow;
+            case 'Tentative': return colors.blue;
+            case 'Definite': return colors.green;
+            case 'Actual': return '#059669';
+            case 'Lost': 
+            case 'Cancelled': return colors.red;
+            default: return colors.primary;
+        }
+    };
+
+    const toShortPackage = (pkg: string) => {
+        const p = String(pkg || '').toLowerCase().trim();
+        if (!p) return '';
+        if (p === 'coffee break') return 'CB';
+        if (p === 'full day') return 'FD';
+        if (p === 'half day') return 'HD';
+        return p.split(/\s+/).map((w) => w[0]).join('').toUpperCase().slice(0, 3);
+    };
+
+    const mealPlanShort = (meal: string) => {
+        const m = String(meal || '').toUpperCase().trim();
+        if (!m) return '';
+        if (m === 'RO' || m === 'BB' || m === 'HB' || m === 'FB') return m;
+        if (m === 'BREAKFAST') return 'BB';
+        if (m === 'HALF BOARD') return 'HB';
+        if (m === 'FULL BOARD') return 'FB';
+        return m.slice(0, 2);
+    };
+
+    const getMealCellValue = (request: any) => {
+        const type = normalizeRequestTypeKey(request.requestType);
+        const pkg = toShortPackage((request.agenda && request.agenda[0]?.package) || '');
+        const meal = mealPlanShort(request.mealPlan || '');
+        if (type === 'event') return pkg || '-';
+        if (type === 'event_rooms') {
+            if (meal && pkg) return `${meal}/${pkg}`;
+            return meal || pkg || '-';
+        }
+        return meal || '-';
+    };
+
+    const handleColumnDragStart = (column: string) => {
+        setDraggedColumn(column);
+    };
+
+    const handleColumnDrop = (targetColumn: string) => {
+        if (!draggedColumn || draggedColumn === targetColumn) return;
+
+        const newOrder = [...columnOrder];
+        const draggedIndex = newOrder.indexOf(draggedColumn);
+        const targetIndex = newOrder.indexOf(targetColumn);
+
+        newOrder.splice(draggedIndex, 1);
+        newOrder.splice(targetIndex, 0, draggedColumn);
+
+        setColumnOrder(newOrder);
+        setDraggedColumn(null);
+    };
+
+    const filterRequestsByAdvancedSearch = (reqList: any[], params: any) => {
+        return reqList.filter((req: any) => {
+            const typeFilter = String(params?.type || 'all').toLowerCase();
+            const requestType = String(req.requestType || '').toLowerCase();
+            const typeMatch = typeFilter === 'all'
+                || (typeFilter === 'event_rooms' ? requestType === 'event with rooms' : typeFilter === 'series group' ? requestType === 'series' || requestType === 'series group' : requestType === typeFilter);
+
+            const statusFilter = String(params?.status || 'all').toLowerCase();
+            const statusMatch = statusFilter === 'all' || String(req.status || '').toLowerCase() === statusFilter;
+
+            const accountFilter = String(params?.account || '').toLowerCase().trim();
+            const accountMatch = !accountFilter || String(req.account || req.accountName || '').toLowerCase().includes(accountFilter);
+
+            const requestNameFilter = String(params?.requestName || '').toLowerCase().trim();
+            const requestNameMatch = !requestNameFilter || String(req.requestName || '').toLowerCase().includes(requestNameFilter);
+
+            const confFilter = String(params?.confNumber || '').toLowerCase().trim();
+            const confMatch = !confFilter || String(req.confirmationNo || '').toLowerCase().includes(confFilter);
+
+            const arrivalFilter = String(params?.arrival || '').trim();
+            const departureFilter = String(params?.departure || '').trim();
+            const reqStart = String(req.checkIn || req.eventStart || '').trim();
+            const reqEnd = String(req.checkOut || req.eventEnd || '').trim();
+            const arrivalMatch = !arrivalFilter || reqStart >= arrivalFilter;
+            const departureMatch = !departureFilter || reqEnd <= departureFilter;
+
+            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch;
+        });
+    };
+
+    const handleSearchRequests = () => {
+        const params = getSearchOnlyParams(searchParams);
+        setSearchResults(filterRequestsByAdvancedSearch(requests, params));
+        setSearchFormExpanded(false);
+    };
+
+    const accountLabel = (req: any) => String(req.account || req.accountName || '').trim();
+
+    const renderRequestRows = (requestList: any[], compact = false) => {
+        const cpy = compact ? 'py-2' : 'py-5';
+        const cpx = compact ? 'px-3' : 'px-6';
+        const rFirst = compact ? 'rounded-l-xl' : 'rounded-l-2xl';
+        const rLast = compact ? 'rounded-r-xl' : 'rounded-r-2xl';
+        const borderAccent = compact ? '4px' : '6px';
+        if (!requestList.length) {
+            return (
+                <tr>
+                    <td colSpan={columnOrder.length} className={`${compact ? 'py-8 text-xs' : 'py-12 text-sm'} text-center opacity-50`} style={{ color: colors.textMuted }}>
+                        No matching requests.
+                    </td>
+                </tr>
+            );
+        }
+        return requestList.map((request, idx) => (
+            <tr key={request.id || `row-${idx}`} className={`group transition-all duration-300 ${compact ? 'hover:translate-y-[-1px]' : 'hover:translate-y-[-2px]'}`}>
+                {columnOrder.map((column, colIdx) => {
+                    const cellStyle = {
+                        backgroundColor: colors.card,
+                        borderColor: colors.border
+                    };
+
+                    const isFirst = colIdx === 0;
+                    const isLast = colIdx === columnOrder.length - 1;
+                    const acct = accountLabel(request);
+
+                    return (
+                        <td key={column}
+                            className={`${cpy} ${cpx} border-y ${isFirst ? `border-l ${rFirst}` : ''} ${isLast ? `border-r ${rLast}` : ''} ${column === 'total_cost' ? 'text-right' : column === 'dates' ? 'text-left whitespace-nowrap' : 'text-center'}`}
+                            style={{
+                                ...cellStyle,
+                                borderLeft: isFirst ? `${borderAccent} solid ${getStatusColor(request.status)}` : `1px solid ${colors.border}`,
+                                boxShadow: compact ? '0 2px 8px rgba(0,0,0,0.04)' : '0 4px 12px rgba(0,0,0,0.05)'
+                            }}
+                        >
+                            {column === 'options' && (
+                                <div className="relative">
+                                    {readOnlyOperational ? (
+                                        <span className="text-[10px] opacity-30" style={{ color: colors.textMuted }}>—</span>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                const originalIndex = requests.findIndex(r => r.id === request.id);
+                                                setActiveOptionsMenu(originalIndex !== -1 ? originalIndex : null);
+                                            }}
+                                            className={`flex items-center ${compact ? 'gap-1 px-1.5 py-0.5' : 'gap-1.5 px-2 py-1'} rounded-md border ${compact ? 'text-[8px]' : 'text-[9px]'} font-black transition-all hover:bg-white/10 active:scale-95 opacity-60 hover:opacity-100`}
+                                            style={{ color: colors.textMain, borderColor: colors.border }}
+                                        >
+                                            <MoreHorizontal size={compact ? 10 : 12} />
+                                            <span>OPTS</span>
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
+                            {column === 'details' && (
+                                <div className="flex flex-col gap-0.5">
+                                    <button
+                                        onClick={() => { setSelectedRequest(request); }}
+                                        className={`font-black ${compact ? 'text-xs' : 'text-sm'} tracking-tight hover:underline text-left transition-all`}
+                                        style={{ color: colors.primary }}
+                                    >
+                                        {request.confirmationNo}
+                                    </button>
+                                    <button
+                                        onClick={() => { setSelectedRequest(request); }}
+                                        className={`${compact ? 'text-[9px]' : 'text-[10px]'} font-mono opacity-40 hover:opacity-100 text-left w-fit transition-opacity hover:underline`}
+                                        style={{ color: colors.textMain }}
+                                    >
+                                        #{request.id}
+                                    </button>
+                                </div>
+                            )}
+
+                            {column === 'requestName' && (
+                                 <span className={`${compact ? 'text-xs max-w-[120px]' : 'text-sm max-w-[150px]'} font-bold truncate inline-block`} style={{ color: colors.textMain }} title={request.requestName}>
+                                    {request.requestName || 'Unnamed Request'}
+                                 </span>
+                            )}
+
+                            {column === 'account' && (
+                                <div className={`flex items-center ${compact ? 'gap-2' : 'gap-3'}`}>
+                                    <div className={`${compact ? 'w-7 h-7 text-[10px]' : 'w-9 h-9 text-xs'} rounded-full flex items-center justify-center font-bold text-white shadow-sm shrink-0`}
+                                        style={{ backgroundColor: getAvatarColor(acct || '?') }}>
+                                        {getInitials(acct || '? ?')}
+                                    </div>
+                                    <div className="flex flex-col min-w-0">
+                                        <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold truncate`} style={{ color: colors.textMain }}>{acct || '-'}</span>
+                                        <span className={`${compact ? 'text-[9px]' : 'text-[10px]'} opacity-50 truncate`} style={{ color: colors.textMain }}>{request.accountType}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {column === 'type' && (
+                                <span className={`${compact ? 'text-xs' : 'text-sm'} whitespace-nowrap`} style={{ color: colors.textMain }}>{request.requestType}</span>
+                            )}
+
+                            {column === 'meal' && (
+                                <div className="flex">
+                                    {getMealCellValue(request) !== '-' ? (
+                                        <span className={`${compact ? 'px-1.5 py-0.5 text-[9px]' : 'px-2 py-0.5 text-[10px]'} rounded-lg border font-bold`} style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: 'rgba(0,0,0,0.05)' }}>
+                                            {getMealCellValue(request)}
+                                        </span>
+                                    ) : (
+                                        <span className={`${compact ? 'text-[10px]' : 'text-xs'} opacity-30`} style={{ color: colors.textMain }}>-</span>
+                                    )}
+                                </div>
+                            )}
+
+                            {column === 'status' && (
+                                <div className={`flex items-center ${compact ? 'gap-1.5' : 'gap-2'}`}>
+                                    <div className={`${compact ? 'w-1.5 h-1.5' : 'w-2 h-2'} rounded-full shrink-0`} style={{ backgroundColor: getStatusColor(request.status) }}></div>
+                                    <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold`} style={{ color: getStatusColor(request.status) }}>{request.status}</span>
+                                </div>
+                            )}
+
+                            {column === 'dates' && (
+                                <div className={`flex flex-col ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
+                                    {request.checkIn && request.checkIn !== '-' ? (
+                                        <>
+                                            <div className="flex gap-2"><span className="opacity-50">In:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.checkIn}</span></div>
+                                            <div className="flex gap-2"><span className="opacity-50">Out:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.checkOut}</span></div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="flex gap-2"><span className="opacity-50">Start:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.eventStart}</span></div>
+                                            <div className="flex gap-2"><span className="opacity-50">End:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.eventEnd}</span></div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+
+                            {column === 'stay_info' && (
+                                <div className={`flex flex-col ${compact ? 'gap-0.5 text-[10px]' : 'gap-1 text-[11px]'}`}>
+                                    {(() => {
+                                        const type = normalizeRequestTypeKey(request.requestType);
+                                        const isEventOnly = type === 'event';
+                                        const isEventWithAccommodation = type === 'event_rooms';
+                                        const nights = Number(request.nights || calculateNights(request.checkIn, request.checkOut) || 0);
+                                        const rooms = request.rooms ? Object.values(request.rooms).reduce((sum: number, r: any) => sum + Number((r as any).count || 0), 0) : 0;
+                                        const days = calculateEventAgendaDays(request.agenda || []);
+                                        const ic = compact ? 10 : 12;
+                                        if (isEventOnly) {
+                                            return (
+                                                <div className="flex items-center gap-1.5 opacity-60" style={{ color: colors.textMain }}>
+                                                    <Calendar size={ic} /> {days}
+                                                </div>
+                                            );
+                                        }
+                                        return (
+                                            <>
+                                                <div className="flex items-center gap-1.5 opacity-60" style={{ color: colors.textMain }}><Moon size={ic} /> {nights}</div>
+                                                <div className="flex items-center gap-1.5 opacity-60" style={{ color: colors.textMain }}>
+                                                    <Bed size={ic} /> {rooms}
+                                                </div>
+                                                {isEventWithAccommodation && (
+                                                    <div className="flex items-center gap-1.5 opacity-60" style={{ color: colors.textMain }}>
+                                                        <Calendar size={ic} /> {days}
+                                                    </div>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            )}
+
+                             {column === 'paid_amount' && (
+                                <div className={`flex flex-col ${compact ? 'gap-1 min-w-[96px]' : 'gap-1.5 min-w-[120px]'}`}>
+                                    {(() => {
+                                        const fin = calculateAccFinancials(request);
+                                        const fallbackEventTotal = (request.agenda || []).reduce((sum: number, item: any) => sum + (Number(item.rate || 0) * Number(item.pax || 0)) + Number(item.rental || 0), 0);
+                                        const rawTotal = parseFloat(request.totalCost?.toString().replace(/,/g, '') || '0');
+                                        const tCost = fin?.grandTotalWithTax || (rawTotal > 0 ? rawTotal : fallbackEventTotal);
+                                        const pAmt = fin?.paidAmount ?? parseFloat(request.paidAmount?.toString().replace(/,/g, '') || '0');
+                                        const percentage = tCost > 0 ? Math.round((pAmt / tCost) * 100) : 0;
+                                        return (
+                                            <>
+                                                <div className="flex justify-between items-end">
+                                                    <span className={`${compact ? 'text-[10px]' : 'text-xs'} font-bold`} style={{ color: colors.textMain }}>{formatMoney(pAmt, 0)}</span>
+                                                    <span className={`${compact ? 'text-[8px]' : 'text-[9px]'} opacity-40 font-bold`} style={{ color: colors.textMain }}>{percentage}%</span>
+                                                </div>
+                                                <div className={`${compact ? 'h-0.5' : 'h-1'} w-full rounded-full bg-white/5 overflow-hidden`}>
+                                                    <div
+                                                        className="h-full transition-all duration-500"
+                                                        style={{
+                                                            width: `${Math.min(percentage, 100)}%`,
+                                                            backgroundColor: percentage >= 100 ? colors.green : colors.primary
+                                                        }}
+                                                    ></div>
+                                                </div>
+                                            </>
+                                        )
+                                    })()}
+                                </div>
+                            )}
+
+                            {column === 'total_cost' && (
+                                <div className="flex flex-col items-end">
+                                    <span className={`${compact ? 'text-[8px]' : 'text-[10px]'} uppercase font-bold opacity-30`} style={{ color: colors.textMain }}>{selectedCurrency}</span>
+                                    <span className={`${compact ? 'text-sm' : 'text-xl'} font-bold tabular-nums`} style={{ color: colors.textMain }}>
+                                        {(() => {
+                                            const fin = calculateAccFinancials(request);
+                                            const fallbackEventTotal = (request.agenda || []).reduce((sum: number, item: any) => sum + (Number(item.rate || 0) * Number(item.pax || 0)) + Number(item.rental || 0), 0);
+                                            const rawTotal = parseFloat(request.totalCost?.toString().replace(/,/g, '') || '0');
+                                            const total = fin?.grandTotalWithTax || (rawTotal > 0 ? rawTotal : fallbackEventTotal);
+                                            return formatMoney(total);
+                                        })()}
+                                    </span>
+                                </div>
+                            )}
+                        </td>
+                    );
+                })}
+            </tr>
+        ));
+    };
+
+    type TableBlockScrollMode = 'fixed' | 'flow';
+
+    const renderRequestsTableBlock = (
+        requestList: any[],
+        title: string,
+        subtitle: string,
+        scrollMode: TableBlockScrollMode = 'fixed',
+        listPagination?: {
+            page: number;
+            pageSize: 20 | 50 | 100;
+            totalItems: number;
+            totalPages: number;
+            setPage: (p: number) => void;
+            setPageSize: (s: 20 | 50 | 100) => void;
+        } | null
+    ) => {
+        const fixedHeight = scrollMode === 'fixed';
+        const compact = !!listPagination;
+        const theadPx = compact ? 'px-3' : 'px-6';
+        const theadPy = compact ? 'py-1.5' : 'py-2';
+        const theadText = compact ? 'text-[10px]' : 'text-[11px]';
+        const spacingY = compact ? 'border-spacing-y-2' : 'border-spacing-y-4';
+        const headPad = compact ? 'p-4' : 'p-6';
+        const bodyPad = compact ? 'p-4' : 'p-6';
+        const showingFrom =
+            listPagination && listPagination.totalItems > 0
+                ? (listPagination.page - 1) * listPagination.pageSize + 1
+                : 0;
+        const showingTo =
+            listPagination && listPagination.totalItems > 0
+                ? Math.min(listPagination.page * listPagination.pageSize, listPagination.totalItems)
+                : 0;
+        return (
+        <div className={fixedHeight ? 'flex flex-col flex-1 min-h-0 w-full' : 'flex flex-col w-full'}>
+            <div className={`shrink-0 ${headPad} border-b`} style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-center">
+                    <div>
+                        <h1 className={`${compact ? 'text-xl' : 'text-2xl'} font-bold mb-1`} style={{ color: colors.textMain }}>{title}</h1>
+                        <p className={compact ? 'text-xs' : 'text-sm'} style={{ color: colors.textMuted }}>
+                            {subtitle}
+                            {listPagination && listPagination.totalItems > 0 ? (
+                                <span className="opacity-70"> · Showing {showingFrom}–{showingTo}</span>
+                            ) : null}
+                        </p>
+                    </div>
+                    {title === 'All Requests' && (
+                        <div className="flex flex-wrap items-center gap-3">
+                            <div className="relative group flex-1 min-w-[200px] max-w-md">
+                                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-30 group-focus-within:text-primary transition-colors" />
+                                <input
+                                    placeholder="Search confirmation, account or id..."
+                                    className="w-full pl-10 pr-4 py-2 bg-black/20 border border-white/5 rounded-xl outline-none focus:border-primary/50 transition-all text-sm"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                />
+                            </div>
+                            {listPagination && (
+                                <div className="flex items-center gap-2">
+                                    <label className="text-[10px] uppercase font-bold tracking-wider whitespace-nowrap opacity-60" style={{ color: colors.textMuted }}>
+                                        Per page
+                                    </label>
+                                    <select
+                                        value={listPagination.pageSize}
+                                        onChange={(e) => listPagination.setPageSize(Number(e.target.value) as 20 | 50 | 100)}
+                                        className="pl-3 pr-8 py-2 rounded-xl border bg-black/20 text-xs font-bold outline-none cursor-pointer"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        <option value={20}>20</option>
+                                        <option value={50}>50</option>
+                                        <option value={100}>100</option>
+                                    </select>
+                                </div>
+                            )}
+                            <button type="button" className="px-4 py-2 rounded-xl border hover:bg-white/5 transition-colors flex items-center gap-2 text-sm font-bold shrink-0"
+                                style={{ borderColor: colors.border, color: colors.textMain }}>
+                                <Filter size={16} /> Filter
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <div className={fixedHeight ? `flex-1 overflow-auto ${bodyPad} min-h-0` : bodyPad}>
+                <table className={`w-full text-left border-separate ${spacingY}`}>
+                    <thead>
+                        <tr>
+                            {columnOrder.map((column) => (
+                                <th key={column}
+                                    draggable
+                                    onDragStart={() => handleColumnDragStart(column)}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDrop={() => handleColumnDrop(column)}
+                                    className={`${theadPx} ${theadPy} ${theadText} font-bold uppercase tracking-wider cursor-move opacity-50`}
+                                    style={{ color: colors.textMain }}>
+                                    {columnLabels[column as keyof typeof columnLabels]}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {renderRequestRows(requestList, compact)}
+                    </tbody>
+                </table>
+            </div>
+
+            {listPagination ? (
+                <div className={`flex flex-col sm:flex-row items-center justify-center gap-3 ${compact ? 'p-4' : 'p-6'} border-t shrink-0`} style={{ borderColor: colors.border }}>
+                    <span className="text-[10px] font-medium opacity-60" style={{ color: colors.textMuted }}>
+                        Page {listPagination.page} of {listPagination.totalPages}
+                    </span>
+                    <div className="flex items-center gap-1 flex-wrap justify-center max-w-full overflow-x-auto pb-1">
+                        <button
+                            type="button"
+                            disabled={listPagination.page <= 1}
+                            onClick={() => listPagination.setPage(listPagination.page - 1)}
+                            className="p-2 rounded-lg hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+                            style={{ color: colors.textMain }}
+                            aria-label="Previous page"
+                        >
+                            <ChevronRight size={16} className="rotate-180" />
+                        </button>
+                        {Array.from({ length: listPagination.totalPages }, (_, i) => i + 1).map((pageNum) => (
+                            <button
+                                type="button"
+                                key={pageNum}
+                                onClick={() => listPagination.setPage(pageNum)}
+                                className={`min-w-[2.25rem] h-9 px-2 rounded-lg flex items-center justify-center text-xs font-bold transition-all ${pageNum === listPagination.page ? 'shadow-lg' : 'hover:bg-white/5'}`}
+                                style={{
+                                    backgroundColor: pageNum === listPagination.page ? colors.primary : 'transparent',
+                                    color: pageNum === listPagination.page ? '#000' : colors.textMain,
+                                    boxShadow: pageNum === listPagination.page ? `0 4px 12px ${colors.primary}40` : 'none'
+                                }}
+                            >
+                                {pageNum}
+                            </button>
+                        ))}
+                        <button
+                            type="button"
+                            disabled={listPagination.page >= listPagination.totalPages}
+                            onClick={() => listPagination.setPage(listPagination.page + 1)}
+                            className="p-2 rounded-lg hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+                            style={{ color: colors.textMain }}
+                            aria-label="Next page"
+                        >
+                            <ChevronRight size={16} />
+                        </button>
+                    </div>
+                </div>
+            ) : null}
+        </div>
+        );
+    };
+
+    // Show Search Form when subView = 'search' (single page scroll via parent <main>; no nested overflow)
+    if (subView === 'search') {
+        const compactSearchForm = searchFormExpanded && searchResults !== null;
+        return (
+            <div className="w-full min-h-full" style={{ backgroundColor: colors.bg }}>
+                <div
+                    className={`shrink-0 border-b ${searchResults !== null ? 'pb-2' : ''}`}
+                    style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                >
+                    {searchFormExpanded ? (
+                        <div className={`w-full max-w-4xl mx-auto ${compactSearchForm ? 'px-4 py-4 md:px-5 md:py-5 space-y-4' : 'p-6 md:p-8 space-y-6'}`}>
+                            <div className={`text-center ${compactSearchForm ? 'mb-1' : 'mb-2'}`}>
+                                <h2 className={`font-bold ${compactSearchForm ? 'text-lg mb-1' : 'text-2xl mb-2'}`} style={{ color: colors.primary }}>Requests Management Center</h2>
+                            </div>
+
+                            <div className={compactSearchForm ? 'space-y-4' : 'space-y-6'}>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className="col-span-1">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Type</label>
+                                        <select
+                                            value={searchParams?.type || 'all'}
+                                            onChange={(e) => updateSearchParams({ type: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }}>
+                                            <option value="all">All Request Types</option>
+                                            <option value="accommodation">Accommodation</option>
+                                            <option value="event">Event</option>
+                                            <option value="event_rooms">Event with Rooms</option>
+                                            <option value="series group">Series Group</option>
+                                        </select>
+                                    </div>
+                                    <div className="col-span-1">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Status</label>
+                                        <select
+                                            value={searchParams?.status || 'all'}
+                                            onChange={(e) => updateSearchParams({ status: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            <option value="all">All Statuses</option>
+                                            <option value="Inquiry">Inquiry</option>
+                                            <option value="Accepted">Accepted</option>
+                                            <option value="Tentative">Tentative</option>
+                                            <option value="Definite">Definite</option>
+                                            <option value="Actual">Actual</option>
+                                            <option value="Cancelled">Cancelled</option>
+                                        </select>
+                                    </div>
+                                    <div className="col-span-1">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Arrival / Start Date</label>
+                                        <input
+                                            type="date"
+                                            value={searchParams?.arrival || ''}
+                                            onChange={(e) => updateSearchParams({ arrival: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }} placeholder="mm/dd/yyyy" />
+                                    </div>
+                                    <div className="col-span-1">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Departure / End Date</label>
+                                        <input
+                                            type="date"
+                                            value={searchParams?.departure || ''}
+                                            onChange={(e) => updateSearchParams({ departure: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }} placeholder="mm/dd/yyyy" />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Account Name</label>
+                                        <div className="relative">
+                                            <Search size={20} className="absolute left-4 top-1/2 transform -translate-y-1/2 opacity-50" style={{ color: colors.textMuted }} />
+                                            <input
+                                                type="text"
+                                                value={searchParams?.account || ''}
+                                                onChange={(e) => updateSearchParams({ account: e.target.value })}
+                                                className={`w-full pl-12 pr-4 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'py-2 text-sm' : 'py-3'}`}
+                                                style={{ borderColor: colors.border, color: colors.textMain }} placeholder="Search account..." />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Name</label>
+                                        <input
+                                            type="text"
+                                            value={searchParams?.requestName || ''}
+                                            onChange={(e) => updateSearchParams({ requestName: e.target.value })}
+                                            className={`w-full px-4 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'py-2 text-sm' : 'py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            placeholder="Search request name..."
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Confirmation Number</label>
+                                        <input
+                                            type="text"
+                                            value={searchParams?.confNumber || ''}
+                                            onChange={(e) => updateSearchParams({ confNumber: e.target.value })}
+                                            className={`w-full px-4 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'py-2 text-sm' : 'py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }} placeholder="#REQ-..." />
+                                    </div>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={handleSearchRequests}
+                                    className={`w-full rounded-lg font-bold flex items-center justify-center gap-2 hover:brightness-110 transition-all shadow-lg ${compactSearchForm ? 'py-2.5 text-sm' : 'py-3'}`}
+                                    style={{ backgroundColor: colors.primary, color: '#000' }}>
+                                    <Search size={compactSearchForm ? 18 : 20} /> SEARCH REQUESTS
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="w-full max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>Search</h2>
+                                <p className="text-xs opacity-60" style={{ color: colors.textMuted }}>
+                                    {searchResults?.length ?? 0} result(s). Use Manage Search to edit criteria.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setSearchFormExpanded(true)}
+                                className="px-4 py-2 rounded-xl border text-xs font-bold uppercase tracking-wide flex items-center gap-2 hover:bg-white/5 transition-colors"
+                                style={{ borderColor: colors.border, color: colors.primary }}
+                            >
+                                <ChevronDown size={16} /> Manage Search
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {searchResults !== null && (
+                    <div className="mt-4 px-1">
+                        {renderRequestsTableBlock(
+                            searchResults,
+                            'Search Results',
+                            `${searchResults.length} requests match your criteria`,
+                            'flow'
+                        )}
+                    </div>
+                )}
+
+                {renderGlobalModals()}
+            </div>
+        );
+    }
+
+    // Show All Requests Table when subView = 'list' (or default)
+    return (
+        <div className="h-full flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: colors.bg }}>
+            {renderRequestsTableBlock(
+                listPagedRequests,
+                'All Requests',
+                `${listPageRequests.length} total requests found`,
+                'fixed',
+                {
+                    page: listCurrentPage,
+                    pageSize: listPageSize,
+                    totalItems: listPageRequests.length,
+                    totalPages: listTotalPages,
+                    setPage: setListCurrentPage,
+                    setPageSize: (s) => {
+                        setListPageSize(s);
+                        setListCurrentPage(1);
+                    },
+                }
+            )}
+            {renderGlobalModals()}
+        </div>
+    );
+}

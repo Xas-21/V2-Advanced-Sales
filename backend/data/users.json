@@ -1,0 +1,77 @@
+[
+    {
+        "id": "U-TESTSPRITE",
+        "username": "testuser",
+        "password": "CorrectPassword123!",
+        "name": "TestSprite API User",
+        "email": "testuser@test.local",
+        "role": "Sales",
+        "propertyId": "",
+        "permissionGrants": [],
+        "permissionRevokes": [],
+        "stats": {
+            "yearlyTargets": {}
+        }
+    },
+    {
+        "id": "U-VALID-TEST",
+        "username": "validUser",
+        "password": "validPassword123",
+        "name": "Valid Test User",
+        "email": "valid@test.local",
+        "role": "Sales",
+        "propertyId": "",
+        "permissionGrants": [],
+        "permissionRevokes": [],
+        "stats": {
+            "yearlyTargets": {}
+        }
+    },
+    {
+        "id": "U001",
+        "username": "Abdullah",
+        "password": "password123",
+        "name": "Abdullah (Admin)",
+        "email": "abdullah@advancedsales.com",
+        "role": "Admin",
+        "avatar": null,
+        "propertyId": "P1xzg03n5m",
+        "permissionGrants": [],
+        "permissionRevokes": [],
+        "stats": {
+            "yearlyTargets": {
+                "2026": 720
+            }
+        }
+    },
+    {
+        "propertyId": "Pxn4cf8a5y",
+        "name": "Hossam",
+        "username": "Hossam",
+        "role": "Sales Manager",
+        "stats": {
+            "yearlyTargets": {
+                "2026": 60
+            }
+        },
+        "password": "password123",
+        "email": "",
+        "permissionGrants": [],
+        "permissionRevokes": []
+    },
+    {
+        "name": "Houssin",
+        "username": "Houssin",
+        "email": "Hs@gmail.com",
+        "propertyId": "",
+        "role": "General Manager",
+        "permissionGrants": [],
+        "permissionRevokes": [],
+        "stats": {
+            "yearlyTargets": {}
+        },
+        "password": "password123",
+        "id": "Unaf47sv01",
+        "status": "Active"
+    }
+]

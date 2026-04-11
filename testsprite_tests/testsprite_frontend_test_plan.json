@@ -1,0 +1,1064 @@
+[
+  {
+    "id": "TC001",
+    "title": "Sign in successfully and land on dashboard",
+    "description": "Verifies a user can authenticate with valid credentials and reach the authenticated dashboard view.",
+    "category": "User authentication",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the control to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the user lands on the authenticated dashboard"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC002",
+    "title": "Session and personalization persist after hard reload",
+    "description": "Verifies that after changing theme/currency the user can reload the SPA and remain signed in with preferences still applied.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the Login button on the landing page to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the side navigation"
+      },
+      {
+        "type": "action",
+        "description": "Change the theme setting"
+      },
+      {
+        "type": "action",
+        "description": "Change the preferred currency setting"
+      },
+      {
+        "type": "action",
+        "description": "Press F5"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the user remains in the authenticated app shell"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the selected theme and currency preference are still applied"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC003",
+    "title": "Load authenticated dashboard overview with KPIs/charts rendered",
+    "description": "Verifies after sign-in the dashboard overview loads in the app shell and displays KPI/charts content.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the Login button on the landing page to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify dashboard KPI cards are displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify dashboard charts or trend visuals are displayed"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC004",
+    "title": "Switch modules using side navigation to CRM",
+    "description": "Verifies an authenticated user can use the side navigation to switch from the dashboard overview to the CRM module.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the Login button on the landing page to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the side navigation"
+      },
+      {
+        "type": "action",
+        "description": "Click the navigation item for the CRM module"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the CRM module view is displayed"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC005",
+    "title": "Search and create a new request and see it in the list",
+    "description": "Verifies an authenticated ops user can search/filter requests, create a new request with required fields, and see the new request appear in the requests list.",
+    "category": "Requests management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the Requests module"
+      },
+      {
+        "type": "action",
+        "description": "Fill a search term into the requests search field"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new request"
+      },
+      {
+        "type": "action",
+        "description": "Fill required request details with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new request"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the newly created request appears in the requests list"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC006",
+    "title": "Create account and add a sales call and see timeline update",
+    "description": "Verifies an authenticated sales user can select a property context, create a new account, add a sales call activity, and see the account and its activity reflected in the CRM view.",
+    "category": "CRM and account workflow",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the CRM module"
+      },
+      {
+        "type": "action",
+        "description": "Select a property context in CRM"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new account record"
+      },
+      {
+        "type": "action",
+        "description": "Fill required account details with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new account"
+      },
+      {
+        "type": "action",
+        "description": "Open the newly created account"
+      },
+      {
+        "type": "action",
+        "description": "Start adding a sales call activity"
+      },
+      {
+        "type": "action",
+        "description": "Fill required sales call details with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the sales call activity"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the account shows the newly added activity in its timeline"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC007",
+    "title": "Edit an existing request and see updates reflected",
+    "description": "Verifies an authenticated ops user can open a request, edit fields including lifecycle status, save, and see the updated request details reflected.",
+    "category": "Requests management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the Requests module"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new request"
+      },
+      {
+        "type": "action",
+        "description": "Fill required request details with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new request"
+      },
+      {
+        "type": "action",
+        "description": "Open the newly created request details"
+      },
+      {
+        "type": "action",
+        "description": "Edit at least one request field with a valid new value"
+      },
+      {
+        "type": "action",
+        "description": "Change the request lifecycle status to a different valid status"
+      },
+      {
+        "type": "action",
+        "description": "Save the request updates"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the request details reflect the saved updates"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC008",
+    "title": "Change theme and preferred currency then sign out",
+    "description": "Verifies a user can change theme and preferred currency in the app shell and then sign out back to landing/login.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the Login button on the landing page to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the side navigation"
+      },
+      {
+        "type": "action",
+        "description": "Change the theme setting"
+      },
+      {
+        "type": "action",
+        "description": "Change the preferred currency setting"
+      },
+      {
+        "type": "action",
+        "description": "Sign out"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the landing page or authentication screen is displayed"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC009",
+    "title": "Update an existing account and see it refreshed in CRM list",
+    "description": "Verifies an authenticated sales user can open an account, update its details, save, and see the updated information reflected in the account list or details view.",
+    "category": "CRM and account workflow",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the CRM module"
+      },
+      {
+        "type": "action",
+        "description": "Select a property context in CRM"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new account record"
+      },
+      {
+        "type": "action",
+        "description": "Fill required account details with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new account"
+      },
+      {
+        "type": "action",
+        "description": "Open the newly created account"
+      },
+      {
+        "type": "action",
+        "description": "Edit at least one account detail with a valid new value"
+      },
+      {
+        "type": "action",
+        "description": "Save the account updates"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the updated account information is visible in the account details or list"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC010",
+    "title": "Create a new property and see it listed in Settings",
+    "description": "Verifies an authenticated admin can create a new property with required fields and see it appear in the properties list within Settings.",
+    "category": "Settings and admin data management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the Settings area"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the properties management section"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new property"
+      },
+      {
+        "type": "action",
+        "description": "Fill required property fields with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new property"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the new property appears in the properties list"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC011",
+    "title": "Toggle password visibility while entering credentials",
+    "description": "Verifies the user can toggle password visibility and still submit credentials successfully to reach the dashboard.",
+    "category": "User authentication",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the control to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Toggle password visibility"
+      },
+      {
+        "type": "action",
+        "description": "Toggle password visibility again"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the user lands on the authenticated dashboard"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC012",
+    "title": "Filter requests list to narrow results",
+    "description": "Verifies an authenticated ops user can apply a filter on the requests list and the list updates to show only matching results.",
+    "category": "Requests management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the Requests module"
+      },
+      {
+        "type": "action",
+        "description": "Apply an available requests filter with a valid value"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the requests list updates to show filtered results"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC013",
+    "title": "Create a new user and see it listed in Settings",
+    "description": "Verifies an authenticated admin can create a new user with required fields and see the user added to the users list.",
+    "category": "Settings and admin data management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the Settings area"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the users management section"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new user"
+      },
+      {
+        "type": "action",
+        "description": "Fill required user fields with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new user"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the new user appears in the users list"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC014",
+    "title": "Delete a user and confirm it is removed from the list",
+    "description": "Verifies an authenticated admin can delete a user from Settings and the user no longer appears in the users list after confirmation.",
+    "category": "Settings and admin data management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Open the Settings area"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the users management section"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new user"
+      },
+      {
+        "type": "action",
+        "description": "Fill required user fields with valid values"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new user"
+      },
+      {
+        "type": "action",
+        "description": "Initiate deletion for the newly created user"
+      },
+      {
+        "type": "action",
+        "description": "Confirm the deletion"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the deleted user no longer appears in the users list"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC015",
+    "title": "Block login when password is missing",
+    "description": "Verifies submitting the login form with a blank password shows a validation error and does not authenticate the user.",
+    "category": "User authentication",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the control to open the authentication screen"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Leave the password field empty"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify a password-required validation error is visible"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC016",
+    "title": "Open authentication screen from landing page",
+    "description": "Verifies a public visitor can browse the landing page and reach the authentication screen from the entry route.",
+    "category": "Landing and subscription request",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Scroll through the landing page highlights section"
+      },
+      {
+        "type": "action",
+        "description": "Scroll through the feature cards or screenshots section"
+      },
+      {
+        "type": "action",
+        "description": "Click the control to open the authentication screen"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the authentication form is displayed"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC017",
+    "title": "Required-field validation prevents creating a request",
+    "description": "Verifies an authenticated ops user cannot submit a new request when a required field is missing and a validation error is shown.",
+    "category": "Requests management",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click the login entry point"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_USER}} into the username field"
+      },
+      {
+        "type": "action",
+        "description": "Fill {{LOGIN_PASSWORD}} into the password field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the login form"
+      },
+      {
+        "type": "action",
+        "description": "Switch to the Requests module"
+      },
+      {
+        "type": "action",
+        "description": "Start creating a new request"
+      },
+      {
+        "type": "action",
+        "description": "Fill request details while leaving at least one required field blank"
+      },
+      {
+        "type": "action",
+        "description": "Submit the new request"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify a validation error is visible for the missing required field"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC018",
+    "title": "Submit subscription/contact request via mailto handoff",
+    "description": "Verifies a public visitor can fill the contact form and submit to trigger an email compose handoff or confirmation UX.",
+    "category": "Landing and subscription request",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Scroll to the contact or subscription section"
+      },
+      {
+        "type": "action",
+        "description": "Fill Test Prospect into the name field"
+      },
+      {
+        "type": "action",
+        "description": "Fill prospect@example.com into the email field"
+      },
+      {
+        "type": "action",
+        "description": "Fill a short inquiry message into the message field"
+      },
+      {
+        "type": "action",
+        "description": "Submit the subscription/contact request form"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify a confirmation or email compose handoff is presented"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC019",
+    "title": "Open Calendar module from sidebar",
+    "description": "After login as Admin, open sidebar and open Calendar; verify calendar or schedule UI is shown.",
+    "category": "Calendar",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation using the menu control if the sidebar is hidden" },
+      { "type": "action", "description": "Click the navigation item labeled Calendar" },
+      { "type": "assertion", "description": "Verify calendar or month/week schedule content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC020",
+    "title": "Open To Do module from sidebar",
+    "description": "After login, navigate to To Do management and verify task or to-do UI appears.",
+    "category": "To-Do",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item labeled To Do" },
+      { "type": "assertion", "description": "Verify to-do or task management content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC021",
+    "title": "Open Events and Catering module",
+    "description": "After login, open Events & Catering from the sidebar and verify events or catering UI loads.",
+    "category": "Events",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item for Events & Catering" },
+      { "type": "assertion", "description": "Verify events or catering workspace content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC022",
+    "title": "Open Contracts module",
+    "description": "After login, open Contracts from the sidebar and verify contracts list or workspace appears.",
+    "category": "Contracts",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item labeled Contracts" },
+      { "type": "assertion", "description": "Verify contracts-related content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC023",
+    "title": "Open Accounts module",
+    "description": "After login, open Accounts from the sidebar and verify accounts list or profile workspace.",
+    "category": "Accounts",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item labeled Accounts" },
+      { "type": "assertion", "description": "Verify accounts or commercial accounts content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC024",
+    "title": "Open Reports module as Admin",
+    "description": "User Abdullah is Admin with reports access; open Reports from sidebar and verify reporting UI.",
+    "category": "Reports",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item labeled Reports" },
+      { "type": "assertion", "description": "Verify reports or analytics content is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC025",
+    "title": "Open Settings and view properties section",
+    "description": "After login, open Settings and reach properties or configuration management UI.",
+    "category": "Settings",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click the navigation item labeled Settings" },
+      { "type": "action", "description": "Open the properties or Properties management section if tabs exist" },
+      { "type": "assertion", "description": "Verify settings management UI with properties or users is visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC026",
+    "title": "Return to Dashboard from another module",
+    "description": "Navigate to CRM then back to Dashboard via sidebar.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click Sales Calls Management in the sidebar" },
+      { "type": "action", "description": "Open the side navigation again if needed" },
+      { "type": "action", "description": "Click Dashboard in the sidebar" },
+      { "type": "assertion", "description": "Verify dashboard overview or KPI content is visible again" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC027",
+    "title": "Use theme switcher on login screen",
+    "description": "On the login screen, cycle theme control and verify UI still allows login.",
+    "category": "User authentication",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page" },
+      { "type": "action", "description": "Click the theme or palette control on the login card if present" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "assertion", "description": "Verify authenticated app shell is displayed" }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC028",
+    "title": "Browse landing page without logging in",
+    "description": "Public landing shows marketing content and Subscribe/Login actions.",
+    "category": "Landing and subscription request",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Scroll through the main hero and feature sections" },
+      { "type": "assertion", "description": "Verify Login and Subscribe or similar calls-to-action are visible" }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC029",
+    "title": "Requests module list view only",
+    "description": "After login, open Requests and verify list or search UI without creating a request.",
+    "category": "Requests management",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open the side navigation if collapsed" },
+      { "type": "action", "description": "Click Requests Management" },
+      { "type": "assertion", "description": "Verify requests search, list, or management controls are visible" }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC030",
+    "title": "Header shows page title when switching modules",
+    "description": "After login, switch from Dashboard to Settings and verify header title updates.",
+    "category": "Dashboard shell and navigation",
+    "steps": [
+      { "type": "action", "description": "Navigate to /" },
+      { "type": "action", "description": "Click the Login button on the landing page to open the authentication screen" },
+      { "type": "action", "description": "Fill {{LOGIN_USER}} into the username field" },
+      { "type": "action", "description": "Fill {{LOGIN_PASSWORD}} into the password field" },
+      { "type": "action", "description": "Submit the login form" },
+      { "type": "action", "description": "Open Settings from the sidebar" },
+      { "type": "assertion", "description": "Verify header or title area indicates Settings" }
+    ],
+    "priority": "Low"
+  }
+]

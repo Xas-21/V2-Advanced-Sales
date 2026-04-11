@@ -1,0 +1,20 @@
+{
+  "status": "commited",
+  "type": "frontend",
+  "scope": "codebase",
+  "localEndpoint": "http://127.0.0.1:4173",
+  "loginUser": "Abdullah",
+  "loginPassword": "password123",
+  "executionArgs": {
+    "projectName": "V2-Advanced-Sales",
+    "projectPath": "",
+    "testIds": [],
+    "additionalInstruction": "Configure projectPath to your clone path. Add API_KEY in envs for TestSprite cloud.",
+    "serverMode": "production",
+    "envs": {
+      "API_KEY": ""
+    }
+  },
+  "serverPort": 0,
+  "proxy": ""
+}

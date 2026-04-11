@@ -1,0 +1,6023 @@
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import {
+    LayoutDashboard,
+    CalendarDays,
+    Wine,
+    Settings,
+    Pin,
+    PinOff,
+    Search,
+    Bell,
+    User,
+    TrendingUp,
+    Users,
+    Briefcase,
+    MoreHorizontal,
+    FileCheck,
+    Clock,
+    ChevronDown,
+    BarChart3,
+    PieChart as PieChartIcon,
+    Activity,
+    BedDouble,
+    Crown,
+    CheckSquare,
+    MessageSquare,
+    Filter,
+    ArrowRightLeft,
+    DollarSign,
+    FileText,
+    Phone,
+    XCircle,
+    CheckCircle2,
+    AlertCircle,
+    Palette,
+    X,
+    Target,
+    Briefcase as BriefcaseIcon,
+    Menu,
+    LogOut,
+    ChevronLeft,
+    ChevronRight,
+    Check,
+    ListTodo,
+    List,
+    Star,
+    ClipboardList,
+    Plus,
+    MapPin,
+    Utensils,
+    Calendar,
+    CalendarCheck,
+    Printer,
+    Grid,
+    LayoutList,
+    Download,
+    Trash2
+} from 'lucide-react';
+import { apiUrl } from './apiBase';
+import {
+    AreaChart,
+    Area,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+    ResponsiveContainer,
+    PieChart,
+    Pie,
+    Cell,
+    BarChart,
+    Bar,
+    Legend,
+    LineChart,
+    Line,
+    ComposedChart,
+    RadialBarChart,
+    RadialBar
+} from 'recharts';
+import Login from './Login';
+import LandingPage from './LandingPage';
+import CRM from './CRM';
+import Contracts from './Contracts';
+import Reports from './Reports';
+import SettingsPage from './Settings';
+import RequestsManager from './RequestsManager';
+import AddSalesCallModal from './AddSalesCallModal';
+import AddAccountModal from './AddAccountModal';
+import AccountsPage from './AccountsPage';
+import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
+import { formatCompactAmount, formatCompactCurrency } from './formatCompactCurrency';
+import { CURRENCY_OPTIONS, type CurrencyCode, formatCurrencyAmount, resolveCurrencyCode } from './currency';
+import { contactDisplayName } from './accountLeadMapping';
+import {
+    calculateAccFinancialsForRequest,
+    calculateNights,
+    printBeoDocument,
+    getAccountForRequest,
+    getEventDateWindow,
+    formatAgendaPackageSummary,
+    formatAgendaRowCoffeeBreak,
+    formatAgendaRowLunch,
+    formatAgendaRowDinner,
+    formatBeoSpecialRequestsCombined,
+    inclusiveCalendarDays,
+    normalizeRequestTypeKey,
+} from './beoShared';
+import {
+    loadSegmentsForProperty,
+    loadAccountTypesForProperty,
+    TAXONOMY_CHANGED_EVENT,
+} from './propertyTaxonomy';
+import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
+import {
+    canAccessReports,
+    canDeleteTasks,
+    canDeleteContracts,
+    canMutateOperational,
+    canDeleteRequests,
+} from './userPermissions';
+
+/**
+ * Advanced Sales v20
+ * * Fixes:
+ * - Added missing CalendarCheck import.
+ * - Verified object rendering safety.
+ */
+
+// --- Theme Presets ---
+const THEMES = {
+    luxury: {
+        name: 'Luxury Dark',
+        colors: {
+            bg: '#121212',
+            card: '#1E1E1E',
+            primary: '#C09A4E', // Rich Metallic Gold
+            primaryHighlight: '#EACD84',
+            primaryShadow: '#806125',
+            primaryDim: 'rgba(192, 154, 78, 0.15)',
+            textMain: '#FFFFFF',
+            textMuted: '#9CA3AF',
+            border: 'rgba(255, 255, 255, 0.08)',
+            grid: '#333333',
+            tooltip: '#1E1E1E',
+            blue: '#3B82F6',
+            green: '#10B981',
+            cyan: '#06B6D4',
+            orange: '#F97316',
+            yellow: '#EAB308',
+            red: '#EF4444',
+            purple: '#8B5CF6',
+        }
+    },
+    light: {
+        name: 'Blue Sky',
+        colors: {
+            bg: '#DBEAFE', // Stronger light blue background
+            card: '#EFF6FF', // Distinctly blue-white card background
+            primary: '#1D4ED8', // Deep vibrant blue
+            primaryHighlight: '#3B82F6',
+            primaryShadow: '#1E3A8A',
+            primaryDim: 'rgba(37, 99, 235, 0.15)',
+            textMain: '#0F172A', // Navy text
+            textMuted: '#475569', // Blue-grey muted text
+            border: '#BFDBFE', // Solid light blue border
+            grid: '#BFDBFE', // Matching grid
+            tooltip: '#EFF6FF',
+            blue: '#2563EB',
+            green: '#059669',
+            cyan: '#0891B2',
+            orange: '#EA580C',
+            yellow: '#CA8A04',
+            red: '#DC2626',
+            purple: '#7C3AED',
+        }
+    },
+    desert: {
+        name: 'AlUla Desert',
+        colors: {
+            bg: '#EFE5D9',
+            card: '#FFF8F0',
+            primary: '#D67D3E',
+            primaryHighlight: '#E8A775',
+            primaryShadow: '#9C5624',
+            primaryDim: 'rgba(214, 125, 62, 0.15)',
+            textMain: '#4A3B32',
+            textMuted: '#8C7B70',
+            border: 'rgba(74, 59, 50, 0.08)',
+            grid: '#DECDC3',
+            tooltip: '#FFF8F0',
+            blue: '#5D8AA8',
+            green: '#556B2F',
+            cyan: '#4682B4',
+            orange: '#CD853F',
+            yellow: '#DAA520',
+            red: '#A52A2A',
+            purple: '#800080',
+        }
+    },
+    colorful: {
+        name: 'Cyber Pop',
+        colors: {
+            bg: '#0F172A',
+            card: '#1E293B',
+            primary: '#F43F5E',
+            primaryHighlight: '#FDA4AF',
+            primaryShadow: '#BE123C',
+            primaryDim: 'rgba(244, 63, 94, 0.15)',
+            textMain: '#F8FAFC',
+            textMuted: '#94A3B8',
+            border: 'rgba(255, 255, 255, 0.08)',
+            grid: '#334155',
+            tooltip: '#1E293B',
+            blue: '#38BDF8',
+            green: '#34D399',
+            cyan: '#22D3EE',
+            orange: '#FB923C',
+            yellow: '#FACC15',
+            red: '#FB7185',
+            purple: '#C084FC',
+        }
+    }
+};
+
+const ACCOUNTS_STORAGE_KEY = 'visatour_accounts_v1';
+const ACCOUNTS_BY_PROP_PREFIX = 'visatour_accounts_by_prop_v1::';
+const CRM_BY_PROP_PREFIX = 'visatour_crm_leads_by_prop_v1::';
+const ACCOUNTS_LEGACY_OWNER_KEY = 'visatour_accounts_legacy_owner_v1';
+const TASKS_STORAGE_KEY = 'visatour_tasks_v1';
+
+const accountsStorageKey = (propertyId: string) => `${ACCOUNTS_BY_PROP_PREFIX}${propertyId}`;
+const crmLocalStorageKey = (propertyId: string) => `${CRM_BY_PROP_PREFIX}${propertyId}`;
+
+function loadAccountsForProperty(propertyId: string): any[] {
+    try {
+        const k = accountsStorageKey(propertyId);
+        const cur = localStorage.getItem(k);
+        if (cur) {
+            const parsed = JSON.parse(cur);
+            if (Array.isArray(parsed)) return parsed;
+        }
+        const legacy = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+        if (!legacy) return [];
+        const parsed = JSON.parse(legacy);
+        if (!Array.isArray(parsed) || parsed.length === 0) return [];
+        if (localStorage.getItem(ACCOUNTS_LEGACY_OWNER_KEY)) return [];
+        localStorage.setItem(k, legacy);
+        localStorage.setItem(ACCOUNTS_LEGACY_OWNER_KEY, propertyId);
+        return parsed;
+    } catch {
+        return [];
+    }
+}
+
+function loadTasksFromStorage(): any[] {
+    try {
+        const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((t: any) => ({ ...t, completed: Boolean(t.completed) }));
+    } catch {
+        return [];
+    }
+}
+
+const defaultCrmLeadBuckets = () => ({
+    new: [] as any[],
+    qualified: [] as any[],
+    proposal: [] as any[],
+    negotiation: [] as any[],
+    won: [] as any[],
+    notInterested: [] as any[]
+});
+
+function mergeCrmBucketsFromApi(raw: any): Record<string, any[]> {
+    const base = defaultCrmLeadBuckets();
+    if (!raw || typeof raw !== 'object') return base;
+    (Object.keys(base) as string[]).forEach((key) => {
+        const arr = (raw as any)[key];
+        if (Array.isArray(arr)) (base as any)[key] = arr;
+    });
+    return base;
+}
+
+/** Keep only leads that belong to this property: explicit propertyId, or legacy rows tied to an account on this property. */
+function filterCrmBucketsForPropertyContext(
+    buckets: Record<string, any[]>,
+    propertyId: string,
+    accounts: any[]
+): Record<string, any[]> {
+    const pid = String(propertyId);
+    const allowedAccountIds = new Set((accounts || []).map((a: any) => String(a.id)));
+    const out = defaultCrmLeadBuckets();
+    (Object.keys(out) as string[]).forEach((key) => {
+        const arr = (buckets as any)[key];
+        if (!Array.isArray(arr)) return;
+        (out as any)[key] = arr
+            .filter((l: any) => {
+                const lp = l.propertyId != null && String(l.propertyId).trim() !== '' ? String(l.propertyId) : '';
+                if (lp) return lp === pid;
+                if (!l.accountId) return false;
+                return allowedAccountIds.has(String(l.accountId));
+            })
+            .map((l: any) => (l.propertyId ? l : { ...l, propertyId: pid }));
+    });
+    return out;
+}
+
+const DASHBOARD_PERIOD_MODES = ['autoCurrentYear', 'custom', 'mtd', 'qtd', 'ytd'] as const;
+type DashboardPeriodMode = (typeof DASHBOARD_PERIOD_MODES)[number];
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const KPI_STATUS_ORDER = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'] as const;
+
+const toYmd = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+};
+
+const parseYmd = (value: any): string => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) return '';
+    return toYmd(dt);
+};
+
+const asNumber = (value: any) => parseFloat(String(value ?? 0).replace(/,/g, '')) || 0;
+
+const normalizeStatus = (status: any): string => {
+    const raw = String(status || '').trim().toLowerCase();
+    if (raw === 'draft') return 'Inquiry';
+    if (raw === 'inquiry') return 'Inquiry';
+    if (raw === 'accepted') return 'Accepted';
+    if (raw === 'tentative') return 'Tentative';
+    if (raw === 'definite') return 'Definite';
+    if (raw === 'actual') return 'Actual';
+    if (raw === 'cancelled') return 'Cancelled';
+    return '';
+};
+
+/** Dashboard KPIs, revenue, rooms, and MICE exclude Cancelled; status breakdown widgets still count them. */
+const isDashboardExcludedRequest = (req: any) => normalizeStatus(req?.status) === 'Cancelled';
+
+const isSeriesRequest = (req: any) => String(req?.requestType || '').toLowerCase().includes('series');
+
+const getPrimaryOperationalDate = (req: any): string => {
+    const checkIn = parseYmd(req?.checkIn);
+    const eventStart = parseYmd(req?.eventStart);
+    if (checkIn && eventStart) return checkIn <= eventStart ? checkIn : eventStart;
+    return checkIn || eventStart || '';
+};
+
+const getRequestCountDates = (req: any): string[] => {
+    if (!isSeriesRequest(req)) {
+        const primary = getPrimaryOperationalDate(req);
+        return primary ? [primary] : [];
+    }
+    const rows = Array.isArray(req?.rooms) ? req.rooms : [];
+    const dates = rows
+        .map((r: any) => parseYmd(r?.arrival || r?.checkIn))
+        .filter(Boolean);
+    if (dates.length) return dates;
+    const primary = getPrimaryOperationalDate(req);
+    return primary ? [primary] : [];
+};
+
+const getCurrentYearRange = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    return {
+        start: `${y}-01-01`,
+        end: `${y}-12-31`,
+    };
+};
+
+const getMtdRange = () => {
+    const now = new Date();
+    return {
+        start: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`,
+        end: toYmd(now),
+    };
+};
+
+const getQtdRange = () => {
+    const now = new Date();
+    const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
+    return {
+        start: `${now.getFullYear()}-${String(qStartMonth + 1).padStart(2, '0')}-01`,
+        end: toYmd(now),
+    };
+};
+
+const getYtdRange = () => {
+    const now = new Date();
+    return {
+        start: `${now.getFullYear()}-01-01`,
+        end: toYmd(now),
+    };
+};
+
+const shiftRangeByYears = (range: { start: string; end: string }, years: number) => {
+    const s = parseYmd(range.start);
+    const e = parseYmd(range.end);
+    if (!s || !e) return range;
+    const sd = new Date(`${s}T00:00:00`);
+    const ed = new Date(`${e}T00:00:00`);
+    sd.setFullYear(sd.getFullYear() + years);
+    ed.setFullYear(ed.getFullYear() + years);
+    return { start: toYmd(sd), end: toYmd(ed) };
+};
+
+const isIsoInRange = (iso: string, range: { start: string; end: string }) => {
+    if (!iso) return false;
+    return iso >= range.start && iso <= range.end;
+};
+
+const fmtMd = (iso: string) => {
+    const parsed = parseYmd(iso);
+    if (!parsed) return '—';
+    const dt = new Date(`${parsed}T00:00:00`);
+    return dt.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+};
+
+const formatPeriodLabel = (range: { start: string; end: string }) => `${fmtMd(range.start)} - ${fmtMd(range.end)}`;
+
+const getMonthKey = (iso: string) => {
+    const parsed = parseYmd(iso);
+    return parsed ? parsed.slice(0, 7) : '';
+};
+
+const monthNameToIndex = (name: any) => {
+    const raw = String(name || '').trim().toLowerCase();
+    const names = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    return names.indexOf(raw);
+};
+
+const buildMonthAxis = (range: { start: string; end: string }) => {
+    const startIso = parseYmd(range.start);
+    const endIso = parseYmd(range.end);
+    if (!startIso || !endIso || startIso > endIso) return [];
+    const start = new Date(`${startIso}T00:00:00`);
+    const end = new Date(`${endIso}T00:00:00`);
+    const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+    const endBoundary = new Date(end.getFullYear(), end.getMonth(), 1);
+    const singleYear = start.getFullYear() === end.getFullYear();
+    const out: Array<{ key: string; month: string }> = [];
+    while (cursor <= endBoundary) {
+        const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+        const label = singleYear
+            ? MONTH_SHORT[cursor.getMonth()]
+            : `${MONTH_SHORT[cursor.getMonth()]} ${String(cursor.getFullYear()).slice(2)}`;
+        out.push({ key, month: label });
+        cursor.setMonth(cursor.getMonth() + 1);
+    }
+    return out;
+};
+
+const recentRequests = [
+    { id: 1, client: 'Brainquil', type: 'Event w/o Rooms', date: 'Jan 18', status: 'Pending', amount: '45k' },
+    { id: 2, client: 'Al-Mosafer', type: 'Series Group', date: 'Jan 17', status: 'Actual', amount: '120k' },
+    { id: 3, client: 'Pangaea', type: 'FIT Group', date: 'Jan 16', status: 'Paid', amount: '32k' },
+    { id: 4, client: 'ALBORAQ', type: 'Corp Event', date: 'Jan 15', status: 'Draft', amount: '15k' },
+    { id: 5, client: 'Royal Comm.', type: 'Gov Delegation', date: 'Jan 14', status: 'Actual', amount: '85k' },
+    { id: 6, client: 'Husaak', type: 'Adventure', date: 'Jan 12', status: 'Paid', amount: '28k' },
+];
+
+const recentSalesCalls = [
+    { id: 1, activity: 'Site Inspection', client: 'Rolex Team', date: 'Yesterday', result: 'Positive' },
+    { id: 2, activity: 'Contract Neg.', client: 'Seera Group', date: 'Jan 15', result: 'Ongoing' },
+    { id: 3, activity: 'Sales Visit', client: 'Royal Comm.', date: 'Jan 12', result: 'Completed' },
+    { id: 4, activity: 'Cold Call', client: 'Tech Solutions', date: 'Jan 10', result: 'No Answer' },
+];
+
+const TASK_CATEGORIES = ['Follow-up', 'Contract', 'Payment', 'Event Prep', 'Internal'];
+
+const MOCK_PROPERTIES = [];
+
+const accountPerformanceData = [
+    { id: 1, client: 'Seera Group', type: 'DMC', revenue: 'SAR 450k', bookings: 15, trend: '+12%' },
+    { id: 2, client: 'Al-Mosafer', type: 'DMC', revenue: 'SAR 320k', bookings: 12, trend: '+5%' },
+    { id: 3, client: 'Saudi Aramco', type: 'Corporate', revenue: 'SAR 280k', bookings: 8, trend: 'Stable' },
+    { id: 4, client: 'Royal Comm.', type: 'Government', revenue: 'SAR 190k', bookings: 5, trend: '+20%' },
+    { id: 5, client: 'Husaak', type: 'Adventure', revenue: 'SAR 150k', bookings: 10, trend: '+8%' },
+    { id: 6, client: 'Roam', type: 'DMC', revenue: 'SAR 120k', bookings: 6, trend: '-2%' },
+];
+
+const analyticTables = {
+    statusBreakdown: [
+        { label: 'Actual', count: 54, pct: '56%' },
+        { label: 'Cancelled', count: 16, pct: '17%' },
+        { label: 'Paid', count: 13, pct: '13%' },
+        { label: 'Pending', count: 13, pct: '14%' },
+    ],
+    typeBreakdown: [
+        { label: 'Group Accom.', count: 42, pct: '45%' },
+        { label: 'Event w/o Rooms', count: 28, pct: '30%' },
+        { label: 'Series Group', count: 24, pct: '25%' },
+    ],
+};
+
+// --- Initial Events Data (Kanban) ---
+const initialEventsKanban = {
+    inquiry: [
+        { id: 101, title: 'Red Sea Annual Gala', client: 'Red Sea Global', pax: 150, budget: '200k', date: 'Feb 20', type: 'Gala Dinner' },
+        { id: 102, title: 'Saudi Tour Press Conf', client: 'Min. of Sport', pax: 50, budget: '45k', date: 'Jan 25', type: 'Press' }
+    ],
+    accepted: [
+        { id: 103, title: 'Wedding: Al-Saud', client: 'Private', pax: 300, budget: '850k', date: 'Mar 15', type: 'Wedding' },
+        { id: 104, title: 'Product Launch', client: 'Lucid Motors', pax: 80, budget: '120k', date: 'Feb 10', type: 'Corporate' }
+    ],
+    tentative: [
+        { id: 105, title: 'Team Retreat', client: 'McKinsey', pax: 25, budget: '180k', date: 'Feb 05', type: 'Retreat' }
+    ],
+    definite: [
+        { id: 106, title: 'Al-Ula Arts Festival', client: 'RCU', pax: 500, budget: '1.2M', date: 'Feb 12', type: 'Festival' },
+        { id: 107, title: 'VIP Dinner', client: 'Cartier', pax: 40, budget: '95k', date: 'Jan 22', type: 'Dining' }
+    ],
+    actual: [
+        { id: 109, title: 'Executive Summit', client: 'NEOM', pax: 120, budget: '450k', date: 'Jan 15', type: 'Summit' }
+    ],
+    cancelled: [
+        { id: 108, title: 'Regional Expo', client: 'SME Authority', pax: 1000, budget: '2.5M', date: 'Jan 10', type: 'Exhibition' }
+    ]
+};
+
+// --- Events & Catering: request helpers (MICE types + kanban mapping) ---
+const COLUMN_TO_STATUS: Record<string, string> = {
+    inquiry: 'Inquiry',
+    accepted: 'Accepted',
+    tentative: 'Tentative',
+    definite: 'Definite',
+    actual: 'Actual',
+    cancelled: 'Cancelled',
+};
+
+const statusToColumnId = (status: string): string => {
+    const s = (status || 'Inquiry').toLowerCase();
+    if (s === 'lost') return 'cancelled';
+    if (s === 'draft') return 'inquiry';
+    const valid = ['inquiry', 'accepted', 'tentative', 'definite', 'actual', 'cancelled'];
+    if (valid.includes(s)) return s;
+    return 'inquiry';
+};
+
+/** Min/max dates for filtering MICE requests (agenda + legacy event/check fields). */
+function getMiceRequestDateWindow(req: any): { start: string; end: string } {
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    const dates: string[] = [];
+    for (const item of agenda) {
+        const s = String(item?.startDate || '').trim().slice(0, 10);
+        const e = String(item?.endDate || item?.startDate || '').trim().slice(0, 10);
+        if (s) dates.push(s);
+        if (e) dates.push(e);
+    }
+    if (dates.length) {
+        const sorted = [...new Set(dates)].sort();
+        return { start: sorted[0], end: sorted[sorted.length - 1] };
+    }
+    const a = String(req?.eventStart || req?.checkIn || req?.requestDate || '').slice(0, 10);
+    const b = String(req?.eventEnd || req?.checkOut || a || '').slice(0, 10) || a;
+    return { start: a, end: b || a };
+}
+
+function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+    if (!aStart && !aEnd) return true;
+    const as = aStart || aEnd;
+    const ae = aEnd || aStart;
+    return !(ae < bStart || as > bEnd);
+}
+
+function requestInEventDateRange(req: any, range: { start: string; end: string }) {
+    if (!range?.start && !range?.end) return true;
+    const start = range.start || '1970-01-01';
+    const end = range.end || '2099-12-31';
+    const win = getMiceRequestDateWindow(req);
+    const rs = win.start;
+    const re = win.end || win.start;
+    if (!rs && !re) return true;
+    return rangesOverlap(rs, re, start, end);
+}
+
+function computeRequestTotalWithTax(req: any, taxes: any[] = []) {
+    const rawTotal = parseFloat(String(req.totalCost ?? 0).replace(/,/g, '')) || 0;
+    const agenda = Array.isArray(req.agenda) ? req.agenda : [];
+    const rooms = Array.isArray(req.rooms) ? req.rooms : [];
+    const transport = Array.isArray(req.transportation) ? req.transportation : [];
+    const nightsFromRequest = (() => {
+        const a = String(req.checkIn || '').trim();
+        const b = String(req.checkOut || '').trim();
+        if (!a || !b) return 0;
+        const ms = new Date(b).getTime() - new Date(a).getTime();
+        if (Number.isNaN(ms)) return 0;
+        return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+    })();
+    const roomsCostNoTax = rooms.reduce((sum: number, r: any) => {
+        const count = Number(r.count || 0);
+        const rate = Number(r.rate || 0);
+        const a = String(r.arrival || req.checkIn || '').trim();
+        const b = String(r.departure || req.checkOut || '').trim();
+        let nights = nightsFromRequest;
+        if (a && b) {
+            const ms = new Date(b).getTime() - new Date(a).getTime();
+            if (!Number.isNaN(ms)) nights = Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+        }
+        return sum + (count * rate * nights);
+    }, 0);
+    const eventCostNoTax = agenda.reduce((sum: number, item: any) => sum + (Number(item.rate || 0) * Number(item.pax || 0)) + Number(item.rental || 0), 0);
+    const transCostNoTax = transport.reduce((sum: number, t: any) => sum + Number(t.costPerWay || 0), 0);
+    let roomsTax = 0;
+    let eventTax = 0;
+    let transTax = 0;
+    for (const tax of taxes) {
+        const rate = Number(tax?.rate || 0) / 100;
+        if (tax?.scope?.accommodation) roomsTax += rate;
+        if (tax?.scope?.events || tax?.scope?.foodAndBeverage) eventTax += rate;
+        if (tax?.scope?.transport) transTax += rate;
+    }
+    const computedWithTax =
+        roomsCostNoTax * (1 + roomsTax) +
+        eventCostNoTax * (1 + eventTax) +
+        transCostNoTax * (1 + transTax);
+    if (computedWithTax > 0) return computedWithTax;
+    return rawTotal;
+}
+
+/** Dashboard / KPI revenue: line-item subtotals only (no tax/fees). Uses persisted grandTotalNoTax when lines are empty. */
+function computeRequestCostBreakdown(req: any) {
+    if (normalizeStatus(req?.status) === 'Cancelled') {
+        return { roomsRevenue: 0, eventRevenue: 0, transportRevenue: 0, totalRevenue: 0 };
+    }
+    const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    const transport = Array.isArray(req?.transportation) ? req.transportation : [];
+    const reqNights = (() => {
+        const inDate = parseYmd(req?.checkIn);
+        const outDate = parseYmd(req?.checkOut);
+        if (!inDate || !outDate) return 0;
+        const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
+        if (Number.isNaN(ms)) return 0;
+        return Math.max(0, Math.ceil(ms / 86400000));
+    })();
+    const roomsRevenue = rooms.reduce((sum: number, row: any) => {
+        const count = Number(row?.count || 0);
+        const rate = Number(row?.rate || 0);
+        const inDate = parseYmd(row?.arrival || req?.checkIn);
+        const outDate = parseYmd(row?.departure || req?.checkOut);
+        let nights = reqNights;
+        if (inDate && outDate) {
+            const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) nights = Math.max(0, Math.ceil(ms / 86400000));
+        }
+        return sum + (count * rate * nights);
+    }, 0);
+    let eventRevenue = agenda.reduce((sum: number, item: any) => {
+        return sum + (Number(item?.rate || 0) * Number(item?.pax || 0)) + Number(item?.rental || 0);
+    }, 0);
+    const transportRevenue = transport.reduce((sum: number, row: any) => sum + Number(row?.costPerWay || 0), 0);
+    let lineSum = roomsRevenue + eventRevenue + transportRevenue;
+    const storedNoTax = asNumber(req?.grandTotalNoTax ?? req?.totalCostNoTax ?? 0);
+    if (lineSum <= 0 && storedNoTax > 0) {
+        if (isMiceRequest(req)) {
+            eventRevenue = storedNoTax;
+            lineSum = roomsRevenue + eventRevenue + transportRevenue;
+        } else {
+            lineSum = storedNoTax;
+        }
+    }
+    return {
+        roomsRevenue,
+        eventRevenue,
+        transportRevenue,
+        totalRevenue: lineSum,
+    };
+}
+
+function requestToKanbanCard(req: any, taxes: any[] = []) {
+    const total = computeRequestTotalWithTax(req, taxes);
+    const agenda = Array.isArray(req.agenda) && req.agenda.length ? req.agenda[0] : null;
+    const pax = Number(agenda?.pax || req.totalEventPax || 0) || 0;
+    const dateRaw = req.eventStart || req.checkIn || agenda?.startDate || req.requestDate || '';
+    const date = String(dateRaw).slice(0, 10) || '—';
+    return {
+        id: req.id,
+        requestId: req.id,
+        title: req.requestName || req.confirmationNo || String(req.id),
+        client: req.account || req.accountName || '—',
+        pax,
+        budget: Number(total || 0),
+        date,
+        type: req.requestType || 'Event',
+    };
+}
+
+function isMiceRequest(req: any) {
+    const t = String(req?.requestType || '').toLowerCase();
+    if (t === 'event') return true;
+    if (t === 'event_rooms') return true;
+    if (t.includes('event with')) return true;
+    return false;
+}
+
+// --- Helper Components ---
+
+const StatusBadge = ({ status, theme }: any) => {
+    const styles: Record<string, any> = {
+        Actual: { bg: theme.colors.green + '20', text: theme.colors.green },
+        Confirmed: { bg: theme.colors.green + '20', text: theme.colors.green },
+        Paid: { bg: theme.colors.blue + '20', text: theme.colors.blue },
+        Pending: { bg: theme.colors.yellow + '20', text: theme.colors.yellow },
+        Tentative: { bg: theme.colors.yellow + '20', text: theme.colors.yellow },
+        Inquiry: { bg: theme.colors.textMuted + '20', text: theme.colors.textMuted },
+        Accepted: { bg: theme.colors.yellow + '20', text: theme.colors.yellow },
+        Definite: { bg: theme.colors.green + '20', text: theme.colors.green },
+        Draft: { bg: theme.colors.textMuted + '20', text: theme.colors.textMuted },
+        Cancelled: { bg: theme.colors.red + '20', text: theme.colors.red },
+        Positive: { bg: theme.colors.green + '20', text: theme.colors.green },
+        Ongoing: { bg: theme.colors.blue + '20', text: theme.colors.blue },
+        High: { bg: theme.colors.red + '20', text: theme.colors.red },
+        Medium: { bg: theme.colors.yellow + '20', text: theme.colors.yellow },
+        Low: { bg: theme.colors.blue + '20', text: theme.colors.blue },
+        Inspection: { bg: theme.colors.purple + '20', text: theme.colors.purple },
+        Blocked: { bg: theme.colors.red + '20', text: theme.colors.red },
+    };
+    const style = (styles[status] || styles.Draft) as any;
+
+    return (
+        <span
+            className="px-1.5 py-0.5 rounded text-[9px] font-medium border"
+            style={{ backgroundColor: style.bg, color: style.text, borderColor: style.text + '40' }}
+        >
+            {status}
+        </span>
+    );
+};
+
+const KPICard = ({ label, value, subtext, icon: Icon, colorKey, isPrimary, theme }: any) => {
+    const colors = theme.colors;
+    const iconColor = isPrimary ? colors.primary : colors[colorKey];
+    return (
+        <div className="border-2 p-3 rounded-xl relative group hover:border-opacity-100 transition-all duration-300 shadow-md hover:shadow-xl hover:scale-[1.03] hover:-translate-y-1 animate-in fade-in slide-in-from-bottom-4"
+            style={{
+                backgroundColor: colors.card,
+                borderColor: isPrimary ? colors.primary + '60' : colors.border,
+                boxShadow: `0 2px 8px ${colors.bg}80, inset 0 1px 0 ${colors.border}40`
+            }}>
+            {/* Subtle gradient overlay for depth */}
+            <div className="absolute inset-0 rounded-xl opacity-30 pointer-events-none"
+                style={{
+                    background: `linear-gradient(135deg, ${iconColor}10 0%, transparent 50%)`
+                }}>
+            </div>
+            <div className={`absolute top-3 right-3 p-1.5 rounded-lg shadow-sm`}
+                style={{
+                    backgroundColor: iconColor + '25',
+                    border: `1px solid ${iconColor}40`
+                }}>
+                <Icon size={16} style={{ color: iconColor }} />
+            </div>
+            <p className="text-[9px] uppercase tracking-wider font-medium mb-1 relative z-10" style={{ color: colors.textMuted }}>{label}</p>
+            <h2 className="text-xl font-bold tracking-tight relative z-10" style={{ color: isPrimary ? colors.primary : colors.textMain }}>{value}</h2>
+            <p className="text-[9px] font-medium mt-1 flex items-center gap-1 relative z-10" style={{ color: isPrimary ? colors.primary : iconColor }}>
+                {subtext}
+            </p>
+        </div>
+    );
+};
+
+// --- View Components ---
+
+function calendarColorForRequest(req: any) {
+    const b = bucketRequestDistribution(req.requestType);
+    if (b === 'series') return 'purple';
+    if (b === 'event' || b === 'event_rooms') return 'orange';
+    return 'blue';
+}
+
+/** Match RequestsManager.getStatusColor for request pipeline statuses. */
+function calendarRequestStatusColor(status: string, c: any): string {
+    const s = String(status || '').trim();
+    switch (s) {
+        case 'Inquiry':
+        case 'Draft':
+            return c.textMuted;
+        case 'Accepted':
+            return c.yellow;
+        case 'Tentative':
+            return c.blue;
+        case 'Definite':
+            return c.green;
+        case 'Actual':
+            return '#059669';
+        case 'Lost':
+        case 'Cancelled':
+            return c.red;
+        default:
+            return c.primary;
+    }
+}
+
+/** Match CRM.tsx pipeline stage colors/labels. */
+function crmCalendarStageMeta(stageKey: string, c: any): { label: string; color: string } {
+    const k = String(stageKey || 'new').toLowerCase();
+    const map: Record<string, { label: string; color: string }> = {
+        new: { label: 'Upcoming Sales Calls', color: c.blue },
+        qualified: { label: 'QUALIFIED', color: c.cyan },
+        proposal: { label: 'PROPOSAL', color: c.yellow },
+        negotiation: { label: 'NEGOTIATION', color: c.orange },
+        won: { label: 'WON', color: c.green },
+        notinterested: { label: 'Not Interested', color: '#8b0000' },
+    };
+    return map[k] || { label: k.replace(/_/g, ' ').toUpperCase(), color: c.primary };
+}
+
+function calendarItemStatusStyle(evt: any, colors: any): { color: string; text: string } {
+    if (evt?.kind === 'crm') {
+        const meta = crmCalendarStageMeta(evt.crmStageKey, colors);
+        return { color: meta.color, text: meta.label };
+    }
+    return {
+        color: calendarRequestStatusColor(evt?.status, colors),
+        text: String(evt?.status || '—'),
+    };
+}
+
+function expandRequestCalendarEntries(req: any, propertyId: string | undefined): any[] {
+    if (propertyId && req.propertyId && req.propertyId !== propertyId) return [];
+    const title = req.requestName || req.confirmationNo || String(req.id);
+    const typeLabel = String(req.requestType || 'Request');
+    const status = String(req.status || '');
+    const color = calendarColorForRequest(req);
+    const pax = Number(req.totalEventPax || 0) || 0;
+    const entry = (ymd: string, suffix: string) => ({
+        kind: 'request' as const,
+        requestId: String(req.id),
+        ymd,
+        id: `req-${req.id}-${suffix}`,
+        title,
+        type: typeLabel,
+        status,
+        color,
+        duration: 1,
+        pax,
+        rev: '',
+    });
+
+    if (isSeriesRequest(req)) {
+        const rows = Array.isArray(req.rooms) ? req.rooms : [];
+        const out: any[] = [];
+        rows.forEach((row: any, i: number) => {
+            const ymd = parseYmd(row.arrival || row.checkIn || req.checkIn);
+            if (ymd) out.push(entry(ymd, `s${i}`));
+        });
+        if (out.length) return out;
+    }
+    const ymd = getPrimaryOperationalDate(req);
+    if (!ymd) return [];
+    return [entry(ymd, 'p')];
+}
+
+function expandSalesCallCalendarEntries(leads: any[]): any[] {
+    const out: any[] = [];
+    (leads || []).forEach((lead: any, i: number) => {
+        const ymd = parseYmd(lead?.lastContact || lead?.date);
+        if (!ymd) return;
+        const crmStageKey = String(lead.stage || 'new').toLowerCase();
+        out.push({
+            kind: 'crm' as const,
+            leadSnapshot: { ...lead },
+            crmStageKey,
+            ymd,
+            id: `crm-${lead.id ?? i}`,
+            title: String(lead.subject || lead.company || lead.nextStep || 'Sales call').trim() || 'Sales call',
+            type: 'Sales Call',
+            status: crmStageKey,
+            color: 'green',
+            duration: 1,
+            pax: 0,
+            rev: '',
+        });
+    });
+    return out;
+}
+
+const CalendarView = ({
+    theme,
+    currentDate,
+    viewMode = 'Month',
+    sharedRequests = [],
+    crmLeadsFlat = [],
+    activeProperty,
+    onCalendarItemClick,
+}: any) => {
+    const colors = theme.colors;
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+
+    const displayEvents = useMemo(() => {
+        const pid = activeProperty?.id;
+        const fromReqs = (sharedRequests || []).flatMap((r: any) => expandRequestCalendarEntries(r, pid));
+        const fromCrm = expandSalesCallCalendarEntries(crmLeadsFlat);
+        return [...fromReqs, ...fromCrm];
+    }, [sharedRequests, activeProperty?.id, crmLeadsFlat]);
+
+    const getEventColor = (colorName: any) => {
+        switch (colorName) {
+            case 'blue': return { bg: colors.blue + '20', border: colors.blue, text: colors.blue };
+            case 'purple': return { bg: colors.purple + '20', border: colors.purple, text: colors.purple };
+            case 'orange': return { bg: '#ff6b35' + '20', border: '#ff6b35', text: '#ff6b35' };
+            case 'green': return { bg: colors.green + '20', border: colors.green, text: colors.green };
+            case 'yellow': return { bg: colors.yellow + '20', border: colors.yellow, text: colors.yellow };
+            case 'red': return { bg: colors.red + '20', border: colors.red, text: colors.red };
+            default: return { bg: colors.border, border: colors.textMuted, text: colors.textMuted };
+        }
+    };
+
+    // Week View: Show current week
+    if (viewMode === 'Week') {
+        const today = new Date(currentDate);
+        const dayOfWeek = today.getDay();
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - dayOfWeek);
+
+        const weekDays = Array.from({ length: 7 }, (_, i) => {
+            const date = new Date(weekStart);
+            date.setDate(weekStart.getDate() + i);
+            return date;
+        });
+
+        return (
+            <div className="flex flex-col h-full gap-4">
+                {/* Calendar Legend */}
+                <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    {[
+                        { label: 'Group Accommodation', color: colors.blue },
+                        { label: 'Series Group', color: colors.purple },
+                        { label: 'Events', color: '#ff6b35' },
+                        { label: 'Sales Calls', color: colors.green },
+                    ].map((item, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: item.color }}></div>
+                            <span className="text-[10px] uppercase tracking-wider font-medium" style={{ color: colors.textMuted }}>{item.label}</span>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Week Grid */}
+                <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="grid grid-cols-7 border-b-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                        {weekDays.map((date, i) => (
+                            <div key={i} className="py-3 text-center border-r-2 last:border-r-0" style={{ borderColor: colors.border }}>
+                                <div className="text-[10px] uppercase font-bold tracking-widest" style={{ color: colors.primary }}>{days[date.getDay()]}</div>
+                                <div className="text-sm font-bold mt-1" style={{ color: colors.textMain }}>{date.getDate()}</div>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="grid grid-cols-7 flex-1">
+                        {weekDays.map((date, i) => {
+                            const dayYmd = toYmd(date);
+                            const dayEvents = displayEvents.filter((e: any) => e.ymd === dayYmd);
+                            const isToday = dayYmd === toYmd(new Date());
+                            return (
+                                <div key={i} className="border-r-2 last:border-r-0 p-2 overflow-y-auto" style={{ borderColor: colors.border, backgroundColor: isToday ? colors.bg : 'transparent' }}>
+                                    <div className="space-y-2">
+                                        {dayEvents.map((evt: any, idx: number) => {
+                                            const style = getEventColor(evt.color);
+                                            const st = calendarItemStatusStyle(evt, colors);
+                                            return (
+                                                <div
+                                                    key={idx}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => {
+                                                        if (!onCalendarItemClick) return;
+                                                        if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                                        else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                                                        e.preventDefault();
+                                                        if (!onCalendarItemClick) return;
+                                                        if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                                        else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                                    }}
+                                                    className="text-xs px-2 py-2 rounded cursor-pointer transition-all duration-300 hover:shadow-lg hover:shadow-current/20 hover:scale-105 hover:brightness-110 border-l-3"
+                                                    style={{ backgroundColor: style.bg, borderLeftColor: style.border, borderLeftWidth: '3px', boxShadow: `0 0 0 ${style.border}00` }}
+                                                >
+                                                    <div className="font-bold truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                    <div className="text-[10px] mt-1" style={{ color: style.text }}>{evt.type}</div>
+                                                    <div className="text-[10px] font-bold mt-0.5" style={{ color: st.color }}>{st.text}</div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // List View: Show all events in a list
+    if (viewMode === 'List') {
+        const allEvents = displayEvents
+            .filter((e: any) => String(e.ymd || '').startsWith(monthPrefix))
+            .map((evt: any) => ({
+                ...evt,
+                fullDate: new Date(`${evt.ymd}T12:00:00`),
+            }))
+            .sort((a: any, b: any) => String(a.ymd).localeCompare(String(b.ymd)));
+
+        return (
+            <div className="flex flex-col h-full gap-4">
+                {/* Calendar Legend */}
+                <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    {[
+                        { label: 'Group Accommodation', color: colors.blue },
+                        { label: 'Series Group', color: colors.purple },
+                        { label: 'Events', color: '#ff6b35' },
+                        { label: 'Sales Calls', color: colors.green },
+                    ].map((item, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: item.color }}></div>
+                            <span className="text-[10px] uppercase tracking-wider font-medium" style={{ color: colors.textMuted }}>{item.label}</span>
+                        </div>
+                    ))}
+                </div>
+
+                {/* List View */}
+                <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="h-full overflow-y-auto p-4 space-y-3">
+                        {allEvents.map((evt: any, idx: number) => {
+                            const style = getEventColor(evt.color);
+                            const st = calendarItemStatusStyle(evt, colors);
+                            const dateStr = evt.fullDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                            return (
+                                <div
+                                    key={idx}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => {
+                                        if (!onCalendarItemClick) return;
+                                        if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                        else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                                        e.preventDefault();
+                                        if (!onCalendarItemClick) return;
+                                        if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                        else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                    }}
+                                    className="flex items-center gap-4 p-3 rounded-lg border-2 cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-current/30 hover:scale-[1.02] hover:brightness-110"
+                                    style={{ backgroundColor: style.bg, borderColor: style.border, boxShadow: `0 0 0 ${style.border}00` }}
+                                >
+                                    <div className="flex-shrink-0 text-center min-w-[80px]">
+                                        <div className="text-xs font-bold" style={{ color: style.text }}>{dateStr}</div>
+                                        <div className="text-[10px] mt-1" style={{ color: colors.textMuted }}>{evt.duration} days</div>
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-sm truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                        <div className="flex items-center gap-3 mt-1 text-xs" style={{ color: colors.textMuted }}>
+                                            <span>{evt.type}</span>
+                                            <span>•</span>
+                                            <span className="font-bold" style={{ color: st.color }}>{st.text}</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex-shrink-0 text-right">
+                                        <div className="text-xs font-bold" style={{ color: colors.textMain }}>{evt.pax} PAX</div>
+                                        <div className="text-xs mt-1" style={{ color: colors.textMuted }}>{evt.rev}</div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Month View (default)
+    return (
+        <div className="flex flex-col h-full gap-4">
+            {/* Calendar Legend */}
+            <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                {[
+                    { label: 'Group Accommodation', color: colors.blue },
+                    { label: 'Series Group', color: colors.purple },
+                    { label: 'Events', color: '#ff6b35' },
+                    { label: 'Sales Calls', color: colors.green },
+                ].map((item, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: item.color }}></div>
+                        <span className="text-[10px] uppercase tracking-wider font-medium" style={{ color: colors.textMuted }}>{item.label}</span>
+                    </div>
+                ))}
+            </div>
+
+            {/* Calendar Grid */}
+            <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="grid grid-cols-7 border-b-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                    {days.map(day => (
+                        <div key={day} className="py-2 text-center text-[10px] uppercase font-bold tracking-widest" style={{ color: colors.primary }}>
+                            {day}
+                        </div>
+                    ))}
+                </div>
+                <div className="grid grid-cols-7 flex-1 auto-rows-fr">
+                    {Array.from({ length: daysInMonth }).map((_, i) => {
+                        const dayNum = i + 1;
+                        const dayYmd = `${monthPrefix}-${String(dayNum).padStart(2, '0')}`;
+                        const dayEvents = displayEvents.filter((e: any) => e.ymd === dayYmd);
+                        const now = new Date();
+                        const isToday = now.getFullYear() === year && now.getMonth() === month && now.getDate() === dayNum;
+                        return (
+                            <div key={dayNum} className={`border-r-2 border-b-2 p-1.5 min-h-[110px] relative group hover:bg-white/5 transition-colors ${dayNum % 7 === 0 ? 'border-r-0' : ''}`}
+                                style={{ borderColor: colors.border }}>
+                                <div className="flex justify-between items-center mb-1">
+                                    <span className={`text-xs font-bold ${isToday ? 'bg-red-500 text-white w-5 h-5 flex items-center justify-center rounded-full text-[10px]' : ''}`}
+                                        style={{ color: isToday ? '#fff' : colors.textMuted }}>
+                                        {dayNum}
+                                    </span>
+                                    {dayEvents.length > 0 && (
+                                        <div className="flex gap-0.5">
+                                            {dayEvents.slice(0, 4).map((evt, idx) => {
+                                                const style = getEventColor(evt.color);
+                                                return <div key={idx} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: style.border }}></div>
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="space-y-0.5 overflow-hidden">
+                                    {dayEvents.map((evt: any, idx: number) => {
+                                        const style = getEventColor(evt.color);
+                                        const st = calendarItemStatusStyle(evt, colors);
+                                        return (
+                                            <div
+                                                key={idx}
+                                                role="button"
+                                                tabIndex={0}
+                                                onClick={() => {
+                                                    if (!onCalendarItemClick) return;
+                                                    if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                                    else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                                }}
+                                                onKeyDown={(e) => {
+                                                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                                                    e.preventDefault();
+                                                    if (!onCalendarItemClick) return;
+                                                    if (evt.kind === 'crm') onCalendarItemClick({ kind: 'crm', lead: evt.leadSnapshot });
+                                                    else onCalendarItemClick({ kind: 'request', requestId: evt.requestId });
+                                                }}
+                                                className="text-[9px] px-1.5 py-1 rounded cursor-pointer transition-all duration-200 hover:shadow-md hover:shadow-current/25 hover:scale-[1.03] hover:brightness-110 border-l-2"
+                                                style={{ backgroundColor: style.bg, borderLeftColor: style.border, boxShadow: `0 0 0 ${style.border}00` }}
+                                            >
+                                                <div className="font-semibold truncate leading-tight" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                <div className="flex items-center justify-between mt-0.5 text-[8px]">
+                                                    <span className="truncate" style={{ color: style.text }}>{evt.type}</span>
+                                                    <span className="font-bold ml-1 whitespace-nowrap" style={{ color: st.color }}>{st.text}</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })}
+                    {/* Fill remaining cells to complete the grid */}
+                    {Array.from({ length: (Math.ceil(daysInMonth / 7) * 7) - daysInMonth }).map((_, i) => (
+                        <div key={`empty-end-${i}`} className="border-r-2 border-b-2 min-h-[110px]" style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }} />
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- Events View Component with Drag and Drop ---
+const EventsView = ({
+    theme,
+    subView,
+    filterRange,
+    sharedRequests = [],
+    onPatchRequestStatus,
+    onOpenRequest,
+    activeProperty,
+    accounts = [],
+    onRefreshRequests,
+    readOnly = false,
+    currency = 'SAR',
+}: any) => {
+    const colors = theme.colors;
+    const selectedCurrency = resolveCurrencyCode(currency);
+    const formatMoneyCompact = (amountSar: number) => formatCompactCurrency(amountSar, selectedCurrency);
+    const formatMoney = (amountSar: number, maxFractionDigits = 2) =>
+        formatCurrencyAmount(amountSar, selectedCurrency, { maximumFractionDigits: maxFractionDigits });
+    const [draggedItem, setDraggedItem] = useState<any>(null);
+    const [accountSearch, setAccountSearch] = useState('');
+    const [expandedAccounts, setExpandedAccounts] = useState<string[]>([]);
+    const [venuesList, setVenuesList] = useState<any[]>([]);
+    const [propertyTaxes, setPropertyTaxes] = useState<any[]>([]);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const defaultTo = (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 4);
+        return d.toISOString().slice(0, 10);
+    })();
+    const [draftFrom, setDraftFrom] = useState(todayIso);
+    const [draftTo, setDraftTo] = useState(defaultTo);
+    const [draftGridStart, setDraftGridStart] = useState(todayIso);
+    const [appliedFrom, setAppliedFrom] = useState(todayIso);
+    const [appliedTo, setAppliedTo] = useState(defaultTo);
+    /** Grid columns follow this only (not `draftGridStart`) until user clicks Align or Search applies range. */
+    const [appliedGridStart, setAppliedGridStart] = useState(todayIso);
+    const [beoSearch, setBeoSearch] = useState('');
+    const [beoModalRequestId, setBeoModalRequestId] = useState<string | null>(null);
+    const [beoNotesDraft, setBeoNotesDraft] = useState('');
+
+    const miceRequests = useMemo(() => {
+        return (sharedRequests || []).filter(isMiceRequest).filter((r: any) => requestInEventDateRange(r, filterRange));
+    }, [sharedRequests, filterRange]);
+
+    const kanbanData = useMemo(() => {
+        const empty: Record<string, any[]> = {
+            inquiry: [], accepted: [], tentative: [], definite: [], actual: [], cancelled: [],
+        };
+        for (const req of miceRequests) {
+            const col = statusToColumnId(String(req.status || 'Inquiry'));
+            const card = requestToKanbanCard(req, propertyTaxes);
+            (empty[col] || empty.inquiry).push(card);
+        }
+        return empty;
+    }, [miceRequests, propertyTaxes]);
+
+    const toggleAccountExpansion = (accountName: string) => {
+        setExpandedAccounts(prev =>
+            prev.includes(accountName)
+                ? prev.filter(name => name !== accountName)
+                : [...prev, accountName]
+        );
+    };
+
+    const parseValue = (valStr: string) => {
+        if (typeof valStr === 'number') return Number.isFinite(valStr) ? valStr : 0;
+        const str = valStr.toString().toLowerCase();
+        if (str.endsWith('k')) return parseFloat(str) * 1000;
+        if (str.endsWith('m')) return parseFloat(str) * 1000000;
+        return parseFloat(str) || 0;
+    };
+
+    const getColumnTotal = (colId: string) => {
+        const total = (kanbanData[colId] || []).reduce((sum: number, e: any) => sum + parseValue(e.budget), 0);
+        return formatMoneyCompact(total);
+    };
+
+    const totalRevenue = useMemo(() => {
+        const activeCols = ['inquiry', 'accepted', 'tentative', 'definite', 'actual'];
+        const total = activeCols.reduce((sum, colId) => {
+            return sum + (kanbanData[colId] || []).reduce((s: number, e: any) => s + parseValue(e.budget), 0);
+        }, 0);
+        return formatMoneyCompact(total);
+    }, [kanbanData, formatMoneyCompact]);
+
+    const totalAttendance = useMemo(() => {
+        const n = miceRequests.reduce((sum: number, r: any) => sum + (Number(requestToKanbanCard(r).pax) || 0), 0);
+        return `${n.toLocaleString()} Pax`;
+    }, [miceRequests]);
+
+    const numEventsLabel = useMemo(() => String(miceRequests.length), [miceRequests]);
+
+    const performanceRows = useMemo(() => {
+        const byAcc: Record<string, { name: string; events: any[]; total: number; pax: number }> = {};
+        for (const r of miceRequests) {
+            const name = r.account || r.accountName || 'Unknown';
+            if (!byAcc[name]) byAcc[name] = { name, events: [], total: 0, pax: 0 };
+            byAcc[name].events.push(r);
+            byAcc[name].total += parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0;
+            const ag = Array.isArray(r.agenda) && r.agenda[0];
+            byAcc[name].pax += Number(ag?.pax || r.totalEventPax || 0) || 0;
+        }
+        return Object.values(byAcc)
+            .map(a => ({
+                name: a.name,
+                events: a.events.length,
+                spent: formatMoneyCompact(a.total),
+                pax: a.pax,
+                details: a.events.map((req: any) => {
+                    const ag = Array.isArray(req.agenda) && req.agenda[0];
+                    const date = String(req.eventStart || ag?.startDate || req.checkIn || '').slice(0, 10);
+                    const val = parseFloat(String(req.totalCost ?? 0).replace(/,/g, '')) || 0;
+                    const valStr = formatMoneyCompact(val);
+                    return {
+                        date: date || '—',
+                        title: req.requestName || req.confirmationNo,
+                        pax: Number(ag?.pax || 0),
+                        value: valStr,
+                    };
+                }),
+            }))
+            .sort((a, b) => b.events - a.events);
+    }, [miceRequests, formatMoneyCompact]);
+
+    const pipelineValueKpi = useMemo(() => {
+        const t = miceRequests
+            .filter((r: any) => ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Draft'].includes(String(r.status || '')))
+            .reduce((s: number, r: any) => s + (parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0), 0);
+        return formatMoneyCompact(t);
+    }, [miceRequests, formatMoneyCompact]);
+
+    const avgEventValueKpi = useMemo(() => {
+        if (!miceRequests.length) return formatMoneyCompact(0);
+        const sum = miceRequests.reduce((s: number, r: any) => s + (parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0), 0);
+        const avg = sum / miceRequests.length;
+        return formatMoneyCompact(avg);
+    }, [miceRequests, formatMoneyCompact]);
+
+    const venueBarData = useMemo(() => {
+        const counts: Record<string, number> = {};
+        for (const r of miceRequests) {
+            const rows = Array.isArray(r.agenda) ? r.agenda : [];
+            for (const row of rows) {
+                const v = String(row.venue || '').trim();
+                if (!v) continue;
+                counts[v] = (counts[v] || 0) + 1;
+            }
+        }
+        return Object.entries(counts)
+            .map(([name, value]) => ({ name, value }))
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 12);
+    }, [miceRequests]);
+
+    const typePieData = useMemo(() => {
+        let ev = 0;
+        let er = 0;
+        for (const r of miceRequests) {
+            const t = String(r.requestType || '').toLowerCase();
+            if (t.includes('room') || t.includes('event with')) er += 1;
+            else ev += 1;
+        }
+        if (ev === 0 && er === 0) return [{ name: 'No data', value: 1 }];
+        return [
+            { name: 'Event', value: Math.max(ev, 0) },
+            { name: 'Event + rooms', value: Math.max(er, 0) },
+        ];
+    }, [miceRequests]);
+
+    useEffect(() => {
+        if (!activeProperty?.id) {
+            setVenuesList([]);
+            return;
+        }
+        fetch(apiUrl(`/api/venues?propertyId=${encodeURIComponent(activeProperty.id)}`))
+            .then(r => r.json())
+            .then((d) => {
+                if (Array.isArray(d)) setVenuesList(d);
+            })
+            .catch(() => setVenuesList([]));
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        if (!activeProperty?.id) {
+            setPropertyTaxes([]);
+            return;
+        }
+        fetch(apiUrl(`/api/taxes?propertyId=${encodeURIComponent(activeProperty.id)}`))
+            .then(r => r.json())
+            .then((d) => {
+                if (Array.isArray(d)) setPropertyTaxes(d);
+            })
+            .catch(() => setPropertyTaxes([]));
+    }, [activeProperty?.id]);
+
+    const agendaCoversDate = (row: any, checkIso: string, req: any) => {
+        const a = String(row.startDate || req.eventStart || req.checkIn || '').slice(0, 10);
+        const b = String(row.endDate || row.startDate || req.eventEnd || req.checkOut || req.eventStart || req.checkIn || '').slice(0, 10) || a;
+        if (!a) return false;
+        return checkIso >= a && checkIso <= (b || a);
+    };
+
+    const venueBookingLabel = (venueName: string, checkIso: string) => {
+        const order = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual'];
+        let bestIdx = -1;
+        let bestReq: any = null;
+        for (const req of miceRequests) {
+            const st = String(req.status || 'Inquiry');
+            if (st === 'Cancelled' || st === 'Lost') continue;
+            const rows = Array.isArray(req.agenda) ? req.agenda : [];
+            const hit = rows.some((row: any) => {
+                const rowVenue = String(row.venue || '').trim().toLowerCase();
+                if (rowVenue !== venueName.trim().toLowerCase()) return false;
+                return agendaCoversDate(row, checkIso, req);
+            });
+            if (!hit) continue;
+            const idx = order.indexOf(st);
+            const u = idx >= 0 ? idx : 0;
+            if (u > bestIdx) {
+                bestIdx = u;
+                bestReq = req;
+            }
+        }
+        if (bestIdx < 0) return { label: 'Available', tone: 'free' as const, requestTitle: null as string | null };
+        const st = order[bestIdx];
+        const title = bestReq ? String(bestReq.requestName || bestReq.confirmationNo || '').trim() || null : null;
+        if (st === 'Definite' || st === 'Actual') return { label: st, tone: 'definite' as const, requestTitle: title };
+        return { label: st, tone: 'tentative' as const, requestTitle: title };
+    };
+
+    const expandAvailabilityDays = (fromIso: string, toIso: string, maxCols: number) => {
+        if (!fromIso) return [];
+        let a = fromIso.slice(0, 10);
+        let b = (toIso || fromIso).slice(0, 10);
+        if (b < a) [a, b] = [b, a];
+        const out: string[] = [];
+        const cur = new Date(`${a}T12:00:00`);
+        const end = new Date(`${b}T12:00:00`);
+        let n = 0;
+        while (cur <= end && n < maxCols) {
+            out.push(cur.toISOString().slice(0, 10));
+            cur.setDate(cur.getDate() + 1);
+            n++;
+        }
+        return out;
+    };
+
+    const venueRangeSummary = (venueName: string, dayList: string[]) => {
+        if (!dayList.length) return { label: '—', tone: 'free' as const };
+        let anyBusy = false;
+        let worst: 'free' | 'tentative' | 'definite' = 'free';
+        let lastTitle: string | null = null;
+        for (const d of dayList) {
+            const { label, tone, requestTitle } = venueBookingLabel(venueName, d);
+            if (tone !== 'free') {
+                anyBusy = true;
+                lastTitle = requestTitle || lastTitle;
+            }
+            if (tone === 'definite') worst = 'definite';
+            else if (tone === 'tentative' && worst === 'free') worst = 'tentative';
+        }
+        if (!anyBusy) return { label: 'Available', tone: 'free' as const };
+        if (worst === 'definite') return { label: 'Held / Definite', tone: 'definite' as const, requestTitle: lastTitle };
+        return { label: 'Tentative / In pipeline', tone: 'tentative' as const, requestTitle: lastTitle };
+    };
+
+    const allMiceRequests = useMemo(() => (sharedRequests || []).filter(isMiceRequest), [sharedRequests]);
+
+    const beoCandidates = useMemo(() => {
+        return allMiceRequests.filter((r: any) => {
+            const s = String(r.status || '');
+            return s !== 'Cancelled' && s !== 'Lost';
+        });
+    }, [allMiceRequests]);
+
+    const columns = [
+        { id: 'inquiry', title: 'Inquiry', color: colors.textMuted },
+        { id: 'accepted', title: 'Accepted', color: colors.yellow },
+        { id: 'tentative', title: 'Tentative', color: colors.blue },
+        { id: 'definite', title: 'Definite', color: colors.green },
+        { id: 'actual', title: 'Actual', color: '#059669' },
+        { id: 'cancelled', title: 'Cancelled', color: colors.red },
+    ];
+
+    const handleDragStart = (e: any, item: any, sourceCol: any) => {
+        setDraggedItem({ item, sourceCol });
+        e.dataTransfer.setData('text/plain', JSON.stringify({ item, sourceCol }));
+    };
+
+    const handleDragOver = (e: any) => {
+        e.preventDefault();
+    };
+
+    const handleDrop = (e: any, targetCol: any) => {
+        e.preventDefault();
+        if (readOnly) {
+            setDraggedItem(null);
+            return;
+        }
+        if (!draggedItem) return;
+        const { item, sourceCol } = draggedItem;
+        if (sourceCol === targetCol) {
+            setDraggedItem(null);
+            return;
+        }
+        const newStatus = COLUMN_TO_STATUS[targetCol];
+        if (item.requestId && newStatus && onPatchRequestStatus) {
+            onPatchRequestStatus(String(item.requestId), newStatus);
+        }
+        setDraggedItem(null);
+    };
+
+    // --- Sub-Views Implementations ---
+
+    if (subView === 'availability') {
+        const list = venuesList.length ? venuesList : [];
+        const summaryDays = expandAvailabilityDays(appliedFrom, appliedTo, 14);
+        const gridDayColumns = (() => {
+            if (!appliedGridStart) return [];
+            const cur = new Date(`${appliedGridStart.slice(0, 10)}T12:00:00`);
+            const out: string[] = [];
+            for (let i = 0; i < 7; i++) {
+                out.push(cur.toISOString().slice(0, 10));
+                cur.setDate(cur.getDate() + 1);
+            }
+            return out;
+        })();
+
+        const runAvailabilitySearch = () => {
+            setAppliedFrom(draftFrom);
+            setAppliedTo(draftTo);
+            setAppliedGridStart(draftGridStart);
+        };
+
+        return (
+            <div className="h-full rounded-xl border p-6 flex flex-col gap-6 overflow-y-auto" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="flex flex-col items-center text-center shrink-0">
+                    <Grid size={40} style={{ color: colors.textMuted }} className="mb-2" />
+                    <h3 className="text-xl font-bold" style={{ color: colors.textMain }}>Venue Availability Check</h3>
+                </div>
+
+                <div className="flex flex-col gap-4 items-center w-full max-w-2xl mx-auto">
+                    <div className="flex flex-wrap gap-4 items-end justify-center w-full">
+                        <div>
+                            <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>From date</label>
+                            <input
+                                type="date"
+                                value={draftFrom}
+                                onChange={(e) => setDraftFrom(e.target.value)}
+                                className="px-3 py-2 rounded-lg border text-sm min-w-[10.5rem]"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            />
+                        </div>
+                        <div>
+                            <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>To date</label>
+                            <div className="flex flex-wrap items-end gap-2">
+                                <input
+                                    type="date"
+                                    value={draftTo}
+                                    onChange={(e) => setDraftTo(e.target.value)}
+                                    className="px-3 py-2 rounded-lg border text-sm min-w-[10.5rem]"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                />
+                                <button
+                                    type="button"
+                                    className="px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wide shrink-0 h-[42px]"
+                                    style={{ backgroundColor: colors.primary, color: '#000' }}
+                                    onClick={runAvailabilitySearch}
+                                >
+                                    Search
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3 items-end justify-center w-full">
+                        <div>
+                            <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>Grid start date</label>
+                            <input
+                                type="date"
+                                value={draftGridStart}
+                                onChange={(e) => setDraftGridStart(e.target.value)}
+                                className="px-3 py-2 rounded-lg border text-sm min-w-[10.5rem]"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            />
+                        </div>
+                        <button
+                            type="button"
+                            className="px-4 py-2 rounded-lg border text-xs font-bold uppercase shrink-0 h-[42px]"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                            onClick={() => setAppliedGridStart(draftGridStart.slice(0, 10))}
+                        >
+                            Align grid
+                        </button>
+                    </div>
+                </div>
+
+                <div>
+                    <p className="text-[10px] uppercase font-bold mb-2" style={{ color: colors.textMuted }}>Summary ({summaryDays.length} day{summaryDays.length === 1 ? '' : 's'}) — last search</p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 w-full">
+                        {(list.length ? list : [{ id: 'none', name: 'No venues configured' }]).map((v: any) => {
+                            const nm = v.name || 'Venue';
+                            const { label, tone, requestTitle } = venueRangeSummary(nm, summaryDays);
+                            const statusColor = tone === 'free' ? colors.green : tone === 'definite' ? colors.green : colors.yellow;
+                            return (
+                                <div key={v.id || nm} className="p-3 rounded border text-left" style={{ borderColor: colors.border }}>
+                                    <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Venue</div>
+                                    <div className="font-bold text-sm" style={{ color: colors.textMain }}>{nm}</div>
+                                    <div className="mt-1 text-xs font-bold" style={{ color: statusColor }}>
+                                        {list.length ? label : 'Set venues in settings'}
+                                    </div>
+                                    {requestTitle && list.length ? (
+                                        <div className="text-[10px] mt-1 truncate" style={{ color: colors.textMuted }} title={requestTitle}>{requestTitle}</div>
+                                    ) : null}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="w-full min-w-0 border rounded-xl overflow-hidden" style={{ borderColor: colors.border }}>
+                    <div className="px-3 py-2 border-b text-[10px] font-black uppercase tracking-wider" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                        Availability grid — week starting {appliedGridStart} (after Search or Align grid)
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-[11px] border-collapse min-w-[520px]">
+                            <thead>
+                                <tr style={{ backgroundColor: colors.bg + '80' }}>
+                                    <th className="p-2 border-b sticky left-0 z-[1] min-w-[120px]" style={{ borderColor: colors.border, backgroundColor: colors.card }}>Meeting room</th>
+                                    {gridDayColumns.map((d) => (
+                                        <th key={d} className="p-2 border-b text-center font-mono whitespace-nowrap" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                            {d.slice(5).replace('-', '/')}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(list.length ? list : [{ id: 'none', name: '—' }]).map((v: any) => {
+                                    const nm = v.name || 'Venue';
+                                    return (
+                                        <tr key={v.id || nm}>
+                                            <td className="p-2 border-b font-bold sticky left-0 z-[1]" style={{ borderColor: colors.border, backgroundColor: colors.card, color: colors.textMain }}>
+                                                {nm}
+                                            </td>
+                                            {gridDayColumns.map((d) => {
+                                                const { label, tone, requestTitle } = venueBookingLabel(nm, d);
+                                                const bg = tone === 'free' ? 'transparent' : tone === 'definite' ? colors.green + '18' : colors.yellow + '18';
+                                                const fg = tone === 'free' ? colors.textMuted : colors.textMain;
+                                                return (
+                                                    <td
+                                                        key={d}
+                                                        className="p-2 border-b align-top text-center"
+                                                        style={{ borderColor: colors.border, backgroundColor: bg, color: fg }}
+                                                        title={requestTitle ? `${label}: ${requestTitle}` : label}
+                                                    >
+                                                        {tone === 'free' ? (
+                                                            <span className="opacity-50">—</span>
+                                                        ) : (
+                                                            <div className="flex flex-col gap-0.5">
+                                                                <span className="font-bold text-[10px]">{label}</span>
+                                                                {requestTitle ? <span className="text-[9px] leading-tight line-clamp-2 break-words">{requestTitle}</span> : null}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (subView === 'beo') {
+        const q = beoSearch.toLowerCase().trim();
+        const rows = beoCandidates.filter((r: any) => {
+            if (!q) return true;
+            const blob = `${r.requestName || ''} ${r.account || ''} ${r.confirmationNo || ''}`.toLowerCase();
+            return blob.includes(q);
+        });
+        const beoModalReq = beoModalRequestId
+            ? (sharedRequests || []).find((x: any) => String(x.id) === String(beoModalRequestId)) || null
+            : null;
+        const beoFinModal = beoModalReq ? calculateAccFinancialsForRequest(beoModalReq, propertyTaxes, beoModalReq.requestType) : null;
+        const beoEvModal = beoModalReq ? getEventDateWindow(beoModalReq) : { start: '', end: '' };
+        const beoPkgModal = beoModalReq ? formatAgendaPackageSummary(beoModalReq.agenda || []) || beoModalReq.mealPlan || '—' : '—';
+        const beoTypeKeyModal = beoModalReq ? normalizeRequestTypeKey(beoModalReq.requestType) : '';
+        const beoAccModal = beoModalReq ? getAccountForRequest(beoModalReq, accounts) : null;
+        const beoFallbackDaysModal = beoEvModal.start && beoEvModal.end ? inclusiveCalendarDays(beoEvModal.start, beoEvModal.end) : 1;
+        const beoDayDenomModal = beoFinModal ? Math.max(1, beoFinModal.totalEventDays || beoFallbackDaysModal) : 1;
+        const beoEventCostPerDayModal = beoFinModal ? beoFinModal.eventCostWithTax / beoDayDenomModal : 0;
+        const beoGrandModal = beoFinModal ? Number(beoFinModal.grandTotalWithTax || 0) : 0;
+        const beoPaidModal = beoFinModal ? Number(beoFinModal.paidAmount || 0) : 0;
+        const beoRemainingModal = Math.max(0, beoGrandModal - beoPaidModal);
+        const beoPayLabelModal = beoFinModal?.paymentStatus === 'Deposit' ? 'Partial / deposit' : (beoFinModal?.paymentStatus || '—');
+
+        const saveBeoNotesFromEvents = async () => {
+            if (readOnly || !beoModalRequestId || !beoModalReq) return;
+            const existing = (sharedRequests || []).find((x: any) => String(x.id) === String(beoModalRequestId));
+            if (!existing) return;
+            try {
+                const res = await fetch(apiUrl('/api/requests'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...existing, beoNotes: beoNotesDraft }),
+                });
+                if (res.ok) onRefreshRequests?.();
+                else alert('Failed to save BEO notes. Status: ' + res.status);
+            } catch (e) {
+                console.error(e);
+                alert('Error saving BEO notes.');
+            }
+        };
+
+        return (
+            <>
+                <div className="h-full rounded-xl border p-6 flex flex-col min-h-0" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="flex flex-wrap justify-between items-start border-b pb-6 mb-6 gap-4" style={{ borderColor: colors.border }}>
+                        <div>
+                            <h2 className="text-2xl font-bold mb-1" style={{ color: colors.primary }}>Banquet Event Order Management</h2>
+                            <p style={{ color: colors.textMuted }}>All active MICE requests (excluding Cancelled / Lost).</p>
+                        </div>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                placeholder="Search event..."
+                                value={beoSearch}
+                                onChange={(e) => setBeoSearch(e.target.value)}
+                                className="pl-8 pr-3 py-2 rounded bg-black/20 border text-sm w-64"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            />
+                            <Search size={14} className="absolute left-2.5 top-2.5" style={{ color: colors.textMuted }} />
+                        </div>
+                    </div>
+                    <div className="space-y-3 overflow-y-auto flex-1">
+                        {!rows.length ? (
+                            <p className="text-sm opacity-50 text-center py-12" style={{ color: colors.textMuted }}>No qualifying events for this property.</p>
+                        ) : (
+                            rows.map((r: any) => {
+                                const ag = Array.isArray(r.agenda) && r.agenda[0];
+                                const venue = ag?.venue || '—';
+                                const d = String(r.eventStart || ag?.startDate || '').slice(0, 10) || '—';
+                                return (
+                                    <div
+                                        key={r.id}
+                                        className="w-full p-4 rounded border flex items-stretch justify-between gap-3 hover:bg-white/5 transition-colors"
+                                        style={{ borderColor: colors.border }}
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() => onOpenRequest?.(r.id)}
+                                            className="flex-1 min-w-0 text-left"
+                                        >
+                                            <h4 className="font-bold" style={{ color: colors.textMain }}>{r.requestName || r.confirmationNo}</h4>
+                                            <p className="text-xs" style={{ color: colors.textMuted }}>{d} • {venue} • {r.account || r.accountName}</p>
+                                        </button>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <StatusBadge status={String(r.status)} theme={theme} />
+                                            <button
+                                                type="button"
+                                                title="Open BEO"
+                                                className="p-2 rounded-lg border hover:bg-white/10 transition-colors"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setBeoModalRequestId(String(r.id));
+                                                    setBeoNotesDraft(String(r.beoNotes ?? ''));
+                                                }}
+                                            >
+                                                <FileText size={18} style={{ color: colors.primary }} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </div>
+
+                {beoModalReq && beoFinModal && (
+                    <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" aria-hidden />
+                        <div
+                            className="relative w-full max-w-4xl max-h-[90vh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden animate-in zoom-in duration-200"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                        >
+                            <div className="shrink-0 p-4 border-b flex flex-wrap items-center gap-2 justify-between" style={{ borderColor: colors.border }}>
+                                <h3 className="font-black text-sm uppercase tracking-wider" style={{ color: colors.textMain }}>Banquet event order (BEO)</h3>
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => printBeoDocument(beoModalReq, beoFinModal, beoNotesDraft, accounts)}
+                                        className="px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}
+                                    >
+                                        <Printer size={14} /> Print
+                                    </button>
+                                    {!readOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={saveBeoNotesFromEvents}
+                                            className="px-4 py-2 rounded-xl border font-bold text-xs"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            Save notes
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => { setBeoModalRequestId(null); }}
+                                        className="p-2 rounded-xl border"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        aria-label="Close"
+                                    >
+                                        <X size={18} />
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-6 text-left" style={{ color: colors.textMain }}>
+                                <div className="border-b pb-4 mb-4" style={{ borderColor: colors.border }}>
+                                    <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoModalReq.confirmationNo}</h1>
+                                    <p className="text-sm mt-1 font-bold">{beoModalReq.account}</p>
+                                    <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoModalReq.status || '—'}</span> · Type: <span className="font-bold">{beoModalReq.requestType || beoTypeKeyModal}</span></p>
+                                </div>
+                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Contacts (from account)</h4>
+                                {!beoAccModal ? (
+                                    <p className="text-sm opacity-50 italic mb-4">No linked account profile.</p>
+                                ) : (
+                                    <div className="space-y-3 mb-6">
+                                        {(Array.isArray(beoAccModal.contacts) ? beoAccModal.contacts : []).filter((c: any) => contactDisplayName(c) || c?.email || c?.phone).map((c: any, i: number) => (
+                                            <div key={i} className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="font-bold">{contactDisplayName(c) || 'Contact'}</p>
+                                                {c.position ? <p className="text-xs opacity-60">{c.position}</p> : null}
+                                                {c.email ? <p className="text-xs mt-1">Email: {c.email}</p> : null}
+                                                {c.phone ? <p className="text-xs">Phone: {c.phone}</p> : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-6">
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Start</span><br />{beoEvModal.start || '—'}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">End</span><br />{beoEvModal.end || '—'}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Package</span><br />{beoPkgModal}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Event days</span><br />{beoFinModal.totalEventDays || beoFallbackDaysModal}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Attendees (pax)</span><br />{beoFinModal.totalEventPax}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">DDR (per person)</span><br />{formatMoney(beoFinModal.ddr)}</div>
+                                    <div className="md:col-span-2"><span className="font-bold uppercase text-[10px] opacity-50">Event cost per day (incl. tax)</span><br />{formatMoney(beoEventCostPerDayModal)}</div>
+                                </div>
+                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Agenda</h4>
+                                <div className="overflow-x-auto mb-6">
+                                    <table className="w-full text-xs border-collapse min-w-[900px]">
+                                        <thead>
+                                            <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
+                                                <th className="text-left py-2 pr-2">Start</th>
+                                                <th className="text-left py-2 pr-2">End</th>
+                                                <th className="text-left py-2 pr-2">Session time</th>
+                                                <th className="text-left py-2 pr-2">Coffee</th>
+                                                <th className="text-left py-2 pr-2">Lunch</th>
+                                                <th className="text-left py-2 pr-2">Dinner</th>
+                                                <th className="text-left py-2 pr-2">Venue</th>
+                                                <th className="text-center py-2">Pax</th>
+                                                <th className="text-right py-2">Line</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {!(beoModalReq.agenda || []).length ? (
+                                                <tr><td colSpan={9} className="py-4 italic opacity-50">No agenda</td></tr>
+                                            ) : (beoModalReq.agenda || []).map((row: any, i: number) => {
+                                                const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
+                                                return (
+                                                    <tr key={row.id ?? i} className="border-b align-top" style={{ borderColor: colors.border }}>
+                                                        <td className="py-2 pr-2">{row.startDate || '—'}</td>
+                                                        <td className="py-2 pr-2">{row.endDate || row.startDate || '—'}</td>
+                                                        <td className="py-2 pr-2 whitespace-nowrap">{[row.startTime, row.endTime].filter(Boolean).join(' – ') || '—'}</td>
+                                                        <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
+                                                        <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
+                                                        <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
+                                                        <td className="py-2 pr-2">{row.venue || '—'}</td>
+                                                        <td className="text-center py-2">{row.pax ?? '—'}</td>
+                                                        <td className="text-right py-2 font-mono font-bold">{line.toLocaleString()}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {beoTypeKeyModal === 'event_rooms' && !!(beoModalReq.rooms || []).length && (
+                                    <>
+                                        <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Accommodation (rooms)</h4>
+                                        <div className="overflow-x-auto mb-6">
+                                            <table className="w-full text-xs border-collapse min-w-[400px]">
+                                                <thead>
+                                                    <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
+                                                        <th className="text-left py-2 pr-2">Type</th>
+                                                        <th className="text-center py-2">Rooms</th>
+                                                        <th className="text-right py-2">Subtotal</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(beoModalReq.rooms || []).map((room: any, idx: number) => {
+                                                        const rNights = beoTypeKeyModal === 'series' ? calculateNights(room.arrival, room.departure) : beoFinModal.nights;
+                                                        const subtotal = Number(room.rate || 0) * Number(room.count || 0) * rNights;
+                                                        return (
+                                                            <tr key={idx} className="border-b" style={{ borderColor: colors.border }}>
+                                                                <td className="py-2 pr-2 font-bold">{room.type}</td>
+                                                                <td className="text-center py-2">{room.count}</td>
+                                                                <td className="text-right py-2 font-mono">{formatMoney(subtotal, 0)}</td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </>
+                                )}
+                                <div className="text-sm mb-4 space-y-1 p-4 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                    <p><span className="font-bold">Grand total (incl. tax):</span> {formatMoney(beoGrandModal)}</p>
+                                </div>
+                                <div className="p-4 rounded-xl border mb-4 space-y-2" style={{ borderColor: colors.primary + '40', backgroundColor: colors.primary + '08' }}>
+                                    <h4 className="text-xs font-black uppercase tracking-widest opacity-70">Payment</h4>
+                                    <p className="text-sm"><span className="font-bold">Status:</span> {beoPayLabelModal}</p>
+                                    <p className="text-sm"><span className="font-bold">Amount paid:</span> {formatMoney(beoPaidModal)}</p>
+                                    <p className="text-sm"><span className="font-bold">Remaining balance:</span> {formatMoney(beoRemainingModal)}</p>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="text-[10px] font-black uppercase opacity-50">Special requests (from request)</label>
+                                    <div
+                                        className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[72px] text-sm whitespace-pre-wrap"
+                                        style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg + '80' }}
+                                    >
+                                        {formatBeoSpecialRequestsCombined(beoModalReq) || '—'}
+                                    </div>
+                                </div>
+                                <div className="mb-2">
+                                    <label className="text-[10px] font-black uppercase opacity-50">Operations notes (BEO)</label>
+                                    <textarea
+                                        value={beoNotesDraft}
+                                        onChange={(e) => setBeoNotesDraft(e.target.value)}
+                                        disabled={readOnly}
+                                        className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[100px] text-sm disabled:opacity-50"
+                                        style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                        placeholder="Banquet / ops notes…"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </>
+        );
+    }
+
+
+
+    // 2. Accounts Performance View (Event + Event with rooms only, current filter range)
+    if (subView === 'performance') {
+        const top = performanceRows[0];
+        const repeatClients = performanceRows.filter((a) => a.events > 1).length;
+        const repeatPct = performanceRows.length ? Math.round((repeatClients / performanceRows.length) * 100) : 0;
+        return (
+            <div className="h-full flex flex-col gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <KPICard
+                        label="Top Account (value)"
+                        value={top ? top.spent : '—'}
+                        subtext={top?.name || 'No MICE requests'}
+                        icon={Crown}
+                        isPrimary
+                        theme={theme}
+                    />
+                    <KPICard label="Avg Event Value" value={avgEventValueKpi} subtext="In filtered period" icon={TrendingUp} colorKey="green" theme={theme} />
+                    <KPICard label="Accounts w/ 2+ events" value={`${repeatPct}%`} subtext={`${repeatClients} of ${performanceRows.length}`} icon={Users} colorKey="blue" theme={theme} />
+                    <KPICard label="Pipeline Value" value={pipelineValueKpi} subtext="Open pipeline (est.)" icon={DollarSign} colorKey="yellow" theme={theme} />
+                </div>
+                <div className="flex-1 rounded-xl border p-5 flex flex-col min-h-0" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="flex flex-col md:flex-row items-center justify-between mb-6 gap-4">
+                        <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Account Performance Details</h3>
+
+                        <div className="relative w-full md:w-72">
+                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 opacity-40" size={14} style={{ color: colors.textMain }} />
+                            <input
+                                type="text"
+                                placeholder="Search account name..."
+                                value={accountSearch}
+                                onChange={(e) => setAccountSearch(e.target.value)}
+                                className="w-full pl-9 pr-4 py-2 rounded-lg border text-xs focus:ring-1 transition-all outline-none"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            />
+                        </div>
+                    </div>
+
+                    <div className="overflow-auto flex-1 scrollbar-thin">
+                        {!performanceRows.length ? (
+                            <p className="text-sm text-center py-12 opacity-50" style={{ color: colors.textMuted }}>No event requests in this period for the active property.</p>
+                        ) : (
+                            <table className="w-full text-left border-separate border-spacing-y-2">
+                                <thead className="text-[10px] uppercase font-bold sticky top-0 z-10" style={{ backgroundColor: colors.card, color: colors.textMuted }}>
+                                    <tr>
+                                        <th className="pb-3 pl-4">Account Name</th>
+                                        <th className="pb-3 text-right">Events Held</th>
+                                        <th className="pb-3 text-right">Total Spent</th>
+                                        <th className="pb-3 pr-4 text-right">Pax</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {performanceRows
+                                        .filter((a) => a.name.toLowerCase().includes(accountSearch.toLowerCase()))
+                                        .map((acc) => (
+                                            <React.Fragment key={acc.name}>
+                                                <tr
+                                                    onClick={() => toggleAccountExpansion(acc.name)}
+                                                    className="group cursor-pointer hover:translate-x-1 transition-transform"
+                                                    style={{ backgroundColor: colors.bg }}
+                                                >
+                                                    <td className="py-4 pl-4 rounded-l-xl font-bold flex items-center gap-2" style={{ color: colors.textMain }}>
+                                                        <ChevronDown size={14} className={`transition-transform duration-300 ${expandedAccounts.includes(acc.name) ? 'rotate-180' : ''}`} style={{ color: colors.primary }} />
+                                                        {acc.name}
+                                                    </td>
+                                                    <td className="py-4 text-right font-mono text-xs" style={{ color: colors.textMuted }}>{acc.events}</td>
+                                                    <td className="py-4 text-right font-mono font-bold text-xs" style={{ color: colors.primary }}>{acc.spent}</td>
+                                                    <td className="py-4 pr-4 rounded-r-xl text-right font-mono text-xs" style={{ color: colors.textMuted }}>{acc.pax}</td>
+                                                </tr>
+
+                                                {expandedAccounts.includes(acc.name) && (
+                                                    <tr>
+                                                        <td colSpan={4} className="p-0">
+                                                            <div className="mx-4 mb-4 rounded-xl border overflow-hidden animate-in slide-in-from-top-2 duration-300 shadow-inner"
+                                                                style={{ backgroundColor: 'rgba(0,0,0,0.05)', borderColor: colors.border }}>
+                                                                <table className="w-full text-[10px]">
+                                                                    <thead className="opacity-60" style={{ color: colors.textMuted }}>
+                                                                        <tr className="border-b" style={{ borderColor: colors.border }}>
+                                                                            <th className="px-4 py-2 font-medium">Date</th>
+                                                                            <th className="px-4 py-2 font-medium">Event Title</th>
+                                                                            <th className="px-4 py-2 text-right font-medium">Pax</th>
+                                                                            <th className="px-4 py-2 text-right font-medium">Value</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        {acc.details.map((detail, di) => (
+                                                                            <tr key={di} className="border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors">
+                                                                                <td className="px-4 py-2 opacity-70" style={{ color: colors.textMain }}>{detail.date}</td>
+                                                                                <td className="px-4 py-2 font-medium" style={{ color: colors.textMain }}>{detail.title}</td>
+                                                                                <td className="px-4 py-2 text-right opacity-70" style={{ color: colors.textMain }}>{detail.pax}</td>
+                                                                                <td className="px-4 py-2 text-right font-bold" style={{ color: colors.green }}>{detail.value}</td>
+                                                                            </tr>
+                                                                        ))}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </React.Fragment>
+                                        ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // 3. Analytics & Requests View
+    if (subView === 'analytics') {
+        const barData = venueBarData.length ? venueBarData : [{ name: 'No agenda venues yet', value: 0 }];
+        const piePalette = [colors.blue, colors.orange];
+        return (
+            <div className="h-full flex flex-col gap-4 min-h-0">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 min-h-[280px] shrink-0">
+                    <div className="rounded-xl border p-4 flex flex-col min-h-[260px]" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <h3 className="text-sm font-bold uppercase tracking-wider mb-4" style={{ color: colors.textMuted }}>Agenda venues (frequency)</h3>
+                        <div className="flex-1 min-h-[200px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart layout="vertical" data={barData} margin={{ top: 0, right: 30, left: 8, bottom: 5 }}>
+                                    <XAxis type="number" hide />
+                                    <YAxis dataKey="name" type="category" width={120} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
+                                    <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                    <Bar dataKey="value" fill={colors.purple} barSize={18} radius={[0, 4, 4, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                    <div className="rounded-xl border p-4 flex flex-col min-h-[260px]" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <h3 className="text-sm font-bold uppercase tracking-wider mb-4" style={{ color: colors.textMuted }}>Request type mix</h3>
+                        <div className="flex-1 min-h-[200px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie data={typePieData} cx="50%" cy="50%" innerRadius={40} outerRadius={72} paddingAngle={4} dataKey="value">
+                                        {typePieData.map((_, i) => (
+                                            <Cell key={i} fill={piePalette[i % piePalette.length]} />
+                                        ))}
+                                    </Pie>
+                                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                    <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', color: colors.textMuted }} />
+                                </PieChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex-1 min-h-0 rounded-xl border p-4 flex flex-col" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>MICE requests (filtered period)</h3>
+                        <div className="flex gap-2 opacity-40">
+                            <Filter size={14} style={{ color: colors.textMuted }} />
+                            <Download size={14} style={{ color: colors.textMuted }} />
+                        </div>
+                    </div>
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-left text-xs">
+                            <thead className="uppercase font-bold border-b sticky top-0 z-10" style={{ borderColor: colors.border, color: colors.textMuted, backgroundColor: colors.bg }}>
+                                <tr>
+                                    <th className="pb-2">Client / Event Name</th>
+                                    <th className="pb-2">Date</th>
+                                    <th className="pb-2">Venue</th>
+                                    <th className="pb-2 text-center">Pax</th>
+                                    <th className="pb-2 text-right">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y" style={{ borderColor: colors.border }}>
+                                {miceRequests.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={5} className="py-8 text-center opacity-50" style={{ color: colors.textMuted }}>No rows</td>
+                                    </tr>
+                                ) : (
+                                    miceRequests.map((req: any) => {
+                                        const ag = Array.isArray(req.agenda) && req.agenda[0];
+                                        const venue = ag?.venue || '—';
+                                        const d = String(req.eventStart || ag?.startDate || req.checkIn || '').slice(0, 10) || '—';
+                                        const pax = Number(ag?.pax || req.totalEventPax || 0);
+                                        return (
+                                            <tr key={req.id} className="hover:bg-white/5 transition-colors">
+                                                <td className="py-2.5">
+                                                    <div className="font-bold" style={{ color: colors.textMain }}>{req.requestName || req.confirmationNo}</div>
+                                                    <div className="text-[10px]" style={{ color: colors.textMuted }}>{req.account || req.accountName}</div>
+                                                </td>
+                                                <td className="py-2.5 text-[11px]" style={{ color: colors.textMuted }}>{d}</td>
+                                                <td className="py-2.5 text-[11px]" style={{ color: colors.textMuted }}>{venue}</td>
+                                                <td className="py-2.5 text-center font-mono" style={{ color: colors.textMain }}>{pax}</td>
+                                                <td className="py-2.5 text-right"><StatusBadge status={String(req.status || 'Inquiry')} theme={theme} /></td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Default: Kanban Pipeline (Kanban Icon)
+    return (
+        <div className="flex flex-col h-full gap-4">
+            {/* KPI Header */}
+            <div className="flex items-center justify-between px-1">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: colors.textMuted }}>Dates</h3>
+                <div className="text-[10px] font-bold" style={{ color: colors.primary }}>
+                    {filterRange.start && filterRange.end ? `${filterRange.start} - ${filterRange.end}` : 'All dates'}
+                </div>
+            </div>
+
+            {/* Event KPIs */}
+            <div className="grid grid-cols-3 gap-4 shrink-0">
+                <KPICard label="Total Event Revenue" value={totalRevenue} subtext="In The Selected Period" icon={DollarSign} isPrimary theme={theme} />
+                <KPICard label="Total Attendance" value={totalAttendance} subtext="In The Selected Period" icon={Users} colorKey="blue" theme={theme} />
+                <KPICard label="Number of Events" value={numEventsLabel} subtext="In The Selected Period" icon={CalendarDays} colorKey="orange" theme={theme} />
+            </div>
+
+            {/* Kanban Board */}
+            <div className="flex-1 min-h-0 flex gap-4 overflow-x-auto pb-4 scrollbar-thin">
+                {columns.map(col => (
+                    <div
+                        key={col.id}
+                        className="flex flex-col h-full min-w-[300px] rounded-xl border overflow-hidden transition-colors shrink-0"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                        onDragOver={handleDragOver}
+                        onDrop={(e) => handleDrop(e, col.id)}
+                    >
+                        {/* Column Header */}
+                        <div className="p-3 border-b border-t-[6px]" style={{ borderColor: colors.border, borderTopColor: col.color, backgroundColor: colors.bg }}>
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h3 className="text-xs font-bold uppercase tracking-widest" style={{ color: col.color }}>{col.title}</h3>
+                                    <p className="text-[9px] font-mono font-bold mt-0.5" style={{ color: col.color, opacity: 0.8 }}>{getColumnTotal(col.id)}</p>
+                                </div>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10" style={{ color: colors.textMuted }}>
+                                    {kanbanData[col.id]?.length || 0}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Cards Container */}
+                        <div className="flex-1 p-2 space-y-2 overflow-y-auto">
+                            {kanbanData[col.id]?.map((event: any) => (
+                                <div
+                                    key={String(event.requestId ?? event.id)}
+                                    draggable={!readOnly}
+                                    onDragStart={(e) => !readOnly && handleDragStart(e, event, col.id)}
+                                    className={`p-3 rounded-lg border hover:shadow-lg transition-all hover:translate-y-[-2px] group ${readOnly ? '' : 'cursor-grab active:cursor-grabbing'}`}
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                                >
+                                    <div className="flex justify-between items-start mb-2">
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded border" style={{ borderColor: col.color + '40', color: col.color, backgroundColor: col.color + '10' }}>
+                                            {event.type}
+                                        </span>
+                                        <button className="opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: colors.textMuted }}>
+                                            <MoreHorizontal size={14} />
+                                        </button>
+                                    </div>
+                                    <h4 className="font-bold text-sm mb-1 leading-snug" style={{ color: colors.textMain }}>{event.title}</h4>
+                                    <p className="text-xs mb-3" style={{ color: colors.textMuted }}>{event.client}</p>
+
+                                    <div className="flex items-center justify-between text-[10px]" style={{ color: colors.textMuted }}>
+                                        <div className="flex items-center gap-1">
+                                            <Users size={12} /> {event.pax}
+                                        </div>
+                                        <div className="font-mono font-bold" style={{ color: colors.green }}>
+                                            {formatMoneyCompact(parseValue(event.budget))}
+                                        </div>
+                                    </div>
+                                    <div className="mt-2 text-[10px] flex items-center gap-1" style={{ color: colors.textMuted }}>
+                                        <Calendar size={10} /> {event.date}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// --- Requests Management Views ---
+const RequestsView = ({ theme, subView, setSubView, searchParams, setSearchParams }: any) => {
+    const colors = theme.colors;
+
+    if (subView === 'search') {
+        return (
+            <div className="h-full flex flex-col items-center justify-center p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="w-full max-w-4xl p-8 rounded-2xl border shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}>
+                    {/* Decorative Background */}
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-white/5 to-transparent rounded-bl-full pointer-events-none" />
+
+                    <h2 className="text-3xl font-bold mb-2 text-center tracking-tight" style={{ color: colors.primary }}>Requests Management Center</h2>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        {/* Request Type */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Request Type</label>
+                            <div className="relative">
+                                <select
+                                    className="w-full p-3 rounded-lg border bg-black/20 focus:ring-1 focus:ring-primary outline-none appearance-none transition-all hover:bg-black/30"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    value={searchParams.type}
+                                    onChange={(e) => setSearchParams({ ...searchParams, type: e.target.value })}
+                                >
+                                    <option value="all">All Request Types</option>
+                                    <option value="group_acc">Group Accommodations</option>
+                                    <option value="event_rooms">Event + Rooms</option>
+                                    <option value="event_only">Event Only</option>
+                                    <option value="series">Series Groups</option>
+                                </select>
+                                <ChevronDown size={16} className="absolute right-3 top-3.5 pointer-events-none" style={{ color: colors.textMuted }} />
+                            </div>
+                        </div>
+
+                        {/* Arrival Date */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Arrival / Start Date</label>
+                            <input type="date" className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors"
+                                style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+
+                        {/* Departure Date */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Departure / End Date</label>
+                            <input type="date" className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors"
+                                style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+
+                        {/* Account Name */}
+                        <div className="space-y-1 md:col-span-2">
+                            <label className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Account Name</label>
+                            <div className="relative">
+                                <Search size={16} className="absolute left-3 top-3.5" style={{ color: colors.textMuted }} />
+                                <input type="text" placeholder="Search account..." className="w-full p-3 pl-10 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors"
+                                    style={{ borderColor: colors.border, color: colors.textMain }} />
+                            </div>
+                        </div>
+
+                        {/* Confirmation # */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Confirmation Number</label>
+                            <input type="text" placeholder="#REQ-..." className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors font-mono"
+                                style={{ borderColor: colors.border, color: colors.textMain }} />
+                        </div>
+                    </div>
+
+                    <div className="flex justify-center">
+                        <button
+                            onClick={() => setSubView('list')}
+                            className="px-10 py-3 rounded-xl font-bold uppercase tracking-widest text-sm flex items-center gap-3 transition-transform hover:scale-105 active:scale-95 shadow-lg"
+                            style={{ backgroundColor: colors.primary, color: '#000', boxShadow: `0 0 20px -5px ${colors.primary}` }}
+                        >
+                            <Search size={18} /> Search Requests
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (subView === 'list') {
+        return (
+            <div className="h-full flex flex-col animate-in fade-in duration-300">
+                <div className="p-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <div>
+                        <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Search Results</h2>
+                        <p className="text-xs mt-1" style={{ color: colors.textMuted }}>Showing 4 results for "All Requests"</p>
+                    </div>
+                    <div className="flex gap-2">
+                        <button onClick={() => setSubView('search')} className="px-3 py-1.5 rounded border text-xs hover:bg-white/5 transition-colors" style={{ borderColor: colors.border, color: colors.textMain }}>New Search</button>
+                        <button className="px-3 py-1.5 rounded border text-xs hover:bg-white/5 transition-colors flex items-center gap-2" style={{ borderColor: colors.border, color: colors.textMain }}><Download size={14} /> Export</button>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-auto p-4">
+                    <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border }}>
+                        <table className="w-full text-left border-collapse">
+                            <thead className="text-[10px] uppercase tracking-wider font-bold" style={{ backgroundColor: colors.bg, color: colors.textMuted }}>
+                                <tr>
+                                    <th className="p-4 border-b" style={{ borderColor: colors.border }}>Conf #</th>
+                                    <th className="p-4 border-b" style={{ borderColor: colors.border }}>Account</th>
+                                    <th className="p-4 border-b" style={{ borderColor: colors.border }}>Dates</th>
+                                    <th className="p-4 border-b text-center" style={{ borderColor: colors.border }}>Rms / Pax</th>
+                                    <th className="p-4 border-b" style={{ borderColor: colors.border }}>Details</th>
+                                    <th className="p-4 border-b text-right" style={{ borderColor: colors.border }}>Cost</th>
+                                    <th className="p-4 border-b text-right" style={{ borderColor: colors.border }}>Status</th>
+                                    <th className="p-4 border-b" style={{ borderColor: colors.border }}>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="text-xs divide-y" style={{ borderTop: `1px solid ${colors.border}` }}>
+                                {[
+                                    { id: 'REQ-2024-001', client: 'Red Sea Global', start: 'Jan 20', end: 'Jan 25', rooms: 45, pax: 120, cost: '450k', status: 'Confirmed', type: 'Event + Rooms', venue: 'Main Ballroom' },
+                                    { id: 'REQ-2024-002', client: 'McKinsey Retreat', start: 'Feb 10', end: 'Feb 12', rooms: 20, pax: 25, cost: '120k', status: 'Tentative', type: 'Group Acc.', venue: '-' },
+                                    { id: 'REQ-2024-003', client: 'Saudi Aramco', start: 'Mar 05', end: 'Mar 05', rooms: 0, pax: 50, cost: '45k', status: 'Proposal', type: 'Event Only', venue: 'Meeting Room A' },
+                                    { id: 'REQ-2024-004', client: 'Neom Delegation', start: 'Apr 15', end: 'Apr 20', rooms: 100, pax: 200, cost: '1.2M', status: 'Inquiry', type: 'Series Group', venue: 'All Venues' }
+                                ].map((req, i) => (
+                                    <tr key={i} className="hover:bg-white/5 transition-colors group">
+                                        <td className="p-4 font-mono font-bold cursor-pointer hover:underline" style={{ color: colors.primary }}>{req.id}</td>
+                                        <td className="p-4 font-bold" style={{ color: colors.textMain }}>
+                                            {req.client}
+                                            <div className="text-[9px] font-normal mt-0.5 opacity-60">{req.type}</div>
+                                        </td>
+                                        <td className="p-4" style={{ color: colors.textMain }}>
+                                            {req.start} <span style={{ color: colors.textMuted }}>&rarr;</span> {req.end}
+                                            <div className="text-[9px] font-normal mt-0.5 opacity-60">5 Days</div>
+                                        </td>
+                                        <td className="p-4 text-center" style={{ color: colors.textMain }}>
+                                            {req.rooms > 0 && <div>{req.rooms} Rooms</div>}
+                                            {req.pax > 0 && <div className="text-[10px]" style={{ color: colors.textMuted }}>{req.pax} Pax</div>}
+                                        </td>
+                                        <td className="p-4" style={{ color: colors.textMuted }}>
+                                            {req.venue}
+                                            <div className="text-[9px]">Full Board</div>
+                                        </td>
+                                        <td className="p-4 text-right font-mono font-bold" style={{ color: colors.textMain }}>{`${currentCurrency} ${req.cost}`}</td>
+                                        <td className="p-4 text-right">
+                                            <StatusBadge status={req.status} theme={theme} />
+                                        </td>
+                                        <td className="p-4">
+                                            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button className="p-1.5 rounded hover:bg-white/10" title="Edit"><FileText size={14} style={{ color: colors.textMain }} /></button>
+                                                <button className="p-1.5 rounded hover:bg-white/10 text-red-500" title="Cancel"><X size={14} /></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return null;
+};
+
+
+// --- Extracted Components (Memoization Optimization) ---
+
+const Card = ({ children, className = "", title, tabs, activeTab, onTabChange, actionIcon: ActionIcon, extraHeaderAction, colors }: any) => (
+    <div className={`flex flex-col overflow-hidden rounded-xl shadow-lg border transition-all duration-500 hover:shadow-2xl hover:-translate-y-1 animate-in fade-in slide-in-from-bottom-6 ${className}`}
+        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+            <div className="flex items-center gap-4 overflow-x-auto scrollbar-none w-full md:w-auto">
+                {title && <h3 className="text-[10px] uppercase tracking-[0.15em] font-semibold whitespace-nowrap" style={{ color: colors.textMuted }}>{title}</h3>}
+                {tabs && (
+                    <div className="flex gap-1">
+                        {tabs.map((tab: any) => (
+                            <button
+                                key={tab}
+                                onClick={() => onTabChange(tab)}
+                                className={`text-[9px] px-2 py-0.5 rounded transition-colors uppercase tracking-wide font-medium whitespace-nowrap border flex-shrink-0`}
+                                style={activeTab === tab ? {
+                                    backgroundColor: colors.primaryDim,
+                                    color: colors.primary,
+                                    borderColor: colors.primary + '40'
+                                } : {
+                                    color: colors.textMuted,
+                                    borderColor: 'transparent'
+                                }}
+                            >
+                                {tab}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+            <div className="flex items-center gap-3">
+                {extraHeaderAction}
+                {ActionIcon && <ActionIcon size={14} style={{ color: colors.textMuted }} className="hover:opacity-80 cursor-pointer transition-colors hidden md:block" />}
+            </div>
+        </div>
+        <div className="flex-1 min-h-0 relative">
+            {children}
+        </div>
+    </div>
+);
+
+const MiniStatCard = ({ label, value, colorKey, colors }: any) => {
+    const baseColor = colors[colorKey] || colorKey;
+    return (
+        <div className="px-3 py-2 rounded-lg flex flex-col justify-center transition-all duration-300 hover:scale-[1.08] hover:-translate-y-1 shadow-sm border-0 relative overflow-hidden group animate-in fade-in zoom-in duration-500"
+            style={{
+                background: `linear-gradient(135deg, ${baseColor}, ${baseColor})`,
+                boxShadow: `0 4px 12px ${baseColor}30`
+            }}>
+            {/* Subtle gloss effect */}
+            <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+
+            <span className="text-[9px] uppercase tracking-wider truncate font-bold relative z-10" style={{ color: 'rgba(255,255,255,0.85)' }}>{label}</span>
+            <span className="text-sm font-bold font-mono relative z-10" style={{ color: '#FFFFFF' }}>{value}</span>
+        </div>
+    );
+};
+
+const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'SAR' }: any) => {
+    const selectedCurrency = resolveCurrencyCode(currency);
+    const perf = performanceData || {};
+    const rooms = perf.rooms || {};
+    const fnb = perf.fnb || {};
+    const roomActualPct = Number(rooms.actualPct || 0);
+    const roomForecastPct = Number(rooms.forecastPct || 0);
+    const fnbActualPct = Number(fnb.actualPct || 0);
+    const fnbForecastPct = Number(fnb.forecastPct || 0);
+    const chartRoomActual = Math.max(0, Math.min(100, roomActualPct));
+    const chartRoomForecast = Math.max(0, Math.min(100, roomForecastPct));
+    const chartFnbActual = Math.max(0, Math.min(100, fnbActualPct));
+    const chartFnbForecast = Math.max(0, Math.min(100, fnbForecastPct));
+    const roomActualDelta = rooms.actualDeltaVsBudget || '0%';
+    const roomForecastDelta = rooms.forecastDeltaVsBudget || '0%';
+    const fnbActualDelta = fnb.actualDeltaVsBudget || '0%';
+    const fnbForecastDelta = fnb.forecastDeltaVsBudget || '0%';
+    const statusSeries = [
+        { key: 'inquiry', name: 'Inquiry', color: colors.textMuted },
+        { key: 'accepted', name: 'Accepted', color: colors.yellow },
+        { key: 'tentative', name: 'Tentative', color: colors.blue },
+        { key: 'definite', name: 'Definite', color: colors.green },
+        { key: 'actual', name: 'Actual', color: '#059669' },
+        { key: 'cancelled', name: 'Cancelled', color: colors.red },
+    ];
+    const activeStatusSeries = statusSeries.filter((s) =>
+        (chartData || []).some((row: any) => Number(row?.[s.key] || 0) > 0)
+    );
+    const statusLegendPayload = activeStatusSeries.map((s) => ({
+        value: s.name,
+        type: 'circle' as const,
+        color: s.color,
+        id: s.key,
+    }));
+    const statusTooltipContent = ({ active, payload, label }: any) => {
+        if (!active || !Array.isArray(payload) || payload.length === 0) return null;
+        const nonZero = payload.filter((p: any) => Number(p?.value || 0) > 0);
+        if (!nonZero.length) return null;
+        return (
+            <div
+                className="rounded-lg border px-3 py-2 text-xs"
+                style={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+            >
+                <div className="font-bold mb-1">{label}</div>
+                <div className="space-y-0.5">
+                    {nonZero.map((p: any, i: number) => (
+                        <div key={`${p?.name || p?.dataKey || i}`} style={{ color: p?.color || colors.textMain }}>
+                            {p?.name}: {p?.value}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
+    };
+    const moneyTickFormatter = (v: any) => formatCompactCurrency(Number(v || 0), selectedCurrency);
+    const moneyTooltipFormatter = (value: any, name: any, entry: any) => {
+        const key = String(entry?.dataKey || '').toLowerCase();
+        const label = String(name || '').toLowerCase();
+        const isMoney = key.includes('revenue') || label.includes('revenue');
+        if (!isMoney) return [String(value ?? '—'), name];
+        return [formatCurrencyAmount(Number(value || 0), selectedCurrency, { maximumFractionDigits: 2 }), name];
+    };
+
+    if (chartTab === 'Performance') {
+        return (
+            <div className="flex flex-col lg:flex-row w-full h-full divide-y lg:divide-y-0 lg:divide-x overflow-y-auto" style={{ borderColor: colors.border }}>
+                {/* ROOMS Section */}
+                <div className="flex-1 lg:flex-1 shrink-0 w-full min-h-[220px] lg:min-h-0 flex flex-col p-2 relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2 px-2">
+                        <h4 className="text-[10px] font-bold uppercase tracking-widest pl-2 border-l-2" style={{ borderColor: colors.primary, color: colors.textMuted }}>Rooms</h4>
+                    </div>
+
+                    <div className="flex flex-1 flex-row items-center gap-2">
+                        {/* Radial Chart */}
+                        <div className="w-5/12 h-full relative shrink-0">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <RadialBarChart
+                                    innerRadius="45%" outerRadius="100%"
+                                    data={[
+                                        { name: 'Budget', value: 100, fill: colors.border },
+                                        { name: 'Forecast', value: chartRoomForecast, fill: colors.blue },
+                                        { name: 'Actual', value: chartRoomActual, fill: colors.green }
+                                    ]}
+                                    startAngle={90} endAngle={-270}
+                                >
+                                    <RadialBar background={{ fill: colors.card }} cornerRadius={10} dataKey="value" />
+                                </RadialBarChart>
+                            </ResponsiveContainer>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                <span className="text-2xl font-bold" style={{ color: colors.textMain }}>{Math.round(roomActualPct)}%</span>
+                                <span className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>of Budget</span>
+                            </div>
+                        </div>
+
+                        {/* Stats */}
+                        <div className="w-7/12 flex flex-col justify-center gap-2 px-1">
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.green }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.green }}>Actual</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.green }}>{Math.round(roomActualPct)}%</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{rooms.actualLabel || formatMoneyCompact(0)}</span>
+                                    <span className="text-[9px]" style={{ color: colors.textMuted }}>{roomActualDelta}</span>
+                                </div>
+                            </div>
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.blue }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.blue }}>Forecast</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.blue }}>{Math.round(roomForecastPct)}%</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{rooms.forecastLabel || formatMoneyCompact(0)}</span>
+                                    <span className="text-[9px]" style={{ color: colors.textMuted }}>{roomForecastDelta}</span>
+                                </div>
+                            </div>
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.textMuted }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.textMuted }}>Budget</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.textMuted }}>Target</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{rooms.budgetLabel || formatMoneyCompact(0)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Food and Beverage Section */}
+                <div className="flex-1 lg:flex-1 shrink-0 w-full min-h-[220px] lg:min-h-0 flex flex-col p-2 relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2 px-2">
+                        <h4 className="text-[10px] font-bold uppercase tracking-widest pl-2 border-l-2" style={{ borderColor: colors.orange, color: colors.textMuted }}>Food and Beverage</h4>
+                    </div>
+
+                    <div className="flex flex-1 flex-row items-center gap-2">
+                        {/* Radial Chart */}
+                        <div className="w-5/12 h-full relative shrink-0">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <RadialBarChart
+                                    innerRadius="45%" outerRadius="100%"
+                                    data={[
+                                        { name: 'Budget', value: 100, fill: colors.border },
+                                        { name: 'Forecast', value: chartFnbForecast, fill: colors.blue },
+                                        { name: 'Actual', value: chartFnbActual, fill: colors.green }
+                                    ]}
+                                    startAngle={90} endAngle={-270}
+                                >
+                                    <RadialBar background={{ fill: colors.card }} cornerRadius={10} dataKey="value" />
+                                </RadialBarChart>
+                            </ResponsiveContainer>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                <span className="text-2xl font-bold" style={{ color: colors.textMain }}>{Math.round(fnbActualPct)}%</span>
+                                <span className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>of Budget</span>
+                            </div>
+                        </div>
+
+                        {/* Stats */}
+                        <div className="w-7/12 flex flex-col justify-center gap-2 px-1">
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.green }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.green }}>Actual</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.green }}>{Math.round(fnbActualPct)}%</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{fnb.actualLabel || formatMoneyCompact(0)}</span>
+                                    <span className="text-[9px]" style={{ color: colors.textMuted }}>{fnbActualDelta}</span>
+                                </div>
+                            </div>
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.blue }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.blue }}>Forecast</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.blue }}>{Math.round(fnbForecastPct)}%</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{fnb.forecastLabel || formatMoneyCompact(0)}</span>
+                                    <span className="text-[9px]" style={{ color: colors.textMuted }}>{fnbForecastDelta}</span>
+                                </div>
+                            </div>
+                            <div className="p-2 rounded-lg border-l-4 bg-white/5" style={{ borderColor: colors.textMuted }}>
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] uppercase font-bold tracking-wider" style={{ color: colors.textMuted }}>Budget</span>
+                                    <span className="text-[9px] font-mono" style={{ color: colors.textMuted }}>Target</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <span className="text-sm font-bold" style={{ color: colors.textMain }}>{fnb.budgetLabel || formatMoneyCompact(0)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <ResponsiveContainer width="100%" height="100%">
+            {chartTab === 'Revenue' ? (
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <defs>
+                        <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={colors.green} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={colors.green} stopOpacity={0} />
+                        </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
+                    <Tooltip
+                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                        formatter={moneyTooltipFormatter}
+                    />
+                    <Area type="monotone" dataKey="revenue" stroke={colors.green} fill="url(#colorRev)" />
+                </AreaChart>
+            ) : chartTab === 'Requests' ? (
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <YAxis
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        allowDecimals={false}
+                        domain={[0, 'dataMax']}
+                    />
+                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} cursor={{ fill: colors.border }} />
+                    <Bar dataKey="totalRequests" name="Total Requests" fill={colors.blue} radius={[4, 4, 0, 0]} barSize={20} />
+                </BarChart>
+            ) : chartTab === 'Rooms' ? (
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <defs>
+                        <linearGradient id="colorRooms" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={colors.cyan} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={colors.cyan} stopOpacity={0} />
+                        </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                    <Area type="monotone" dataKey="rooms" stroke={colors.cyan} strokeWidth={2} fill="url(#colorRooms)" />
+                </AreaChart>
+            ) : chartTab === 'Events' || chartTab === 'MICE' ? (
+                <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <YAxis
+                        yAxisId="left"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        allowDecimals={false}
+                        domain={[0, 'dataMax']}
+                    />
+                    <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
+                    <Tooltip
+                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                        formatter={moneyTooltipFormatter}
+                    />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
+                    <Bar yAxisId="left" dataKey="miceRequests" name="MICE Requests" fill={colors.purple} radius={[4, 4, 0, 0]} barSize={20} />
+                    <Line yAxisId="right" type="monotone" dataKey="miceRevenue" name="Event Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
+                </ComposedChart>
+            ) : (
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
+                    <YAxis
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        allowDecimals={false}
+                        domain={[0, 'dataMax']}
+                    />
+                    <Tooltip content={statusTooltipContent} cursor={{ fill: colors.border }} />
+                    <Legend payload={statusLegendPayload} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
+                    <Bar dataKey="inquiry" stackId="a" name="Inquiry" fill={colors.textMuted} />
+                    <Bar dataKey="accepted" stackId="a" name="Accepted" fill={colors.yellow} />
+                    <Bar dataKey="tentative" stackId="a" name="Tentative" fill={colors.blue} />
+                    <Bar dataKey="definite" stackId="a" name="Definite" fill={colors.green} />
+                    <Bar dataKey="actual" stackId="a" name="Actual" fill="#059669" />
+                    <Bar dataKey="cancelled" stackId="a" name="Cancelled" fill={colors.red} radius={[4, 4, 0, 0]} />
+                </BarChart>
+            )}
+        </ResponsiveContainer>
+    );
+};
+
+const ToDoView = ({
+    tasks,
+    setTasks,
+    handleOpenTaskModal,
+    handleToggleTaskComplete,
+    colors,
+    theme,
+    activePropertyId,
+    canMutateOperational: canMutateTodo
+}: any) => {
+    const [activeList, setActiveList] = useState('All');
+
+    const scopedTasks = (tasks || []).filter(
+        (t: any) => !activePropertyId || !t.propertyId || t.propertyId === activePropertyId
+    );
+
+    const lists = [
+        { id: 'All', icon: List, label: 'All Tasks' },
+        { id: 'Important', icon: Star, label: 'Important', color: colors.orange },
+        { id: 'Planned', icon: CalendarDays, label: 'Planned', color: colors.blue },
+        { id: 'Assigned', icon: User, label: 'Assigned to me', color: colors.green },
+        { id: 'Completed', icon: CheckCircle2, label: 'Completed' },
+        { id: 'Progress', icon: Activity, label: 'Progress Insights', color: colors.cyan }
+    ];
+
+    const filteredTasks = scopedTasks.filter((t: any) => {
+        if (activeList === 'Important') return t.star && !t.completed;
+        if (activeList === 'Planned') return t.date && !t.completed;
+        if (activeList === 'Completed') return t.completed;
+        return !t.completed;
+    });
+
+    const toggleStar = (id: number, e: any) => {
+        e.stopPropagation();
+        if (!canMutateTodo) return;
+        setTasks((prev: any) => prev.map((t: any) => t.id === id ? { ...t, star: !t.star } : t));
+    };
+
+    return (
+        <div className="flex flex-1 h-full overflow-hidden rounded-2xl border bg-black/5" style={{ borderColor: colors.border }}>
+            {/* To Do Sidebar */}
+            <div className="w-60 border-r flex flex-col p-4 space-y-1 hidden md:flex" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                {lists.map(list => (
+                    <button
+                        key={list.id}
+                        onClick={() => setActiveList(list.id)}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${activeList === list.id ? 'bg-white/5 font-bold shadow-sm' : 'hover:bg-white/5 opacity-70'}`}
+                        style={{ color: activeList === list.id ? colors.primary : colors.textMain }}
+                    >
+                        <list.icon size={18} style={{ color: list.color || (activeList === list.id ? colors.primary : colors.textMuted) }} />
+                        <span className="text-sm">{list.label}</span>
+                        <span className="ml-auto text-[10px] font-mono opacity-60">
+                            {scopedTasks.filter((t: any) => {
+                                if (list.id === 'Important') return t.star && !t.completed;
+                                if (list.id === 'Planned') return t.date && !t.completed;
+                                if (list.id === 'Completed') return t.completed;
+                                return !t.completed;
+                            }).length}
+                        </span>
+                    </button>
+                ))}
+            </div>
+
+            {/* To Do Main List Area */}
+            <div className="flex-1 flex flex-col min-w-0 bg-transparent relative">
+                <div className="p-8 pb-4 flex items-center justify-between shrink-0">
+                    <div>
+                        <h2 className="text-3xl font-black tracking-tight flex items-center gap-4" style={{ color: colors.textMain }}>
+                            {lists.find(l => l.id === activeList)?.label}
+                        </h2>
+                        <p className="text-sm font-medium opacity-50 mt-1" style={{ color: colors.textMuted }}>{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+                    </div>
+                    {activeList !== 'Progress' && canMutateTodo && (
+                        <button
+                            onClick={() => handleOpenTaskModal()}
+                            className="flex items-center gap-2 px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-[0.2em] transition-all hover:scale-105 active:scale-95 shadow-2xl hover:brightness-110"
+                            style={{ backgroundColor: colors.primary, color: '#000', boxShadow: `0 8px 30px ${colors.primary}40` }}
+                        >
+                            <Plus size={18} strokeWidth={3} />
+                            Add Task
+                        </button>
+                    )}
+                </div>
+
+                {activeList === 'Progress' ? (
+                    <div className="flex-1 overflow-y-auto px-8 py-6 custom-scrollbar">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-8 duration-500">
+                            {/* Summary Cards */}
+                            <div className="md:col-span-2 grid grid-cols-3 gap-4">
+                                <div className="p-6 rounded-3xl border-2 flex flex-col items-center justify-center text-center gap-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <div className="text-3xl font-black" style={{ color: colors.primary }}>{scopedTasks.filter((t: any) => t.completed).length}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest opacity-60" style={{ color: colors.textMuted }}>Completed</div>
+                                </div>
+                                <div className="p-6 rounded-3xl border-2 flex flex-col items-center justify-center text-center gap-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <div className="text-3xl font-black" style={{ color: colors.blue }}>{scopedTasks.filter((t: any) => !t.completed).length}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest opacity-60" style={{ color: colors.textMuted }}>Active</div>
+                                </div>
+                                <div className="p-6 rounded-3xl border-2 flex flex-col items-center justify-center text-center gap-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <div className="text-3xl font-black" style={{ color: colors.orange }}>{scopedTasks.filter((t: any) => t.star && !t.completed).length}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest opacity-60" style={{ color: colors.textMuted }}>Critical</div>
+                                </div>
+                            </div>
+
+                            {/* Circular Progress */}
+                            <div className="p-6 rounded-3xl border-2 flex flex-col items-center justify-center relative bg-gradient-to-br from-black/20 to-transparent" style={{ borderColor: colors.border }}>
+                                <div className="relative w-32 h-32 flex items-center justify-center">
+                                    <svg className="w-full h-full transform -rotate-90">
+                                        <circle cx="64" cy="64" r="54" stroke="currentColor" strokeWidth="8" fill="transparent" className="opacity-10" style={{ color: colors.primary }} />
+                                        <circle cx="64" cy="64" r="54" stroke="currentColor" strokeWidth="8" fill="transparent"
+                                            strokeDasharray={2 * Math.PI * 54}
+                                            strokeDashoffset={2 * Math.PI * 54 * (1 - (scopedTasks.filter((t: any) => t.completed).length / (scopedTasks.length || 1)))}
+                                            strokeLinecap="round"
+                                            className="transition-all duration-1000 ease-out"
+                                            style={{ color: colors.primary }}
+                                        />
+                                    </svg>
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                        <span className="text-2xl font-black" style={{ color: colors.textMain }}>
+                                            {Math.round((scopedTasks.filter((t: any) => t.completed).length / (scopedTasks.length || 1)) * 100)}%
+                                        </span>
+                                        <span className="text-[8px] uppercase font-bold opacity-40">Total</span>
+                                    </div>
+                                </div>
+                                <p className="mt-4 text-[10px] uppercase font-bold tracking-tighter opacity-70">Overall Completion</p>
+                            </div>
+
+                            {/* Priority Breakdown Chart */}
+                            <div className="md:col-span-1 p-6 rounded-3xl border-2 h-64" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <h3 className="text-sm font-black mb-4 uppercase tracking-widest opacity-70" style={{ color: colors.textMuted }}>Priority Mix</h3>
+                                <ResponsiveContainer width="100%" height="80%">
+                                    <PieChart>
+                                        <Pie
+                                            data={[
+                                                { name: 'High', value: scopedTasks.filter((t: any) => t.priority === 'High').length, fill: colors.red },
+                                                { name: 'Medium', value: scopedTasks.filter((t: any) => t.priority === 'Medium').length, fill: colors.yellow },
+                                                { name: 'Low', value: scopedTasks.filter((t: any) => t.priority === 'Low').length, fill: colors.green }
+                                            ]}
+                                            innerRadius={50}
+                                            outerRadius={70}
+                                            paddingAngle={5}
+                                            dataKey="value"
+                                        >
+                                            {[0, 1, 2].map((i) => <Cell key={i} />)}
+                                        </Pie>
+                                        <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderRadius: '12px', borderColor: colors.border }} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            </div>
+
+                            {/* Category Distribution */}
+                            <div className="md:col-span-2 p-6 rounded-3xl border-2 h-64" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <h3 className="text-sm font-black mb-4 uppercase tracking-widest opacity-70" style={{ color: colors.textMuted }}>Category Load</h3>
+                                <ResponsiveContainer width="100%" height="80%">
+                                    <BarChart data={TASK_CATEGORIES.map(cat => ({
+                                        name: cat,
+                                        count: scopedTasks.filter((t: any) => t.category === cat).length
+                                    }))}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={colors.border} />
+                                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: colors.textMuted }} />
+                                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: colors.textMuted }} />
+                                        <Tooltip cursor={{ fill: 'white', opacity: 0.05 }} contentStyle={{ backgroundColor: colors.tooltip, borderRadius: '12px', borderColor: colors.border }} />
+                                        <Bar dataKey="count" radius={[10, 10, 0, 0]} barSize={30}>
+                                            {TASK_CATEGORIES.map((_, i) => (
+                                                <Cell key={i} fill={[colors.primary, colors.blue, colors.purple, colors.cyan, colors.orange][i % 5]} />
+                                            ))}
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+
+
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 overflow-y-auto px-8 py-4 space-y-3 custom-scrollbar">
+                        {filteredTasks.length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center opacity-20 italic">
+                                <CheckCircle2 size={64} strokeWidth={1} className="mb-4" />
+                                <p className="text-lg font-light tracking-widest">Everything is caught up</p>
+                            </div>
+                        ) : (
+                            filteredTasks.map((task: any) => (
+                                <div
+                                    key={task.id}
+                                    onClick={() => handleOpenTaskModal(task)}
+                                    className="group flex items-center gap-5 p-5 rounded-2xl border-2 transition-all cursor-pointer hover:shadow-xl hover:-translate-y-0.5 animate-in slide-in-from-bottom-4"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); handleToggleTaskComplete(task.id, e); }}
+                                        disabled={!canMutateTodo}
+                                        className="w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all hover:scale-110 shrink-0 shadow-inner disabled:opacity-40 disabled:pointer-events-none"
+                                        style={{ borderColor: task.completed ? colors.green : colors.primary + '30' }}
+                                    >
+                                        {task.completed && <Check size={14} strokeWidth={4} style={{ color: colors.green }} />}
+                                        {!task.completed && <div className="w-3 h-3 rounded-full opacity-0 group-hover:opacity-30" style={{ backgroundColor: colors.primary }} />}
+                                    </button>
+
+                                    <div className="flex-1 min-w-0">
+                                        <h4 className={`text-base font-bold truncate transition-all ${task.completed ? 'line-through opacity-30 italic' : ''}`} style={{ color: colors.textMain }}>{task.task}</h4>
+                                        <div className="flex items-center gap-4 mt-1.5">
+                                            <span className="text-xs font-medium opacity-60 flex items-center gap-1" style={{ color: colors.textMuted }}>
+                                                <Briefcase size={12} />
+                                                {task.client}
+                                            </span>
+                                            {task.date && (
+                                                <span className="flex items-center gap-1.5 text-xs font-black tracking-tighter" style={{ color: new Date(task.date) < new Date() && !task.completed ? colors.red : colors.blue }}>
+                                                    <Calendar size={12} strokeWidth={3} />
+                                                    {task.date}
+                                                </span>
+                                            )}
+                                            {task.category && (
+                                                <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em]" style={{ backgroundColor: colors.primary + '15', color: colors.primary }}>
+                                                    {task.category}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-5">
+                                        <div className="flex items-center gap-2 bg-black/20 px-3 py-1.5 rounded-full border border-white/5">
+                                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black text-black"
+                                                style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
+                                                {task.assignedTo?.split(' ').map((n: any) => n[0]).join('')}
+                                            </div>
+                                            <span className="text-[10px] font-bold opacity-70 hidden lg:block" style={{ color: colors.textMain }}>{task.assignedTo?.split(' ')[0]}</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={(e) => toggleStar(task.id, e)}
+                                            disabled={!canMutateTodo}
+                                            className="p-1 hover:scale-125 transition-transform disabled:opacity-30 disabled:pointer-events-none"
+                                            style={{ color: task.star ? colors.orange : colors.textMuted + '20' }}
+                                        >
+                                            <Star size={22} fill={task.star ? colors.orange : 'transparent'} strokeWidth={task.star ? 0 : 2} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const DIST_BAR_PALETTE_KEYS = ['blue', 'cyan', 'green', 'yellow', 'purple', 'red', 'orange'] as const;
+const DIST_PIE_PALETTE_KEYS = ['blue', 'cyan', 'green', 'yellow', 'purple', 'orange'] as const;
+
+const DistributionChart = ({ distTab, segmentData, accountTypeData, colors }: any) => {
+    const barFills = DIST_BAR_PALETTE_KEYS.map((k) => colors[k]);
+    const pieFills = DIST_PIE_PALETTE_KEYS.map((k) => colors[k]);
+    return (
+        <ResponsiveContainer width="100%" height="100%">
+            {distTab === 'Segments' ? (
+                <BarChart layout="vertical" data={segmentData} margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} horizontal={false} />
+                    <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
+                    <YAxis dataKey="name" type="category" width={80} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} cursor={{ fill: colors.border, fillOpacity: 0.1 }} />
+                    <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={12}>
+                        {(segmentData || []).map((entry: any, index: number) => (
+                            <Cell key={`${entry.name}-${index}`} fill={barFills[index % barFills.length]} />
+                        ))}
+                    </Bar>
+                </BarChart>
+            ) : (
+                <PieChart>
+                    <Pie
+                        data={accountTypeData}
+                        cx="50%"
+                        cy="48%"
+                        innerRadius={40}
+                        outerRadius={60}
+                        paddingAngle={5}
+                        dataKey="value"
+                        label={false}
+                    >
+                        {(accountTypeData || []).map((entry: any, index: number) => (
+                            <Cell key={`${entry.name}-${index}`} fill={pieFills[index % pieFills.length]} />
+                        ))}
+                    </Pie>
+                    <Tooltip
+                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                        formatter={(value: any, _n: any, item: any) => [
+                            `${value} account${value === 1 ? '' : 's'}`,
+                            item?.payload?.name ?? 'Type',
+                        ]}
+                    />
+                    <Legend
+                        verticalAlign="bottom"
+                        height={44}
+                        iconType="circle"
+                        wrapperStyle={{ fontSize: '10px', color: colors.textMuted }}
+                        formatter={(value: any, entry: any) => {
+                            const pct = Number(entry?.payload?.percent ?? 0);
+                            return `${value} ${pct}%`;
+                        }}
+                    />
+                </PieChart>
+            )}
+        </ResponsiveContainer>
+    );
+};
+
+// --- Main Dashboard ---
+
+const USER_CURRENCY_PREFS_KEY = 'as_userCurrencyPrefs';
+
+function getCurrencyUserKey(user: any): string {
+    return String(user?.id || user?.username || user?.email || user?.name || '').trim().toLowerCase();
+}
+
+function readUserCurrencyPrefs(): Record<string, CurrencyCode> {
+    try {
+        const raw = localStorage.getItem(USER_CURRENCY_PREFS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeUserCurrencyPref(user: any, currency: CurrencyCode) {
+    const key = getCurrencyUserKey(user);
+    if (!key) return;
+    const prefs = readUserCurrencyPrefs();
+    prefs[key] = resolveCurrencyCode(currency);
+    localStorage.setItem(USER_CURRENCY_PREFS_KEY, JSON.stringify(prefs));
+}
+
+function getPersistedUserCurrency(user: any): CurrencyCode {
+    const key = getCurrencyUserKey(user);
+    if (key) {
+        const pref = readUserCurrencyPrefs()[key];
+        if (pref) return resolveCurrencyCode(pref);
+    }
+    return resolveCurrencyCode(user?.preferredCurrency);
+}
+
+export default function AdvancedSalesDashboard() {
+    const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('as_themeId') || 'light');
+    const [isSidebarPinned, setIsSidebarPinned] = useState(false);
+    const [currentView, setCurrentView] = useState(() => localStorage.getItem('as_currentView') || 'dashboard');
+
+    // Authentication State
+    const [currentUser, setCurrentUser] = useState<any>(() => {
+        try {
+            const saved = localStorage.getItem('as_currentUser');
+            return saved ? JSON.parse(saved) : null;
+        } catch {
+            try {
+                localStorage.removeItem('as_currentUser');
+            } catch {
+                /* ignore */
+            }
+            return null;
+        }
+    });
+    const [isAuthenticated, setIsAuthenticated] = useState(() => {
+        try {
+            const saved = localStorage.getItem('as_currentUser');
+            if (!saved) return false;
+            JSON.parse(saved);
+            return true;
+        } catch {
+            try {
+                localStorage.removeItem('as_currentUser');
+            } catch {
+                /* ignore */
+            }
+            return false;
+        }
+    });
+    const [showLoginPage, setShowLoginPage] = useState(false);
+    const currentCurrency = resolveCurrencyCode(currentUser?.preferredCurrency || 'SAR');
+    const theme = (THEMES as any)[currentThemeId] || (THEMES as any).light;
+    const colors = theme.colors;
+    const formatMoney = useCallback(
+        (amountSar: number, maxFractionDigits = 2) => formatCurrencyAmount(amountSar, currentCurrency, { maximumFractionDigits: maxFractionDigits }),
+        [currentCurrency]
+    );
+    const formatMoneyCompact = useCallback(
+        (amountSar: number) => formatCompactCurrency(amountSar, currentCurrency),
+        [currentCurrency]
+    );
+
+    // Persistent Storage Effects
+    useEffect(() => {
+        localStorage.setItem('as_themeId', currentThemeId);
+    }, [currentThemeId]);
+
+    useEffect(() => {
+        localStorage.setItem('as_currentView', currentView);
+    }, [currentView]);
+
+    useEffect(() => {
+        if (currentUser) {
+            localStorage.setItem('as_currentUser', JSON.stringify(currentUser));
+            setIsAuthenticated(true);
+        } else {
+            localStorage.removeItem('as_currentUser');
+            setIsAuthenticated(false);
+        }
+    }, [currentUser]);
+
+    useEffect(() => {
+        if (!currentUser) return;
+        const persistedCurrency = getPersistedUserCurrency(currentUser);
+        if (persistedCurrency === resolveCurrencyCode(currentUser?.preferredCurrency)) return;
+        setCurrentUser((prev: any) => (prev ? { ...prev, preferredCurrency: persistedCurrency } : prev));
+    }, [currentUser]);
+
+    useEffect(() => {
+        localStorage.setItem('as_selectedCurrency', currentCurrency);
+    }, [currentCurrency]);
+
+    useEffect(() => {
+        if (!isAuthenticated || !currentUser) return;
+        if (currentView === 'reports' && !canAccessReports(currentUser)) {
+            setCurrentView('dashboard');
+        }
+    }, [currentView, currentUser, isAuthenticated]);
+
+    // Events Sub-View State: 'pipeline' (default), 'calendar', 'availability', 'beo'
+    const [eventsSubView, setEventsSubView] = useState('pipeline');
+    const [crmSubView, setCrmSubView] = useState('pipeline');
+    const [dashboardPeriodMode, setDashboardPeriodMode] = useState<DashboardPeriodMode>('autoCurrentYear');
+    const [dashboardNowAnchor, setDashboardNowAnchor] = useState(() => Date.now());
+    const [chartTab, setChartTab] = useState('Performance');
+    const [distTab, setDistTab] = useState('Segments');
+    const [feedTab, setFeedTab] = useState('Requests');
+    const [tableTab, setTableTab] = useState('Status');
+    const [isSideNavOpen, setIsSideNavOpen] = useState(false);
+
+    // Calendar Navigation State
+    const [currentCalendarDate, setCurrentCalendarDate] = useState(() => new Date());
+    const [calendarViewMode, setCalendarViewMode] = useState('Month');
+    const [showCalendarDatePicker, setShowCalendarDatePicker] = useState(false);
+    const [calendarDetailModal, setCalendarDetailModal] = useState<
+        { kind: 'request'; requestId: string } | { kind: 'crm'; lead: any } | null
+    >(null);
+
+    // Requests Management State
+    const [requestsSubView, setRequestsSubView] = useState('search'); // 'search' | 'list' | 'details' | 'create'
+    const [requestsNavNonce, setRequestsNavNonce] = useState(0);
+    const [requestSearchParams, setRequestSearchParams] = useState({
+        type: 'all',
+        arrival: '',
+        departure: '',
+        account: '',
+        segment: '',
+        confNumber: '',
+        status: 'all'
+    });
+    const navigateRequestsSubView = (nextSubView: string) => {
+        setRequestsSubView(nextSubView);
+        // Force RequestsManager remount so clicking the active tab resets its flow.
+        setRequestsNavNonce((prev) => prev + 1);
+        if (nextSubView === 'new_request') {
+            setRequestSearchParams((p: any) => {
+                const next = { ...(p || {}), subView: 'new_request' };
+                delete next.editRequestId;
+                return next;
+            });
+        }
+    };
+
+    useEffect(() => {
+        if (canMutateOperational(currentUser)) return;
+        if (requestsSubView !== 'new_request') return;
+        setRequestsSubView('list');
+        setRequestSearchParams((p: any) => {
+            const next = { ...p, subView: 'list' };
+            delete next.editRequestId;
+            return next;
+        });
+        setRequestsNavNonce((n) => n + 1);
+    }, [currentUser, requestsSubView]);
+
+    // New Event Modal State
+    const [showNewEventModal, setShowNewEventModal] = useState(false);
+    const [selectedEventType, setSelectedEventType] = useState<string | null>(null);
+    const [eventModalSource, setEventModalSource] = useState<'calendar' | 'events_page'>('calendar');
+
+    // Date Picker State
+    const [showDatePicker, setShowDatePicker] = useState(false);
+    const [customDates, setCustomDates] = useState(() => getCurrentYearRange());
+    const [crmVisibleMonth, setCrmVisibleMonth] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    });
+    const [showCrmMonthPicker, setShowCrmMonthPicker] = useState(false);
+
+    // Events Calendar State
+    const [eventsCalendarView, setEventsCalendarView] = useState('Month');
+    const [eventsCalendarDate, setEventsCalendarDate] = useState(new Date(2026, 0, 1)); // Jan 2026
+    const [pendingRequestType, setPendingRequestType] = useState<string | null>(null);
+    const [showEventsRequestModal, setShowEventsRequestModal] = useState(false);
+    const [eventsEmbeddedRequestType, setEventsEmbeddedRequestType] = useState<'event' | 'event_rooms' | null>(null);
+    const [showEventTypeMenu, setShowEventTypeMenu] = useState(false);
+    const [eventsModalSearchParams, setEventsModalSearchParams] = useState<Record<string, unknown>>({});
+    const [pendingCrmAction, setPendingCrmAction] = useState<'add_call' | null>(null);
+    const [showSalesCallModal, setShowSalesCallModal] = useState(false);
+    const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+
+    const skipNextAccountsPersist = useRef(false);
+    const skipNextCrmPersist = useRef(false);
+    const crmHydratedForPropertyId = useRef<string | null>(null);
+
+    const [accounts, setAccounts] = useState<any[]>([]);
+
+    const [crmLeads, setCrmLeads] = useState<Record<string, any[]>>(() => defaultCrmLeadBuckets());
+
+    const handleSalesCallSave = (callData: any) => {
+        console.log('New Sales Call Saved from Calendar:', callData);
+        // Ideally this would update CRM state, but for now we just close the modal.
+        setShowSalesCallModal(false);
+    };
+
+    const handleCreateAccount = () => {
+        // Temporarily close sales call modal if open, or manage z-index
+        // For simplicity, we can stack them or close one. Let's stack them (open on top).
+        setShowAddAccountModal(true);
+    };
+
+    const handleSaveAccount = (accountData: any) => {
+        if (!accountData?.name) return;
+        const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
+        const act = {
+            id: `acct-${Date.now()}`,
+            at: new Date().toISOString(),
+            title: 'Account created',
+            body: 'Account created in the system.',
+            user: u,
+        };
+        setAccounts((prev: any[]) => [
+            {
+                id: `A${Date.now()}`,
+                ...accountData,
+                createdByUserId: currentUser?.id,
+                activities: [...(accountData.activities || []), act],
+            },
+            ...prev,
+        ]);
+        setShowAddAccountModal(false);
+    };
+
+    // Filter Logic
+    const [eventsFilterRange, setEventsFilterRange] = useState({ start: '', end: '' });
+    const [showEventsDatePicker, setShowEventsDatePicker] = useState(false);
+
+    // Task Management State
+    const [tasks, setTasks] = useState(() => loadTasksFromStorage());
+    const [showTaskModal, setShowTaskModal] = useState(false);
+    const [editingTask, setEditingTask] = useState<any>(null);
+    const [taskFormData, setTaskFormData] = useState({
+        task: '',
+        client: '',
+        date: '',
+        priority: 'Medium',
+        assignedTo: '',
+        description: '',
+        category: 'Follow-up',
+        star: false
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
+        } catch {
+            /* ignore quota / private mode */
+        }
+    }, [tasks]);
+
+    const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+    const [properties, setProperties] = useState<any[]>([]);
+    const [activeProperty, setActiveProperty] = useState<any>(null);
+
+    const [systemUsers, setSystemUsers] = useState<any[]>([]);
+
+    useEffect(() => {
+        let cancelled = false;
+        fetch(apiUrl('/api/users'))
+            .then((res) => (res.ok ? res.json() : []))
+            .then((data) => {
+                if (cancelled) return;
+                if (Array.isArray(data)) setSystemUsers(data);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const taskAssignableUsers = useMemo(() => {
+        const ap = activeProperty;
+        const label = (u: any) => String(u?.name ?? u?.username ?? '').trim() || String(u?.id ?? '');
+        const row = (u: any) => ({ id: String(u.id ?? u.username ?? label(u)), name: label(u) });
+
+        if (!ap?.id) {
+            return currentUser?.name ? [row({ id: currentUser.id, name: currentUser.name })] : [];
+        }
+        const ids = new Set((ap.assignedUserIds || []).map((x: any) => String(x)));
+        let fromAssigned = (systemUsers || []).filter((u: any) => u?.id != null && ids.has(String(u.id))).map(row);
+
+        if (!fromAssigned.length) {
+            fromAssigned = (systemUsers || [])
+                .filter((u: any) => String(u.propertyId ?? '') === String(ap.id))
+                .map(row);
+        }
+
+        const byName = new Map<string, { id: string; name: string }>();
+        for (const u of fromAssigned) {
+            if (u.name && !byName.has(u.name)) byName.set(u.name, u);
+        }
+        const curName = currentUser?.name ? String(currentUser.name).trim() : '';
+        if (curName && !byName.has(curName)) {
+            byName.set(curName, { id: String(currentUser.id), name: curName });
+        }
+        const merged = [...byName.values()];
+        return merged.length ? merged : curName ? [{ id: String(currentUser.id), name: curName }] : [];
+    }, [activeProperty, systemUsers, currentUser]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid) {
+            setAccounts([]);
+            return;
+        }
+        skipNextAccountsPersist.current = true;
+        setAccounts(loadAccountsForProperty(String(pid)));
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid) return;
+        if (skipNextAccountsPersist.current) {
+            skipNextAccountsPersist.current = false;
+            return;
+        }
+        try {
+            localStorage.setItem(accountsStorageKey(String(pid)), JSON.stringify(accounts));
+        } catch { /* ignore */ }
+    }, [accounts, activeProperty?.id]);
+
+    const [sharedRequests, setSharedRequests] = useState<any[]>([]);
+    const [propertyFinancialKpis, setPropertyFinancialKpis] = useState<any[]>([]);
+    const [pendingOpenRequestId, setPendingOpenRequestId] = useState<string | null>(null);
+    const [pendingCrmAccountId, setPendingCrmAccountId] = useState<string | null>(null);
+    const [pendingOpenCrmLeadId, setPendingOpenCrmLeadId] = useState<string | null>(null);
+    const [pendingContractsAccountId, setPendingContractsAccountId] = useState<string | null>(null);
+
+    const refreshSharedRequests = async () => {
+        try {
+            const url = activeProperty?.id
+                ? apiUrl(`/api/requests?propertyId=${encodeURIComponent(activeProperty.id)}`)
+                : apiUrl('/api/requests');
+            const res = await fetch(url);
+            const data = await res.json();
+            if (Array.isArray(data)) setSharedRequests(data);
+        } catch (e) {
+            console.error('refreshSharedRequests', e);
+        }
+    };
+
+    const patchRequestStatus = useCallback(
+        async (requestId: string, status: string) => {
+            const existing = sharedRequests.find((r: any) => String(r.id) === String(requestId));
+            if (!existing) return;
+            try {
+                const res = await fetch(apiUrl('/api/requests'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ...existing,
+                        status,
+                        logs: [
+                            {
+                                date: new Date().toISOString(),
+                                user: 'Current User',
+                                action: `Status changed to ${status}`,
+                            },
+                            ...(Array.isArray(existing.logs) ? existing.logs : []),
+                        ],
+                    }),
+                });
+                if (res.ok) await refreshSharedRequests();
+            } catch (e) {
+                console.error('patchRequestStatus', e);
+            }
+        },
+        [sharedRequests]
+    );
+
+    useEffect(() => {
+        refreshSharedRequests();
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const pid = activeProperty?.id;
+        if (!pid) {
+            setPropertyFinancialKpis([]);
+            return;
+        }
+        fetch(apiUrl(`/api/financials?propertyId=${encodeURIComponent(String(pid))}`))
+            .then((res) => (res.ok ? res.json() : []))
+            .then((data) => {
+                if (cancelled) return;
+                if (Array.isArray(data)) {
+                    setPropertyFinancialKpis(data);
+                } else {
+                    setPropertyFinancialKpis([]);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setPropertyFinancialKpis([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const pid = activeProperty?.id;
+        crmHydratedForPropertyId.current = null;
+        if (!pid) {
+            setCrmLeads(defaultCrmLeadBuckets());
+            return;
+        }
+        const pidStr = String(pid);
+        skipNextCrmPersist.current = true;
+        setCrmLeads(defaultCrmLeadBuckets());
+        fetch(apiUrl(`/api/crm-state?propertyId=${encodeURIComponent(pidStr)}`))
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                if (cancelled) return;
+                const merged = mergeCrmBucketsFromApi(data?.leads);
+                const accs = loadAccountsForProperty(pidStr);
+                const scoped = filterCrmBucketsForPropertyContext(merged, pidStr, accs);
+                crmHydratedForPropertyId.current = pidStr;
+                setCrmLeads(scoped);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                try {
+                    const raw = localStorage.getItem(crmLocalStorageKey(pidStr));
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && typeof parsed === 'object') {
+                            const merged = mergeCrmBucketsFromApi(parsed);
+                            const accs = loadAccountsForProperty(pidStr);
+                            crmHydratedForPropertyId.current = pidStr;
+                            setCrmLeads(filterCrmBucketsForPropertyContext(merged, pidStr, accs));
+                            return;
+                        }
+                    }
+                } catch { /* ignore */ }
+                crmHydratedForPropertyId.current = pidStr;
+                setCrmLeads(defaultCrmLeadBuckets());
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid) return;
+        if (skipNextCrmPersist.current) {
+            skipNextCrmPersist.current = false;
+            return;
+        }
+        try {
+            localStorage.setItem(crmLocalStorageKey(String(pid)), JSON.stringify(crmLeads));
+        } catch { /* ignore */ }
+    }, [crmLeads, activeProperty?.id]);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        if (!pid || crmHydratedForPropertyId.current !== String(pid)) return;
+        const t = setTimeout(() => {
+            fetch(apiUrl('/api/crm-state'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ propertyId: String(pid), leads: crmLeads })
+            }).catch(() => {});
+        }, 1200);
+        return () => clearTimeout(t);
+    }, [crmLeads, activeProperty?.id]);
+
+    // Initial load properties globally for user
+    useEffect(() => {
+        fetch(apiUrl('/api/properties'))
+            .then(res => res.json())
+            .then(data => {
+                if (Array.isArray(data)) {
+                    setProperties(data);
+                    const userPropId = currentUser?.propertyId;
+                    
+                    // Try to find the user's assigned property first
+                    const assignedProp = data.find(p => p.id === userPropId || (p.assignedUserIds || []).includes(currentUser?.id));
+                    if (assignedProp) {
+                        setActiveProperty(assignedProp);
+                    } else if (data.length > 0) {
+                        setActiveProperty(data[0]);
+                    }
+                }
+            })
+            .catch(err => console.error("Error fetching properties globally:", err));
+    }, [currentUser]);
+
+    const [taxonomyRefresh, setTaxonomyRefresh] = useState(0);
+    useEffect(() => {
+        const onTax = () => setTaxonomyRefresh((n) => n + 1);
+        window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+        return () => window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+    }, []);
+
+    const propertySegmentLabels = useMemo(
+        () => loadSegmentsForProperty(String(activeProperty?.id || '')),
+        [activeProperty?.id, taxonomyRefresh]
+    );
+    const propertyAccountTypeLabels = useMemo(
+        () => loadAccountTypesForProperty(String(activeProperty?.id || '')),
+        [activeProperty?.id, taxonomyRefresh]
+    );
+
+    const dashboardSegmentChartData = useMemo(() => {
+        const pid = activeProperty?.id;
+        const reqs = (sharedRequests || []).filter(
+            (r: any) =>
+                (!pid || !r.propertyId || r.propertyId === pid) && !isDashboardExcludedRequest(r)
+        );
+        return propertySegmentLabels.map((name) => ({
+            name,
+            value: reqs.filter((r: any) => String(r.segment || '').trim() === name).length,
+        }));
+    }, [sharedRequests, activeProperty?.id, propertySegmentLabels]);
+
+    const dashboardAccountTypeChartData = useMemo(() => {
+        const rows = propertyAccountTypeLabels.map((name) => ({
+            name,
+            value: (accounts || []).filter((a: any) => String(a.type || '').trim() === name).length,
+        }));
+        const sum = rows.reduce((s, d) => s + d.value, 0) || 1;
+        return rows.map((d) => ({ ...d, percent: Math.round((d.value / sum) * 100) }));
+    }, [accounts, propertyAccountTypeLabels]);
+
+    const dashboardRequestDistributionData = useMemo(() => {
+        const tc = ((THEMES as any)[currentThemeId] || (THEMES as any).light).colors;
+        const palette = [tc.blue, tc.cyan, tc.purple, tc.orange];
+        const pid = activeProperty?.id;
+        const reqs = (sharedRequests || []).filter(
+            (r: any) =>
+                (!pid || !r.propertyId || r.propertyId === pid) && !isDashboardExcludedRequest(r)
+        );
+        const tallies: Record<'accommodation' | 'event_rooms' | 'series' | 'event', number> = {
+            accommodation: 0,
+            event_rooms: 0,
+            series: 0,
+            event: 0,
+        };
+        for (const r of reqs) {
+            const b = bucketRequestDistribution(r.requestType);
+            tallies[b] += 1;
+        }
+        const n = reqs.length;
+        return REQUEST_DISTRIBUTION_META.map((meta, i) => ({
+            name: meta.label,
+            value: tallies[meta.key],
+            percent: n ? Math.round((tallies[meta.key] / n) * 100) : 0,
+            color: palette[i % palette.length],
+        }));
+    }, [sharedRequests, activeProperty?.id, currentThemeId]);
+
+    const dashboardCurrentRange = useMemo(() => {
+        if (dashboardPeriodMode === 'custom') {
+            const start = parseYmd(customDates.start);
+            const end = parseYmd(customDates.end);
+            if (!start || !end || start > end) return getCurrentYearRange();
+            return { start, end };
+        }
+        if (dashboardPeriodMode === 'mtd') return getMtdRange();
+        if (dashboardPeriodMode === 'qtd') return getQtdRange();
+        if (dashboardPeriodMode === 'ytd') return getYtdRange();
+        return getCurrentYearRange();
+    }, [dashboardPeriodMode, customDates.start, customDates.end, dashboardNowAnchor]);
+
+    const dashboardLyRange = useMemo(
+        () => shiftRangeByYears(dashboardCurrentRange, -1),
+        [dashboardCurrentRange]
+    );
+
+    const scopedRequests = useMemo(() => {
+        const pid = activeProperty?.id;
+        return (sharedRequests || []).filter((r: any) => !pid || !r.propertyId || r.propertyId === pid);
+    }, [sharedRequests, activeProperty?.id]);
+
+    const calendarCrmLeadsFlat = useMemo(() => {
+        const flat = flattenCrmLeads(crmLeads);
+        const buckets = crmLeads || {};
+        const stageById = new Map<string, string>();
+        (Object.keys(buckets) as string[]).forEach((sk) => {
+            const arr = (buckets as any)[sk];
+            if (!Array.isArray(arr)) return;
+            arr.forEach((l: any) => {
+                if (l?.id != null) stageById.set(String(l.id), sk);
+            });
+        });
+        return flat.map((l: any) => ({
+            ...l,
+            stage: l.stage || stageById.get(String(l.id)) || 'new',
+        }));
+    }, [crmLeads]);
+
+    const calendarModalResolvedRequest = useMemo(() => {
+        if (!calendarDetailModal || calendarDetailModal.kind !== 'request') return null;
+        return (sharedRequests || []).find((r: any) => String(r.id) === String(calendarDetailModal.requestId)) || null;
+    }, [calendarDetailModal, sharedRequests]);
+
+    const computeRangeSummary = useCallback((range: { start: string; end: string }) => {
+        const statusCounts = KPI_STATUS_ORDER.reduce((acc: Record<string, number>, status) => {
+            acc[status] = 0;
+            return acc;
+        }, {});
+        let totalRevenue = 0;
+        let paidRevenue = 0;
+        let cancelledRevenue = 0;
+        let requestUnits = 0;
+        const callsCount = flattenCrmLeads(crmLeads).filter((lead: any) => {
+            const dt = parseYmd(lead?.lastContact || lead?.date);
+            return dt ? isIsoInRange(dt, range) : false;
+        }).length;
+
+        for (const req of scopedRequests) {
+            const primaryDate = getPrimaryOperationalDate(req);
+            if (!primaryDate || !isIsoInRange(primaryDate, range)) continue;
+            const breakdown = computeRequestCostBreakdown(req);
+            const st = normalizeStatus(req?.status);
+            if (st) {
+                statusCounts[st] += 1;
+                if (st === 'Cancelled') cancelledRevenue += breakdown.totalRevenue;
+            }
+            if (isDashboardExcludedRequest(req)) continue;
+            totalRevenue += breakdown.totalRevenue;
+            paidRevenue += asNumber(req?.paidAmount || 0);
+            const unitDates = getRequestCountDates(req).filter((d) => isIsoInRange(d, range));
+            requestUnits += unitDates.length || 1;
+        }
+
+        const avgValue = requestUnits > 0 ? totalRevenue / requestUnits : 0;
+        return {
+            requestUnits,
+            totalRevenue,
+            avgValue,
+            paidRevenue,
+            cancelledRevenue,
+            callsCount,
+            statusCounts,
+        };
+    }, [scopedRequests, crmLeads]);
+
+    const currentRangeSummary = useMemo(
+        () => computeRangeSummary(dashboardCurrentRange),
+        [computeRangeSummary, dashboardCurrentRange]
+    );
+    const lyRangeSummary = useMemo(
+        () => computeRangeSummary(dashboardLyRange),
+        [computeRangeSummary, dashboardLyRange]
+    );
+
+    const pctVsLyLabel = (cur: number, ly: number) => {
+        if (!ly) return cur ? 'vs LY New' : 'vs LY 0.0%';
+        const pct = ((cur - ly) / ly) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        return `vs LY ${sign}${pct.toFixed(1)}%`;
+    };
+
+    const dashboardStats = useMemo(() => {
+        const status = currentRangeSummary.statusCounts;
+        return {
+            requests: String(currentRangeSummary.requestUnits),
+            revenue: formatMoneyCompact(currentRangeSummary.totalRevenue),
+            avgValue: currentRangeSummary.requestUnits ? formatMoneyCompact(currentRangeSummary.avgValue) : formatMoneyCompact(0),
+            accounts: String((accounts || []).length),
+            trend: pctVsLyLabel(currentRangeSummary.totalRevenue, lyRangeSummary.totalRevenue),
+            requestsSubtext: pctVsLyLabel(currentRangeSummary.requestUnits, lyRangeSummary.requestUnits),
+            avgSubtext: pctVsLyLabel(currentRangeSummary.avgValue, lyRangeSummary.avgValue),
+            status: {
+                act: String(status.Actual || 0),
+                def: String(status.Definite || 0),
+                tent: String(status.Tentative || 0),
+                acc: String(status.Accepted || 0),
+                inq: String(status.Inquiry || 0),
+                cxl: String(status.Cancelled || 0),
+                /** Total request value for Cancelled status in period (same basis as KPI revenue). */
+                lostAmt: formatMoneyCompact(currentRangeSummary.cancelledRevenue),
+                paid: formatMoneyCompact(currentRangeSummary.paidRevenue),
+                cancelledAmt: formatMoneyCompact(currentRangeSummary.cancelledRevenue),
+                /** Placeholder until contracts backend supplies signed count. */
+                signed: '0',
+                calls: String(currentRangeSummary.callsCount),
+            },
+        };
+    }, [currentRangeSummary, lyRangeSummary, accounts, formatMoneyCompact]);
+
+    const dashboardComparisonLabel = useMemo(() => {
+        return `${formatPeriodLabel(dashboardCurrentRange)} vs ${formatPeriodLabel(dashboardLyRange)}`;
+    }, [dashboardCurrentRange, dashboardLyRange]);
+
+    const chartData = useMemo(() => {
+        const axis = buildMonthAxis(dashboardCurrentRange);
+        const byMonth = new Map<string, any>(
+            axis.map((m) => [m.key, {
+                month: m.month,
+                revenue: 0,
+                totalRequests: 0,
+                rooms: 0,
+                miceRequests: 0,
+                miceRevenue: 0,
+                inquiry: 0,
+                accepted: 0,
+                tentative: 0,
+                definite: 0,
+                actual: 0,
+                cancelled: 0,
+            }])
+        );
+
+        for (const req of scopedRequests) {
+            const primaryDate = getPrimaryOperationalDate(req);
+            if (!primaryDate || !isIsoInRange(primaryDate, dashboardCurrentRange)) continue;
+            const monthKey = getMonthKey(primaryDate);
+            const row = byMonth.get(monthKey);
+            if (!row) continue;
+
+            const breakdown = computeRequestCostBreakdown(req);
+            const skipPerf = isDashboardExcludedRequest(req);
+
+            if (!skipPerf) {
+                row.revenue += breakdown.totalRevenue;
+            }
+
+            const unitDates = getRequestCountDates(req);
+            if (!skipPerf) {
+                for (const unitDate of unitDates) {
+                    if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
+                    const unitRow = byMonth.get(getMonthKey(unitDate));
+                    if (unitRow) unitRow.totalRequests += 1;
+                }
+            }
+
+            const status = normalizeStatus(req?.status).toLowerCase();
+            if (status && Object.prototype.hasOwnProperty.call(row, status)) {
+                row[status] += 1;
+            }
+
+            if (!skipPerf && isMiceRequest(req)) {
+                row.miceRequests += 1;
+                row.miceRevenue += breakdown.eventRevenue;
+            }
+
+            if (!skipPerf) {
+                const roomRows = Array.isArray(req?.rooms) ? req.rooms : [];
+                let roomContributed = false;
+                for (const rr of roomRows) {
+                    const roomDate = parseYmd(rr?.arrival || req?.checkIn);
+                    if (!roomDate || !isIsoInRange(roomDate, dashboardCurrentRange)) continue;
+                    const rrMonth = byMonth.get(getMonthKey(roomDate));
+                    if (!rrMonth) continue;
+                    rrMonth.rooms += Number(rr?.count || 0);
+                    roomContributed = true;
+                }
+                if (!roomContributed) {
+                    const fallbackRoomDate = parseYmd(req?.checkIn);
+                    if (fallbackRoomDate && isIsoInRange(fallbackRoomDate, dashboardCurrentRange)) {
+                        const fallbackMonth = byMonth.get(getMonthKey(fallbackRoomDate));
+                        if (fallbackMonth) fallbackMonth.rooms += Number(req?.totalRooms || 0);
+                    }
+                }
+            }
+        }
+
+        return axis.map((m) => byMonth.get(m.key) || {
+            month: m.month,
+            revenue: 0,
+            totalRequests: 0,
+            rooms: 0,
+            miceRequests: 0,
+            miceRevenue: 0,
+            inquiry: 0,
+            accepted: 0,
+            tentative: 0,
+            definite: 0,
+            actual: 0,
+            cancelled: 0,
+        });
+    }, [scopedRequests, dashboardCurrentRange]);
+
+    const performanceData = useMemo(() => {
+        const range = dashboardCurrentRange;
+        const rangeStart = parseYmd(range.start);
+        const rangeEnd = parseYmd(range.end);
+        if (!rangeStart || !rangeEnd) {
+            return {
+                rooms: { actualPct: 0, forecastPct: 0, actualLabel: formatMoneyCompact(0), forecastLabel: formatMoneyCompact(0), budgetLabel: formatMoneyCompact(0), actualDeltaVsBudget: '0%', forecastDeltaVsBudget: '0%' },
+                fnb: { actualPct: 0, forecastPct: 0, actualLabel: formatMoneyCompact(0), forecastLabel: formatMoneyCompact(0), budgetLabel: formatMoneyCompact(0), actualDeltaVsBudget: '0%', forecastDeltaVsBudget: '0%' },
+            };
+        }
+        const periodStart = new Date(`${rangeStart}T00:00:00`);
+        const periodEnd = new Date(`${rangeEnd}T00:00:00`);
+        const overlapWeight = (year: number, monthIdx: number) => {
+            const monthStart = new Date(year, monthIdx, 1);
+            const monthEnd = new Date(year, monthIdx + 1, 0);
+            const startMs = Math.max(monthStart.getTime(), periodStart.getTime());
+            const endMs = Math.min(monthEnd.getTime(), periodEnd.getTime());
+            if (endMs < startMs) return 0;
+            const overlapDays = Math.floor((endMs - startMs) / 86400000) + 1;
+            const monthDays = monthEnd.getDate();
+            return monthDays > 0 ? overlapDays / monthDays : 0;
+        };
+
+        let roomsBudget = 0;
+        let roomsForecast = 0;
+        let fnbBudget = 0;
+        let fnbForecast = 0;
+        for (const yearRow of propertyFinancialKpis || []) {
+            const y = Number(yearRow?.year);
+            if (!Number.isFinite(y)) continue;
+            const months = Array.isArray(yearRow?.months) ? yearRow.months : [];
+            for (const monthRow of months) {
+                const idx = monthNameToIndex(monthRow?.month);
+                if (idx < 0) continue;
+                const w = overlapWeight(y, idx);
+                if (w <= 0) continue;
+                roomsBudget += Number(monthRow?.roomsBudget || 0) * w;
+                roomsForecast += Number(monthRow?.roomsForecast || 0) * w;
+                fnbBudget += Number(monthRow?.foodAndBeverageBudget || 0) * w;
+                fnbForecast += Number(monthRow?.foodAndBeverageForecast || 0) * w;
+            }
+        }
+
+        let roomsActual = 0;
+        let fnbActual = 0;
+        for (const req of scopedRequests) {
+            const primaryDate = getPrimaryOperationalDate(req);
+            if (!primaryDate || !isIsoInRange(primaryDate, range)) continue;
+            if (isDashboardExcludedRequest(req)) continue;
+            const breakdown = computeRequestCostBreakdown(req);
+            if (breakdown.roomsRevenue > 0) roomsActual += breakdown.roomsRevenue;
+            if (isMiceRequest(req)) fnbActual += breakdown.eventRevenue;
+        }
+
+        const pct = (value: number, base: number) => (base > 0 ? (value / base) * 100 : 0);
+        const deltaPct = (value: number, base: number) => {
+            if (!base) return '0%';
+            const v = ((value - base) / base) * 100;
+            return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+        };
+
+        return {
+            rooms: {
+                actualPct: pct(roomsActual, roomsBudget),
+                forecastPct: pct(roomsForecast, roomsBudget),
+                actualLabel: formatMoneyCompact(roomsActual),
+                forecastLabel: formatMoneyCompact(roomsForecast),
+                budgetLabel: formatMoneyCompact(roomsBudget),
+                actualDeltaVsBudget: deltaPct(roomsActual, roomsBudget),
+                forecastDeltaVsBudget: deltaPct(roomsForecast, roomsBudget),
+            },
+            fnb: {
+                actualPct: pct(fnbActual, fnbBudget),
+                forecastPct: pct(fnbForecast, fnbBudget),
+                actualLabel: formatMoneyCompact(fnbActual),
+                forecastLabel: formatMoneyCompact(fnbForecast),
+                budgetLabel: formatMoneyCompact(fnbBudget),
+                actualDeltaVsBudget: deltaPct(fnbActual, fnbBudget),
+                forecastDeltaVsBudget: deltaPct(fnbForecast, fnbBudget),
+            },
+        };
+    }, [dashboardCurrentRange, propertyFinancialKpis, scopedRequests, formatMoneyCompact]);
+
+    const dashboardFeedRecentRequests = useMemo(() => {
+        const list = [...(scopedRequests || [])]
+            .filter((r: any) => !isDashboardExcludedRequest(r))
+            .filter((r: any) => {
+                const d = getPrimaryOperationalDate(r);
+                return d ? isIsoInRange(d, dashboardCurrentRange) : false;
+            })
+            .sort((a: any, b: any) => {
+                const da = getPrimaryOperationalDate(a);
+                const db = getPrimaryOperationalDate(b);
+                return db.localeCompare(da);
+            })
+            .slice(0, 12);
+        return list.map((r: any, i: number) => {
+            const raw = computeRequestCostBreakdown(r).totalRevenue;
+            const amount = formatCompactAmount(raw);
+            return {
+                id: r.id ?? `req-${i}`,
+                client: r.account || r.accountName || '—',
+                type: r.requestType || 'Request',
+                date: getPrimaryOperationalDate(r) || '—',
+                status: r.status || '—',
+                amount,
+            };
+        });
+    }, [scopedRequests, dashboardCurrentRange]);
+
+    const dashboardFeedSalesCalls = useMemo(() => {
+        const flat = flattenCrmLeads(crmLeads);
+        const sorted = [...flat]
+            .filter((lead: any) => {
+                const d = parseYmd(lead?.lastContact || lead?.date);
+                return d ? isIsoInRange(d, dashboardCurrentRange) : false;
+            })
+            .sort((a, b) => {
+            const ta = Date.parse(parseYmd(a.lastContact || a.date) || '') || 0;
+            const tb = Date.parse(parseYmd(b.lastContact || b.date) || '') || 0;
+            return tb - ta;
+        }).slice(0, 12);
+        return sorted.map((l: any, i: number) => ({
+            id: l.id ?? `crm-${i}`,
+            activity: l.subject || l.nextStep || 'Sales opportunity',
+            client: l.company || '—',
+            date: l.lastContact || l.date || '—',
+            result: l.stage || l.status || '—',
+        }));
+    }, [crmLeads, dashboardCurrentRange]);
+
+    const dashboardFeedAccountProfiles = useMemo(() => {
+        return (accounts || []).slice(0, 14).map((acc: any) => {
+            const reqs = filterRequestsForAccount(sharedRequests || [], acc.id, acc.name);
+            const m = computeAccountMetrics(reqs);
+            const rev = formatMoneyCompact(m.totalSpend);
+            return {
+                id: acc.id,
+                client: acc.name,
+                type: acc.type || 'Account',
+                revenue: rev,
+                bookings: m.totalRequests,
+            };
+        });
+    }, [accounts, sharedRequests, formatMoneyCompact]);
+
+    const handleOpenTaskModal = (task: any = null) => {
+        if (!task && !canMutateOperational(currentUser)) return;
+        if (task) {
+            setEditingTask(task);
+            setTaskFormData({
+                task: task.task,
+                client: task.client,
+                date: task.date || '',
+                priority: task.priority || 'Medium',
+                assignedTo: task.assignedTo || '',
+                description: task.description || '',
+                category: task.category || 'Follow-up',
+                star: task.star || false
+            });
+        } else {
+            setEditingTask(null);
+            setTaskFormData({
+                task: '',
+                client: '',
+                date: new Date().toISOString().split('T')[0],
+                priority: 'Medium',
+                assignedTo: currentUser?.name || '',
+                description: '',
+                category: 'Follow-up',
+                star: false
+            });
+        }
+        setShowTaskModal(true);
+    };
+
+    const handleSaveTask = () => {
+        if (!canMutateOperational(currentUser)) return;
+        if (!taskFormData.task) return;
+
+        if (editingTask) {
+            setTasks(prev => prev.map(t => t.id === editingTask.id ? { ...t, ...taskFormData } : t));
+        } else {
+            const newTask = {
+                id: Date.now(),
+                ...taskFormData,
+                completed: false,
+                propertyId: activeProperty?.id || null
+            };
+            setTasks(prev => [newTask, ...prev]);
+        }
+        setShowTaskModal(false);
+    };
+
+    const handleDeleteTask = () => {
+        if (!editingTask || !canDeleteTasks(currentUser)) return;
+        if (!window.confirm('Delete this task permanently?')) return;
+        setTasks((prev) => prev.filter((t: any) => t.id !== editingTask.id));
+        setShowTaskModal(false);
+        setEditingTask(null);
+    };
+
+    const handleToggleTaskComplete = (id: number, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!canMutateOperational(currentUser)) return;
+        setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+    };
+
+    const taskModalReadOnly =
+        !!editingTask && showTaskModal && !canMutateOperational(currentUser);
+
+    const activeTasksCount = useMemo(
+        () =>
+            tasks.filter(
+                (t: any) =>
+                    !t.completed &&
+                    (!activeProperty?.id || !t.propertyId || t.propertyId === activeProperty.id)
+            ).length,
+        [tasks, activeProperty?.id]
+    );
+    const activeTasks = useMemo(
+        () =>
+            tasks.filter(
+                (t: any) =>
+                    !t.completed &&
+                    (!activeProperty?.id || !t.propertyId || t.propertyId === activeProperty.id)
+            ),
+        [tasks, activeProperty?.id]
+    );
+
+    // Click Outside Refs
+    const eventsPickerRef = useRef<HTMLDivElement>(null);
+    const eventTypeMenuRef = useRef<HTMLDivElement>(null);
+    const calendarPickerRef = useRef<HTMLDivElement>(null);
+    const dashboardPickerRef = useRef<HTMLDivElement>(null);
+    const crmMonthPickerRef = useRef<HTMLDivElement>(null);
+    const userDropdownRef = useRef<HTMLDivElement>(null);
+
+    // Global Click Outside Logic
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (eventsPickerRef.current && !eventsPickerRef.current.contains(event.target as Node)) {
+                setShowEventsDatePicker(false);
+            }
+            if (calendarPickerRef.current && !calendarPickerRef.current.contains(event.target as Node)) {
+                setShowCalendarDatePicker(false);
+            }
+            if (dashboardPickerRef.current && !dashboardPickerRef.current.contains(event.target as Node)) {
+                setShowDatePicker(false);
+            }
+            if (crmMonthPickerRef.current && !crmMonthPickerRef.current.contains(event.target as Node)) {
+                setShowCrmMonthPicker(false);
+            }
+            if (userDropdownRef.current && !userDropdownRef.current.contains(event.target as Node)) {
+                setUserDropdownOpen(false);
+            }
+            if (eventTypeMenuRef.current && !eventTypeMenuRef.current.contains(event.target as Node)) {
+                setShowEventTypeMenu(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    // Auto-close on view change
+    useEffect(() => {
+        setShowEventsDatePicker(false);
+        setShowCalendarDatePicker(false);
+        setShowDatePicker(false);
+        setShowCrmMonthPicker(false);
+        setCalendarDetailModal(null);
+    }, [currentView, eventsSubView, requestsSubView]);
+
+    useEffect(() => {
+        if (currentView !== 'dashboard') return;
+        setDashboardPeriodMode('autoCurrentYear');
+        setCustomDates(getCurrentYearRange());
+    }, [currentView]);
+
+    useEffect(() => {
+        if (currentView !== 'calendar') return;
+        setCurrentCalendarDate(new Date());
+    }, [currentView]);
+
+    useEffect(() => {
+        const t = setInterval(() => setDashboardNowAnchor(Date.now()), 60 * 60 * 1000);
+        return () => clearInterval(t);
+    }, []);
+
+    const handleMonthChange = (direction: any) => {
+        const newDate = new Date(eventsCalendarDate);
+        newDate.setMonth(newDate.getMonth() + direction);
+        setEventsCalendarDate(newDate);
+    };
+
+    // Calendar Navigation Helpers
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+    const year = currentCalendarDate.getFullYear();
+    const month = currentCalendarDate.getMonth();
+
+    const navigateMonth = (direction: number) => {
+        const newDate = new Date(currentCalendarDate);
+        if (calendarViewMode === 'Week') {
+            // Navigate by week (7 days)
+            newDate.setDate(newDate.getDate() + (direction * 7));
+        } else {
+            // Navigate by month
+            newDate.setMonth(newDate.getMonth() + direction);
+        }
+        setCurrentCalendarDate(newDate);
+    };
+
+    const selectMonthYear = (selectedMonth: number, selectedYear: number) => {
+        setCurrentCalendarDate(new Date(selectedYear, selectedMonth, 1));
+        setShowCalendarDatePicker(false);
+    };
+
+    const cycleTheme = () => {
+        const ids = Object.keys(THEMES);
+        const nextIdx = (ids.indexOf(currentThemeId) + 1) % ids.length;
+        setCurrentThemeId(ids[nextIdx]);
+    };
+
+    const handleLogin = (user: any) => {
+        const preferredCurrency = getPersistedUserCurrency(user);
+        setCurrentUser({ ...(user || {}), preferredCurrency });
+        setIsAuthenticated(true);
+    };
+
+    const handleCurrencyChange = (next: string) => {
+        const nextCurrency = resolveCurrencyCode(next);
+        setCurrentUser((prev: any) => {
+            if (!prev) return prev;
+            const updated = { ...prev, preferredCurrency: nextCurrency };
+            writeUserCurrencyPref(updated, nextCurrency);
+            return updated;
+        });
+    };
+
+    const handleLogout = () => {
+        setCurrentUser(null);
+        setIsAuthenticated(false);
+        setShowLoginPage(false);
+        setCurrentView('dashboard');
+    };
+
+    // --- Renderers ---
+
+
+    // --- Render ---
+
+    // Show Login page if not authenticated
+    if (!isAuthenticated) {
+        if (!showLoginPage) {
+            return (
+                <LandingPage
+                    themes={THEMES}
+                    currentThemeId={currentThemeId}
+                    onOpenLogin={() => setShowLoginPage(true)}
+                    onThemeChange={cycleTheme}
+                />
+            );
+        }
+        return (
+            <Login
+                onLogin={handleLogin}
+                themes={THEMES}
+                currentThemeId={currentThemeId}
+                onThemeChange={cycleTheme}
+                onBackToLanding={() => setShowLoginPage(false)}
+            />
+        );
+    }
+
+    // Main Dashboard (when authenticated)
+    const getPageTitle = () => {
+        switch (currentView) {
+            case 'dashboard': return 'Dashboard';
+            case 'calendar': return 'Calendar';
+            case 'events': return 'Events & Catering';
+            case 'requests': return 'Requests Center';
+            case 'crm': return 'Sales Calls';
+            case 'contracts': return 'Contracts';
+            case 'accounts': return 'Accounts';
+            case 'reports': return 'Reports';
+            case 'todo': return 'To-Do Management';
+            case 'settings': return 'Settings';
+            default: return 'Dashboard';
+        }
+    };
+
+    // Main Dashboard (when authenticated)
+    return (
+        <div className="flex h-screen w-full font-sans overflow-hidden transition-colors duration-500"
+            style={{ backgroundColor: colors.bg, color: colors.textMain }}>
+
+
+            {/* Side Navigation Drawer - Flexible */}
+            <div
+                className={`flex-shrink-0 h-full transition-all duration-300 ease-in-out border-r overflow-hidden ${isSideNavOpen || isSidebarPinned ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}
+                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+            >
+                {/* Fixed width container for sidebar content to prevent squishing */}
+                <div className="w-64 h-full flex flex-col">
+                    <div className="p-5 border-b" style={{ borderColor: colors.border }}>
+                        <div className="flex items-center justify-between mb-6">
+                            <img
+                                src="https://res.cloudinary.com/dmydt1xa9/image/upload/v1769032168/Gemini_Generated_Image_4hqpsz4hqpsz4hqp_ukfn6c.png"
+                                alt="Advanced Sales Logo"
+                                className="h-12 w-auto object-contain"
+                            />
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setIsSidebarPinned(!isSidebarPinned)}
+                                    style={{ color: isSidebarPinned ? colors.primary : colors.textMuted }}
+                                    className="hover:opacity-100 transition-opacity hidden lg:block"
+                                    title={isSidebarPinned ? "Unpin Sidebar" : "Pin Sidebar"}
+                                >
+                                    {isSidebarPinned ? <Pin size={18} fill={colors.primary} /> : <Pin size={18} />}
+                                </button>
+                                <button onClick={() => setIsSideNavOpen(false)} style={{ color: colors.textMuted }} className="hover:opacity-70 transition-opacity lg:hidden">
+                                    <X size={20} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex flex-col">
+                            <span className="text-[10px] uppercase font-bold tracking-widest opacity-60" style={{ color: colors.textMuted }}>Welcome</span>
+                            <h2
+                                className="font-bold text-lg truncate"
+                                style={{
+                                    background: `linear-gradient(to right, ${colors.primary}, ${colors.primaryHighlight || colors.primary})`,
+                                    WebkitBackgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    color: colors.primary // Fallback
+                                }}
+                            >
+                                Hi, {currentUser?.name?.split(' ')[0] || 'User'}
+                            </h2>
+                        </div>
+                    </div>
+
+                    {/* Main Navigation */}
+                    <div className="flex-1 py-4 px-2 space-y-1 overflow-y-auto custom-scrollbar">
+                        {[
+                            { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
+                            { icon: CalendarDays, label: 'Calendar', id: 'calendar' },
+                            { icon: ListTodo, label: 'To Do', id: 'todo' },
+                            { icon: Wine, label: 'Events & Catering', id: 'events' },
+                            { icon: BedDouble, label: 'Requests Management', id: 'requests' },
+                            { icon: Users, label: 'Sales Calls Management', id: 'crm' },
+                            { icon: FileText, label: 'Contracts', id: 'contracts' },
+                            { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' }
+                        ].map((item, i) => (
+                            <button
+                                key={i}
+                                onClick={() => {
+                                    setCurrentView(item.id);
+                                    setPendingCrmAction(null);
+                                    setPendingRequestType(null);
+                                    if (!isSidebarPinned) setIsSideNavOpen(false);
+                                }}
+                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors hover:bg-white/5 ${currentView === item.id ? 'bg-white/5 border-r-2' : ''}`}
+                                style={{
+                                    color: currentView === item.id ? colors.primary : colors.textMain,
+                                    borderColor: currentView === item.id ? colors.primary : 'transparent'
+                                }}
+                            >
+                                <item.icon size={18} style={{ color: currentView === item.id ? colors.primary : colors.textMuted }} />
+                                <span className={`text-sm ${currentView === item.id ? 'font-bold' : ''}`}>{item.label}</span>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Bottom Navigation & Logout */}
+                    <div className="p-4 border-t space-y-1" style={{ borderColor: colors.border }}>
+                        {[
+                            { icon: BarChart3, label: 'Reports', id: 'reports' },
+                            { icon: Settings, label: 'Settings', id: 'settings' }
+                        ].filter((item) => item.id !== 'reports' || canAccessReports(currentUser)).map((item, i) => (
+                            <button
+                                key={i}
+                                onClick={() => {
+                                    setCurrentView(item.id);
+                                    setPendingCrmAction(null);
+                                    setPendingRequestType(null);
+                                    if (!isSidebarPinned) setIsSideNavOpen(false);
+                                }}
+                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors hover:bg-white/5 ${currentView === item.id ? 'bg-white/5 border-r-2' : ''}`}
+                                style={{
+                                    color: currentView === item.id ? colors.primary : colors.textMain,
+                                    borderColor: currentView === item.id ? colors.primary : 'transparent'
+                                }}
+                            >
+                                <item.icon size={18} style={{ color: currentView === item.id ? colors.primary : colors.textMuted }} />
+                                <span className={`text-sm ${currentView === item.id ? 'font-bold' : ''}`}>{item.label}</span>
+                            </button>
+                        ))}
+
+                        <div className="h-px w-full my-2 bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+
+                        <button
+                            onClick={handleLogout}
+                            className="w-full flex items-center gap-3 px-4 py-3 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors">
+                            <LogOut size={18} />
+                            <span className="text-sm font-medium">Sign Out</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* Main Content Wrapper */}
+            <div className="flex-1 flex flex-col min-w-0 h-full relative">
+
+
+
+                {/* 1. Header */}
+                <header className="flex-none h-auto md:h-14 border-b flex flex-col md:flex-row items-center justify-between px-4 md:px-5 py-2 md:py-0 z-20 transition-colors duration-300 relative gap-3 md:gap-0"
+                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+
+                    {/* Left: Logo & Menu Trigger */}
+                    <div className="flex items-center justify-between w-full md:w-auto gap-4">
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => setIsSideNavOpen(!isSideNavOpen)} className="p-1 hover:bg-white/10 rounded transition-colors" style={{ color: colors.textMuted }}>
+                                <Menu size={24} />
+                            </button>
+                            <div className="flex flex-col ml-2">
+                                <img
+                                    src="https://res.cloudinary.com/dmydt1xa9/image/upload/v1769032168/Gemini_Generated_Image_4hqpsz4hqpsz4hqp_ukfn6c.png"
+                                    alt="Advanced Sales Logo"
+                                    className="h-12 w-auto object-contain"
+                                />
+                                <span className="text-[8px] uppercase tracking-wider pl-1" style={{ color: colors.textMuted }}>Advanced Sales</span>
+                            </div>
+                        </div>
+                        {/* Mobile Only Tools */}
+                        <div className="flex md:hidden items-center gap-3">
+                            <Bell size={20} style={{ color: colors.textMuted }} />
+                            <select
+                                value={currentCurrency}
+                                onChange={(e) => handleCurrencyChange(e.target.value)}
+                                className="px-2 py-1 rounded border text-[11px] font-bold bg-black/20 outline-none"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                title="Currency"
+                            >
+                                {CURRENCY_OPTIONS.map((code) => (
+                                    <option key={code} value={code}>{code}</option>
+                                ))}
+                            </select>
+                            <button
+                                onClick={() => setUserDropdownOpen(!userDropdownOpen)}
+                                className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-black border shadow-sm transition-transform active:scale-90"
+                                style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})`, borderColor: colors.border }}
+                            >
+                                {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                            </button>
+                        </div>
+
+                        {/* Page Title - Vertical Divider & Text */}
+                        <div className="hidden md:flex items-center gap-4 ml-2">
+                            <div className="h-8 w-[1px] bg-white/10"></div>
+                            <span className="font-bold text-sm uppercase tracking-widest" style={{ color: colors.textMuted }}>
+                                {getPageTitle()}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Center: Context-Aware Navigation */}
+                    <div className="w-full md:w-auto md:absolute md:left-1/2 md:top-1/2 md:transform md:-translate-x-1/2 md:-translate-y-1/2 flex items-center justify-center gap-3">
+
+                        {currentView === 'calendar' ? (
+                            /* CALENDAR HEADER CONTROLS */
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-1 relative" ref={calendarPickerRef}>
+                                    <button onClick={() => navigateMonth(-1)} className="p-1.5 rounded hover:bg-white/10 transition-colors" style={{ color: colors.textMuted }}><ChevronLeft size={16} /></button>
+                                    <button
+                                        onClick={() => setShowCalendarDatePicker(!showCalendarDatePicker)}
+                                        className="text-sm font-bold tracking-wide mx-1 whitespace-nowrap hover:bg-white/10 px-2 py-1 rounded transition-colors cursor-pointer"
+                                        style={{ color: colors.textMain }}
+                                    >
+                                        {calendarViewMode === 'Week' ? (() => {
+                                            // Calculate week range for display
+                                            const today = new Date(currentCalendarDate);
+                                            const dayOfWeek = today.getDay();
+                                            const weekStart = new Date(today);
+                                            weekStart.setDate(today.getDate() - dayOfWeek);
+                                            const weekEnd = new Date(weekStart);
+                                            weekEnd.setDate(weekStart.getDate() + 6);
+
+                                            const startMonth = monthNames[weekStart.getMonth()].slice(0, 3);
+                                            const endMonth = monthNames[weekEnd.getMonth()].slice(0, 3);
+
+                                            if (weekStart.getMonth() === weekEnd.getMonth()) {
+                                                return `${startMonth} ${weekStart.getDate()} - ${weekEnd.getDate()}, ${weekStart.getFullYear()}`;
+                                            } else {
+                                                return `${startMonth} ${weekStart.getDate()} - ${endMonth} ${weekEnd.getDate()}, ${weekStart.getFullYear()}`;
+                                            }
+                                        })() : `${monthNames[month].slice(0, 3)} ${year}`}
+                                    </button>
+                                    <button onClick={() => navigateMonth(1)} className="p-1.5 rounded hover:bg-white/10 transition-colors" style={{ color: colors.textMuted }}><ChevronRight size={16} /></button>
+
+                                    {/* Date Picker Dropdown */}
+                                    {showCalendarDatePicker && (
+                                        <div className="absolute top-full left-0 mt-2 p-4 rounded-lg border shadow-xl z-50 min-w-[280px]"
+                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                            <div className="mb-3">
+                                                <label className="text-[10px] uppercase font-bold mb-1 block" style={{ color: colors.textMuted }}>Year</label>
+                                                <select
+                                                    value={year}
+                                                    onChange={(e) => selectMonthYear(month, parseInt(e.target.value))}
+                                                    className="w-full px-3 py-2 rounded border text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                >
+                                                    {Array.from({ length: 10 }, (_, i) => 2020 + i).map(y => (
+                                                        <option key={y} value={y}>{y}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] uppercase font-bold mb-1 block" style={{ color: colors.textMuted }}>Month</label>
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    {monthNames.map((m: any, idx: any) => (
+                                                        <button
+                                                            key={m}
+                                                            onClick={() => selectMonthYear(idx, year)}
+                                                            className="px-2 py-1.5 rounded text-xs font-medium transition-colors"
+                                                            style={{
+                                                                backgroundColor: idx === month ? colors.primary : colors.bg,
+                                                                color: idx === month ? '#000' : colors.textMain
+                                                            }}
+                                                        >
+                                                            {m.slice(0, 3)}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    {['Month', 'Week', 'List'].map(view => (
+                                        <button
+                                            key={view}
+                                            onClick={() => setCalendarViewMode(view)}
+                                            className={`text-[10px] px-2 py-1 rounded transition-colors whitespace-nowrap ${view === calendarViewMode ? 'font-bold' : ''}`}
+                                            style={{ backgroundColor: view === calendarViewMode ? colors.bg : 'transparent', color: view === calendarViewMode ? colors.textMain : colors.textMuted }}
+                                        >
+                                            {view}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {canMutateOperational(currentUser) && (
+                                    <button
+                                        onClick={() => { setEventModalSource('calendar'); setShowNewEventModal(true); }}
+                                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-transform hover:scale-105 active:scale-95 whitespace-nowrap"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}>
+                                        <Plus size={12} /> New Event
+                                    </button>
+                                )}
+                            </div>
+                        ) : currentView === 'events' ? (
+                            /* EVENTS HEADER CONTROLS */
+                            <div className="flex items-center gap-2">
+                                {/* 1. View Toggles */}
+
+
+
+                                {/* Drag & Drop Board (Kanban) */}
+                                <button
+                                    onClick={() => setEventsSubView('pipeline')}
+                                    className={`p-1.5 rounded-lg border transition-colors ${eventsSubView === 'pipeline' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                    title="Kanban Cards"
+                                >
+                                    <LayoutList size={14} style={{ color: eventsSubView === 'pipeline' ? colors.textMain : colors.textMuted }} />
+                                </button>
+
+                                {/* Account Performance */}
+                                <button
+                                    onClick={() => setEventsSubView('performance')}
+                                    className={`p-1.5 rounded-lg border transition-colors ${eventsSubView === 'performance' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                    title="Account Performance"
+                                >
+                                    <Briefcase size={14} style={{ color: eventsSubView === 'performance' ? colors.textMain : colors.textMuted }} />
+                                </button>
+
+                                {/* Requests & Analytics */}
+                                <button
+                                    onClick={() => setEventsSubView('analytics')}
+                                    className={`p-1.5 rounded-lg border transition-colors ${eventsSubView === 'analytics' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                    title="Requests & Analytics"
+                                >
+                                    <BarChart3 size={14} style={{ color: eventsSubView === 'analytics' ? colors.textMain : colors.textMuted }} />
+                                </button>
+
+                                {/* Additional Tools: Availability & BEO */}
+                                <button
+                                    onClick={() => setEventsSubView('availability')}
+                                    className={`p-1.5 rounded-lg border transition-colors ${eventsSubView === 'availability' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                    title="Check Venue Availability"
+                                >
+                                    <CalendarCheck size={14} style={{ color: eventsSubView === 'availability' ? colors.textMain : colors.textMuted }} />
+                                </button>
+                                <button
+                                    onClick={() => setEventsSubView('beo')}
+                                    className={`p-1.5 rounded-lg border transition-colors ${eventsSubView === 'beo' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                    title="BEO Management"
+                                >
+                                    <FileText size={14} style={{ color: eventsSubView === 'beo' ? colors.textMain : colors.textMuted }} />
+                                </button>
+
+                                {eventsSubView === 'pipeline' && (
+                                    /* Event Date Filter */
+                                    <div className="relative" ref={eventsPickerRef}>
+                                        <button
+                                            onClick={() => setShowEventsDatePicker(!showEventsDatePicker)}
+                                            className={`p-1.5 rounded-lg border transition-all ${showEventsDatePicker ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                            title="Filter Events Month"
+                                        >
+                                            <Calendar size={14} style={{ color: colors.primary }} />
+                                        </button>
+
+                                        {showEventsDatePicker && (
+                                            <div className="absolute top-full right-0 mt-2 p-4 rounded-lg border shadow-xl z-50 min-w-[280px]"
+                                                style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="text-[10px] uppercase font-bold mb-1 block" style={{ color: colors.textMuted }}>From</label>
+                                                        <input
+                                                            type="date"
+                                                            value={eventsFilterRange.start}
+                                                            onChange={(e) => setEventsFilterRange(prev => ({ ...prev, start: e.target.value }))}
+                                                            className="w-full px-2 py-1.5 rounded border text-[10px]"
+                                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[10px] uppercase font-bold mb-1 block" style={{ color: colors.textMuted }}>To</label>
+                                                        <input
+                                                            type="date"
+                                                            value={eventsFilterRange.end}
+                                                            onChange={(e) => setEventsFilterRange(prev => ({ ...prev, end: e.target.value }))}
+                                                            className="w-full px-2 py-1.5 rounded border text-[10px]"
+                                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    onClick={() => setShowEventsDatePicker(false)}
+                                                    className="w-full mt-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wide bg-primary text-black hover:brightness-110 transition-all"
+                                                    style={{ backgroundColor: colors.primary }}
+                                                >
+                                                    Apply Range
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div className="w-[1px] h-4 bg-white/10 mx-1"></div>
+
+                                {/* Primary Action: MICE request types only — opens embedded Requests wizard in modal */}
+                                {canMutateOperational(currentUser) && (
+                                    <div className="relative" ref={eventTypeMenuRef}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowEventTypeMenu((v) => !v)}
+                                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-transform hover:scale-105 active:scale-95 whitespace-nowrap"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                        >
+                                            <Plus size={12} /> Event
+                                            <ChevronDown size={12} className="opacity-70" />
+                                        </button>
+                                        {showEventTypeMenu && (
+                                            <div
+                                                className="absolute right-0 top-full mt-1 py-1 rounded-xl border shadow-xl z-[100] min-w-[220px]"
+                                                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-white/5 transition-colors"
+                                                    style={{ color: colors.textMain }}
+                                                    onClick={() => {
+                                                        setEventsEmbeddedRequestType('event');
+                                                        setShowEventsRequestModal(true);
+                                                        setShowEventTypeMenu(false);
+                                                    }}
+                                                >
+                                                    Event
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-white/5 transition-colors border-t border-white/5"
+                                                    style={{ color: colors.textMain }}
+                                                    onClick={() => {
+                                                        setEventsEmbeddedRequestType('event_rooms');
+                                                        setShowEventsRequestModal(true);
+                                                        setShowEventTypeMenu(false);
+                                                    }}
+                                                >
+                                                    Event with accommodation
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ) : currentView === 'requests' ? (
+                            /* REQUESTS MANAGEMENT HEADER CONTROLS */
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => navigateRequestsSubView('search')}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${requestsSubView === 'search' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                >
+                                    <Search size={14} style={{ color: requestsSubView === 'search' ? colors.primary : colors.textMuted }} />
+                                    <span className="text-[10px] font-bold uppercase" style={{ color: requestsSubView === 'search' ? colors.textMain : colors.textMuted }}>Search</span>
+                                </button>
+
+                                <button
+                                    onClick={() => navigateRequestsSubView('list')}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${requestsSubView === 'list' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                >
+                                    <LayoutList size={14} style={{ color: requestsSubView === 'list' ? colors.primary : colors.textMuted }} />
+                                    <span className="text-[10px] font-bold uppercase" style={{ color: requestsSubView === 'list' ? colors.textMain : colors.textMuted }}>All Requests</span>
+                                </button>
+
+                                {canMutateOperational(currentUser) && (
+                                    <button
+                                        onClick={() => navigateRequestsSubView('new_request')}
+                                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-transform hover:scale-105 active:scale-95 whitespace-nowrap ml-2 shadow-lg shadow-primary/20"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}>
+                                        <Plus size={12} /> New Request
+                                    </button>
+                                )}
+                            </div>
+                        ) : currentView === 'accounts' ? (
+                            null
+                        ) : currentView === 'crm' ? (
+                            /* CRM HEADER CONTROLS */
+                            <div className="flex items-center gap-2">
+                                <div
+                                    className="relative flex items-center gap-2 px-2 py-1 rounded-lg border transition-colors duration-300"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                    ref={crmMonthPickerRef}
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowCrmMonthPicker((v) => !v)}
+                                        className="p-1 rounded hover:bg-white/10 transition-colors"
+                                        title="Filter sales calls by month"
+                                    >
+                                        <CalendarDays size={14} style={{ color: showCrmMonthPicker ? colors.primary : colors.textMuted }} className="shrink-0" />
+                                    </button>
+                                    <span className="text-[10px] font-bold uppercase tracking-wide whitespace-nowrap" style={{ color: colors.textMuted }}>
+                                        {crmVisibleMonth}
+                                    </span>
+                                    {showCrmMonthPicker && (
+                                        <div
+                                            className="absolute top-full left-0 mt-2 p-3 rounded-xl border shadow-2xl z-50 flex flex-col gap-2 min-w-[220px]"
+                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                        >
+                                            <label className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>Show month (last contact)</label>
+                                            <input
+                                                type="month"
+                                                value={crmVisibleMonth}
+                                                onChange={(e) => setCrmVisibleMonth(e.target.value)}
+                                                className="w-full text-xs p-2 rounded bg-black/20 border outline-none"
+                                                style={{ color: colors.textMain, borderColor: colors.border }}
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowCrmMonthPicker(false)}
+                                                className="w-full py-1.5 rounded text-[10px] uppercase font-bold tracking-wide hover:brightness-110 transition-all"
+                                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                                            >
+                                                Done
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                    <button
+                                        onClick={() => setCrmSubView('pipeline')}
+                                        className={`p-1.5 rounded transition-all ${crmSubView === 'pipeline' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        title="Pipeline View"
+                                    >
+                                        <Grid size={14} style={{ color: crmSubView === 'pipeline' ? colors.primary : colors.textMuted }} />
+                                    </button>
+                                    <button
+                                        onClick={() => setCrmSubView('list')}
+                                        className={`p-1.5 rounded transition-all ${crmSubView === 'list' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        title="Table List View"
+                                    >
+                                        <List size={14} style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }} />
+                                    </button>
+                                </div>
+                            </div>
+                        ) : currentView === 'settings' ? (
+                            null
+                        ) : currentView === 'reports' ? (
+                            null
+                        ) : currentView === 'contracts' ? (
+                            null
+                        ) : currentView === 'todo' ? (
+                            null
+                        ) : (
+                            /* DASHBOARD HEADER CONTROLS (Default) */
+                            <div className="relative flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300 overflow-visible max-w-full" style={{ backgroundColor: colors.card, borderColor: colors.border }} ref={dashboardPickerRef}>
+                                <button
+                                    onClick={() => setShowDatePicker(!showDatePicker)}
+                                    className="p-1 rounded hover:bg-white/10 transition-colors"
+                                >
+                                    <CalendarDays size={14} style={{ color: dashboardPeriodMode === 'custom' ? colors.primary : colors.textMuted }} className="shrink-0" />
+                                </button>
+                                <button
+                                    onClick={() => setDashboardPeriodMode('mtd')}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'mtd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                    style={{ color: dashboardPeriodMode === 'mtd' ? colors.primary : colors.textMuted }}
+                                >
+                                    MTD
+                                </button>
+                                <button
+                                    onClick={() => setDashboardPeriodMode('qtd')}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'qtd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                    style={{ color: dashboardPeriodMode === 'qtd' ? colors.primary : colors.textMuted }}
+                                >
+                                    QTD
+                                </button>
+                                <button
+                                    onClick={() => setDashboardPeriodMode('ytd')}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'ytd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                    style={{ color: dashboardPeriodMode === 'ytd' ? colors.primary : colors.textMuted }}
+                                >
+                                    YTD
+                                </button>
+
+
+                                {/* Date Picker Popup */}
+                                {showDatePicker && (
+                                    <div className="absolute top-full left-0 mt-2 p-3 rounded-xl border shadow-2xl z-50 flex flex-col gap-3 min-w-[200px]"
+                                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>From</label>
+                                            <input
+                                                type="date"
+                                                value={customDates.start}
+                                                onChange={(e) => setCustomDates(prev => ({ ...prev, start: e.target.value }))}
+                                                className="w-full text-xs p-1.5 rounded bg-black/20 border outline-none focus:border-opacity-100 transition-colors"
+                                                style={{ color: colors.textMain, borderColor: colors.border }}
+                                            />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>To</label>
+                                            <input
+                                                type="date"
+                                                value={customDates.end}
+                                                onChange={(e) => setCustomDates(prev => ({ ...prev, end: e.target.value }))}
+                                                className="w-full text-xs p-1.5 rounded bg-black/20 border outline-none focus:border-opacity-100 transition-colors"
+                                                style={{ color: colors.textMain, borderColor: colors.border }}
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={() => { setDashboardPeriodMode('custom'); setShowDatePicker(false); }}
+                                            className="w-full py-1.5 rounded text-[10px] uppercase font-bold tracking-wide mt-1 hover:brightness-110 transition-all"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                        >
+                                            Apply Range
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+
+                    </div>
+
+                    {/* Right: User & Tools (Desktop Only) */}
+                    <div className="hidden md:flex items-center gap-4">
+                        <div className="flex items-center gap-2 mr-2">
+                            <button
+                                onClick={cycleTheme}
+                                className="p-1.5 rounded-md border transition-all hover:scale-105 active:scale-95"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.primary }}
+                                title={`Switch Theme (Current: ${theme.name})`}
+                            >
+                                <Palette size={16} />
+                            </button>
+                        </div>
+
+
+                        {/* Period Comparison - Only show on Dashboard */}
+                        {currentView === 'dashboard' && (
+                            <>
+                                <div className="text-right">
+                                    <p className="text-[9px] uppercase tracking-wide" style={{ color: colors.textMuted }}>Period Comparison</p>
+                                    <p className="text-[10px] font-mono" style={{ color: colors.green }}>{dashboardComparisonLabel}</p>
+                                </div>
+                                <div className="w-[1px] h-8" style={{ backgroundColor: colors.border }}></div>
+                            </>
+                        )}
+                        <div className="flex items-center gap-3">
+                            <Bell size={18} style={{ color: colors.textMuted }} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                            <select
+                                value={currentCurrency}
+                                onChange={(e) => handleCurrencyChange(e.target.value)}
+                                className="px-2.5 py-1.5 rounded-lg border text-[11px] font-bold bg-black/20 outline-none transition-colors"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                title="Currency"
+                            >
+                                {CURRENCY_OPTIONS.map((code) => (
+                                    <option key={code} value={code}>{code}</option>
+                                ))}
+                            </select>
+
+                            {/* Profile Dropdown */}
+                            <div className="relative" ref={userDropdownRef}>
+                                <button
+                                    onClick={() => setUserDropdownOpen(!userDropdownOpen)}
+                                    className="flex items-center gap-2 p-1 pr-3 rounded-full border transition-all hover:bg-white/5"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                >
+                                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-black border shadow-sm"
+                                        style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})`, borderColor: colors.border }}>
+                                        {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                                    </div>
+                                    <div className="text-left hidden lg:block">
+                                        <p className="text-[10px] font-bold leading-tight" style={{ color: colors.textMain }}>{currentUser?.name || 'User'}</p>
+                                        <p className="text-[8px] font-medium opacity-50 uppercase tracking-tighter" style={{ color: colors.textMuted }}>{currentUser?.role || 'Staff'}</p>
+                                    </div>
+                                    <ChevronDown size={14} style={{ color: colors.textMuted }} className={`transition-transform duration-300 ${userDropdownOpen ? 'rotate-180' : ''}`} />
+                                </button>
+
+                                {/* Dropdown Menu */}
+                                {userDropdownOpen && (
+                                    <div className="absolute top-full right-0 mt-3 w-72 rounded-2xl border shadow-2xl overflow-hidden z-[100] animate-in fade-in zoom-in-95 slide-in-from-top-4 duration-300"
+                                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+
+                                        {/* User Profile Header */}
+                                        <div className="p-5 border-b" style={{ borderColor: colors.border, background: `linear-gradient(to bottom right, ${colors.primary}05, transparent)` }}>
+                                            <div className="flex items-center gap-4 mb-4">
+                                                <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-black shadow-lg"
+                                                    style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
+                                                    {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                                                </div>
+                                                <div>
+                                                    <h4 className="font-bold text-base leading-tight" style={{ color: colors.textMain }}>{currentUser?.name || 'User'}</h4>
+                                                    <p className="text-xs opacity-60 font-medium" style={{ color: colors.textMuted }}>{currentUser?.email || 'user@hms.com'}</p>
+                                                    <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-widest border"
+                                                        style={{ borderColor: colors.primary + '30', color: colors.primary, backgroundColor: colors.primary + '10' }}>
+                                                        {currentUser?.role || 'Staff'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => { setCurrentView('settings'); setUserDropdownOpen(false); }}
+                                                className="w-full py-2.5 rounded-xl border font-bold text-xs uppercase tracking-widest transition-all hover:bg-white/5 active:scale-95"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                My Profile Settings
+                                            </button>
+                                        </div>
+
+                                        {/* Property Switcher */}
+                                        <div className="p-4 space-y-3">
+                                            <h5 className="text-[9px] uppercase font-black tracking-[0.2em] opacity-40 px-1" style={{ color: colors.textMain }}>Switch Property</h5>
+                                            <div className="space-y-1">
+                                                {properties.filter(prop => 
+                                                    prop.id === currentUser?.propertyId || 
+                                                    (prop.assignedUserIds || []).includes(currentUser?.id)
+                                                ).map(prop => (
+                                                    <button
+                                                        key={prop.id}
+                                                        onClick={() => { setActiveProperty(prop); setUserDropdownOpen(false); }}
+                                                        className={`w-full flex items-center gap-3 p-2.5 rounded-xl transition-all border ${activeProperty?.id === prop.id ? 'shadow-md scale-[1.02]' : 'hover:bg-white/5 opacity-60 hover:opacity-100'}`}
+                                                        style={{
+                                                            backgroundColor: activeProperty?.id === prop.id ? colors.primary + '10' : 'transparent',
+                                                            borderColor: activeProperty?.id === prop.id ? colors.primary + '40' : 'transparent'
+                                                        }}
+                                                    >
+                                                        <div className={`p-2 rounded-lg ${activeProperty?.id === prop.id ? 'bg-primary text-black' : 'bg-black/20 text-muted'}`}
+                                                            style={activeProperty?.id === prop.id ? { backgroundColor: colors.primary, color: '#000' } : { color: colors.textMuted }}>
+                                                            <MapPin size={14} />
+                                                        </div>
+                                                        <div className="text-left flex-1 min-w-0">
+                                                            <p className={`text-xs font-bold truncate ${activeProperty?.id === prop.id ? '' : 'opacity-80'}`} style={{ color: colors.textMain }}>{prop.name}</p>
+                                                            <p className="text-[9px] opacity-40 uppercase font-medium" style={{ color: colors.textMuted }}>{prop.location || 'HQ'}</p>
+                                                        </div>
+                                                        {activeProperty?.id === prop.id && (
+                                                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: colors.primary }}></div>
+                                                        )}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Logout Button */}
+                                        <div className="p-2 pt-0">
+                                            <button
+                                                onClick={handleLogout}
+                                                className="w-full flex items-center justify-center gap-2 p-3 rounded-xl transition-all text-red-500 hover:bg-red-500/10 font-bold text-xs uppercase tracking-widest"
+                                            >
+                                                <LogOut size={16} />
+                                                Sign Out Account
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </header>
+
+                {/* 2. Main Content Area */}
+                <main className="flex-1 p-3 min-h-0 overflow-y-auto relative">
+                    {currentView === 'calendar' ? (
+                        <CalendarView
+                            theme={theme}
+                            currentDate={currentCalendarDate}
+                            viewMode={calendarViewMode}
+                            sharedRequests={sharedRequests}
+                            crmLeadsFlat={calendarCrmLeadsFlat}
+                            activeProperty={activeProperty}
+                            onCalendarItemClick={(payload: any) => setCalendarDetailModal(payload)}
+                        />
+                    ) : currentView === 'events' ? (
+                        <EventsView
+                            theme={theme}
+                            subView={eventsSubView}
+                            filterRange={eventsFilterRange}
+                            sharedRequests={sharedRequests}
+                            onPatchRequestStatus={patchRequestStatus}
+                            onOpenRequest={(id: string) => {
+                                setPendingOpenRequestId(String(id));
+                                setRequestsSubView('list');
+                                setCurrentView('requests');
+                            }}
+                            activeProperty={activeProperty}
+                            accounts={accounts}
+                            onRefreshRequests={refreshSharedRequests}
+                            readOnly={!canMutateOperational(currentUser)}
+                            currency={currentCurrency}
+                        />
+                    ) : currentView === 'accounts' ? (
+                        <AccountsPage
+                            theme={theme}
+                            accounts={accounts}
+                            setAccounts={setAccounts}
+                            sharedRequests={sharedRequests}
+                            crmLeads={crmLeads}
+                            currentUser={currentUser}
+                            currency={currentCurrency}
+                            accountTypeOptions={propertyAccountTypeLabels}
+                            onOpenRequest={(id) => {
+                                setPendingOpenRequestId(id);
+                                setRequestsSubView('list');
+                                setCurrentView('requests');
+                            }}
+                            onNavigateToCrmWithAccount={(accountId) => {
+                                setPendingCrmAccountId(accountId);
+                                setPendingCrmAction('add_call');
+                                setCurrentView('crm');
+                            }}
+                            onNavigateToContractsWithAccount={(accountId) => {
+                                setPendingContractsAccountId(accountId);
+                                setCurrentView('contracts');
+                            }}
+                            setCrmLeads={setCrmLeads}
+                        />
+                    ) : currentView === 'crm' ? (
+                        <CRM
+                            theme={theme}
+                            externalView={crmSubView as 'pipeline' | 'list'}
+                            initialAction={pendingCrmAction}
+                            activeProperty={activeProperty}
+                            accounts={accounts}
+                            setAccounts={setAccounts}
+                            crmLeads={crmLeads}
+                            setCrmLeads={setCrmLeads}
+                            sharedRequests={sharedRequests}
+                            currentUser={currentUser}
+                            pendingCrmAccountId={pendingCrmAccountId}
+                            onConsumedPendingCrmAccount={() => setPendingCrmAccountId(null)}
+                            pendingOpenLeadId={pendingOpenCrmLeadId}
+                            onConsumedPendingOpenLead={() => setPendingOpenCrmLeadId(null)}
+                            onNavigateToRequest={(rid) => {
+                                setPendingOpenRequestId(rid);
+                                setRequestsSubView('list');
+                                setCurrentView('requests');
+                            }}
+                            onConsumedInitialAction={() => setPendingCrmAction(null)}
+                            accountTypeOptions={propertyAccountTypeLabels}
+                            visibleMonth={crmVisibleMonth}
+                            currency={currentCurrency}
+                        />
+                    ) : currentView === 'contracts' ? (
+                        <Contracts
+                            theme={theme}
+                            activeProperty={activeProperty}
+                            accounts={accounts}
+                            setAccounts={setAccounts}
+                            currentUser={currentUser}
+                            accountTypeOptions={propertyAccountTypeLabels}
+                            canDeleteContracts={canDeleteContracts(currentUser)}
+                            initialAccountId={pendingContractsAccountId}
+                            onConsumedInitialAccountId={() => setPendingContractsAccountId(null)}
+                        />
+                    ) : currentView === 'reports' ? (
+                        <Reports
+                            theme={theme}
+                            activeProperty={activeProperty}
+                            sharedRequests={sharedRequests}
+                            accounts={accounts}
+                            tasks={tasks}
+                            currency={currentCurrency}
+                        />
+                    ) : currentView === 'settings' ? (
+                        <SettingsPage
+                            theme={theme}
+                            currentUser={currentUser}
+                            activeProperty={activeProperty}
+                            sharedRequests={sharedRequests}
+                            accounts={accounts}
+                            crmLeads={crmLeads}
+                            tasks={tasks}
+                            onOpenTasks={() => setCurrentView('todo')}
+                            currency={currentCurrency}
+                        />
+                    ) : currentView === 'todo' ? (
+                        <ToDoView tasks={tasks} setTasks={setTasks} handleOpenTaskModal={handleOpenTaskModal} handleToggleTaskComplete={handleToggleTaskComplete} colors={colors} theme={theme} activePropertyId={activeProperty?.id} canMutateOperational={canMutateOperational(currentUser)} />
+                    ) : currentView === 'requests' ? (
+                        <RequestsManager key={`requests-${requestsSubView}-${requestsNavNonce}`} theme={theme} subView={requestsSubView} searchParams={requestSearchParams} setSearchParams={(p: any) => {
+                            if (p && p.subView) {
+                                setRequestsSubView(p.subView);
+                            }
+                            setRequestSearchParams(p);
+                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} />
+                    ) : (
+                        /* DASHBOARD VIEW */
+                        <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">
+
+                            {/* ROW 1: PRIMARY KPIs */}
+                            <div className="col-span-1 md:col-span-12 grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <KPICard label="Total Requests" value={dashboardStats.requests} subtext={dashboardStats.requestsSubtext} icon={CalendarCheck} colorKey="blue" theme={theme} />
+                                <KPICard label="Total Revenue" value={dashboardStats.revenue} subtext={dashboardStats.trend} icon={DollarSign} isPrimary theme={theme} />
+                                <KPICard label="Avg Value" value={dashboardStats.avgValue} subtext={dashboardStats.avgSubtext} icon={TrendingUp} colorKey="cyan" theme={theme} />
+                                <KPICard label="Accounts" value={dashboardStats.accounts} subtext="Active Clients" icon={Users} colorKey="blue" theme={theme} />
+                            </div>
+
+                            {/* ROW 2: SECONDARY METRICS */}
+                            <div className="col-span-1 md:col-span-12 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2">
+                                <MiniStatCard label="ACT" value={dashboardStats.status.act} colorKey="#059669" colors={colors} />
+                                <MiniStatCard label="DEF" value={dashboardStats.status.def} colorKey="green" colors={colors} />
+                                <MiniStatCard label="TENT" value={dashboardStats.status.tent} colorKey="blue" colors={colors} />
+                                <MiniStatCard label="ACC" value={dashboardStats.status.acc} colorKey="yellow" colors={colors} />
+                                <MiniStatCard label="INQ" value={dashboardStats.status.inq} colorKey="textMuted" colors={colors} />
+                                <MiniStatCard label="CXL" value={dashboardStats.status.cxl} colorKey="red" colors={colors} />
+                                <MiniStatCard label="Lost AMT" value={dashboardStats.status.lostAmt} colorKey="red" colors={colors} />
+                                <MiniStatCard label="Paid" value={dashboardStats.status.paid} colorKey="green" colors={colors} />
+                                <MiniStatCard label="Signed" value={dashboardStats.status.signed} colorKey="green" colors={colors} />
+                                <MiniStatCard label="Calls" value={dashboardStats.status.calls} colorKey="cyan" colors={colors} />
+                            </div>
+
+                            {/* ROW 3: CHARTS */}
+                            <div className="col-span-1 md:col-span-8 h-72 md:h-72">
+                                <Card className="h-full" tabs={['Performance', 'Revenue', 'Requests', 'Rooms', 'MICE', 'Status']} activeTab={chartTab} onTabChange={setChartTab} actionIcon={MoreHorizontal} colors={colors}>
+                                    <div className="w-full h-full p-2">
+                                        <MainChart chartTab={chartTab} chartData={chartData} colors={colors} performanceData={performanceData} currency={currentCurrency} />
+                                    </div>
+                                </Card>
+                            </div>
+
+                            <div className="col-span-1 md:col-span-4 h-72 md:h-72">
+                                <Card className="h-full" tabs={['Segments', 'Account Type']} activeTab={distTab} onTabChange={setDistTab} actionIcon={Activity} colors={colors}>
+                                    <div className="w-full h-full p-2">
+                                        <DistributionChart distTab={distTab} segmentData={dashboardSegmentChartData} accountTypeData={dashboardAccountTypeChartData} colors={colors} />
+                                    </div>
+                                </Card>
+                            </div>
+
+                            {/* ROW 4: LISTS & TABLES */}
+                            <div className="col-span-1 md:col-span-8 h-64 md:h-64">
+                                <Card
+                                    className="h-full"
+                                    tabs={['Tasks', 'Requests', 'Sales Calls', 'Acc. Profiles']}
+                                    activeTab={feedTab}
+                                    onTabChange={setFeedTab}
+                                    actionIcon={Search}
+                                    colors={colors}
+                                    extraHeaderAction={feedTab === 'Tasks' && canMutateOperational(currentUser) && (
+                                        <button
+                                            onClick={() => handleOpenTaskModal()}
+                                            className="p-1 rounded bg-white/10 hover:bg-white/20 transition-all hover:scale-110 active:scale-95 shadow-sm"
+                                            style={{ color: colors.primary }}
+                                        >
+                                            <Plus size={14} />
+                                        </button>
+                                    )}
+                                >
+                                    <div className="overflow-y-auto h-full scrollbar-thin relative" style={{ scrollbarColor: `${colors.border} transparent`, backgroundColor: feedTab === 'Tasks' ? colors.bg + '40' : 'transparent' }}>
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="sticky top-0 z-10 text-[9px] uppercase tracking-wider font-semibold" style={{ backgroundColor: colors.card, color: colors.textMuted, borderBottom: `1px solid ${colors.border}` }}>
+                                                <tr>
+                                                    {feedTab === 'Acc. Profiles' ? (
+                                                        <>
+                                                            <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>Account Name</th>
+                                                            <th className="px-4 py-2 border-b hidden sm:table-cell" style={{ borderColor: colors.border }}>Profile Type</th>
+                                                            <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>Revenue</th>
+                                                            <th className="px-4 py-2 border-b text-right" style={{ borderColor: colors.border }}>Bookings</th>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>{feedTab === 'Tasks' ? 'Task' : (feedTab === 'Sales Calls' ? 'Activity' : 'Client')}</th>
+                                                            <th className="px-4 py-2 border-b hidden sm:table-cell" style={{ borderColor: colors.border }}>{feedTab === 'Tasks' ? 'Client/Context' : (feedTab === 'Sales Calls' ? 'Client' : 'Type')}</th>
+                                                            {feedTab === 'Tasks' && <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>Assign To</th>}
+                                                            <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>{feedTab === 'Tasks' ? 'Due Date' : 'Date'}</th>
+                                                            <th className="px-4 py-2 border-b text-right" style={{ borderColor: colors.border }}>{feedTab === 'Tasks' ? 'Priority' : 'Status'}</th>
+                                                        </>
+                                                    )}
+                                                </tr>
+                                            </thead>
+                                            <tbody className="text-xs">
+                                                {(feedTab === 'Requests'
+                                                    ? dashboardFeedRecentRequests
+                                                    : feedTab === 'Sales Calls'
+                                                        ? dashboardFeedSalesCalls
+                                                        : feedTab === 'Tasks'
+                                                            ? activeTasks
+                                                            : dashboardFeedAccountProfiles).map((item: any, i: number) => (
+                                                    <tr key={item.id || i} className="transition-all group cursor-pointer border-b last:border-0 hover:bg-white/5 active:bg-white/10"
+                                                        style={{ borderColor: colors.border }}
+                                                        onClick={() => feedTab === 'Tasks' ? handleOpenTaskModal(item) : null}
+                                                    >
+                                                        {feedTab === 'Acc. Profiles' ? (
+                                                            <>
+                                                                <td className="px-4 py-2 font-medium" style={{ color: colors.textMain }}>{item.client}</td>
+                                                                <td className="px-4 py-2 hidden sm:table-cell" style={{ color: colors.textMuted }}>{item.type}</td>
+                                                                <td className="px-4 py-2 font-mono" style={{ color: colors.primary }}>{item.revenue}</td>
+                                                                <td className="px-4 py-2 text-right font-mono" style={{ color: colors.textMain }}>{item.bookings}</td>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <td className="px-4 py-2 font-medium flex items-center gap-3" style={{ color: colors.textMain }}>
+                                                                    {feedTab === 'Tasks' && (
+                                                                        <button
+                                                                            onClick={(e) => handleToggleTaskComplete(item.id, e)}
+                                                                            className="w-4 h-4 rounded-full border-2 transition-all hover:scale-110 flex items-center justify-center shrink-0"
+                                                                            style={{ borderColor: colors.primary + '60' }}
+                                                                        >
+                                                                            <div className="w-2 h-2 rounded-full opacity-0 hover:opacity-100 transition-opacity" style={{ backgroundColor: colors.primary }} />
+                                                                        </button>
+                                                                    )}
+                                                                    <span>{feedTab === 'Requests' ? item.client : (feedTab === 'Tasks' ? item.task : item.activity)}</span>
+                                                                </td>
+                                                                <td className="px-4 py-2 hidden sm:table-cell" style={{ color: colors.textMuted }}>
+                                                                    {feedTab === 'Requests' ? item.type : item.client}
+                                                                </td>
+                                                                {feedTab === 'Tasks' && (
+                                                                    <td className="px-4 py-2" style={{ color: colors.textMain }}>
+                                                                        <div className="flex items-center gap-2">
+                                                                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-black shadow-sm shrink-0"
+                                                                                style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
+                                                                                {item.assignedTo ? item.assignedTo.split(' ').map((n: any) => n[0]).join('') : '??'}
+                                                                            </div>
+                                                                            <span className="truncate max-w-[80px]">{item.assignedTo}</span>
+                                                                        </div>
+                                                                    </td>
+                                                                )}
+                                                                <td className="px-4 py-2 font-mono" style={{ color: colors.textMuted }}>{item.date}</td>
+                                                                <td className="px-4 py-2 text-right">
+                                                                    {feedTab === 'Requests' ? <StatusBadge status={item.status} theme={theme} /> : (
+                                                                        feedTab === 'Tasks' ? <StatusBadge status={item.priority} theme={theme} /> : <span className="text-[10px]" style={{ color: colors.textMuted }}>{item.result}</span>
+                                                                    )}
+                                                                </td>
+                                                            </>
+                                                        )}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </Card>
+                            </div>
+
+                            <div className="col-span-1 md:col-span-4 h-64 md:h-64">
+                                <Card className="h-full" title="Request Distribution" actionIcon={Filter} colors={colors}>
+                                    <div className="w-full h-full p-2">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <PieChart>
+                                                <Pie
+                                                    data={dashboardRequestDistributionData}
+                                                    cx="50%"
+                                                    cy="48%"
+                                                    innerRadius={40}
+                                                    outerRadius={60}
+                                                    paddingAngle={5}
+                                                    dataKey="value"
+                                                    label={false}
+                                                >
+                                                    {dashboardRequestDistributionData.map((entry, index) => (
+                                                        <Cell key={`req-dist-${entry.name}-${index}`} fill={entry.color} />
+                                                    ))}
+                                                </Pie>
+                                                <Tooltip
+                                                    contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                                                    formatter={(value: any, _n: any, item: any) => [
+                                                        `${value} request${value === 1 ? '' : 's'}`,
+                                                        item?.payload?.name ?? 'Type',
+                                                    ]}
+                                                />
+                                                <Legend
+                                                    verticalAlign="bottom"
+                                                    height={44}
+                                                    iconType="circle"
+                                                    wrapperStyle={{ fontSize: '10px', color: colors.textMuted }}
+                                                    formatter={(value: any, entry: any) => {
+                                                        const pct = Number(entry?.payload?.percent ?? 0);
+                                                        return `${value} ${pct}%`;
+                                                    }}
+                                                />
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </Card>
+                            </div>
+                        </div>
+                    )}
+                    {calendarDetailModal && (
+                        <div
+                            className="fixed inset-0 z-[225] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-300"
+                            onClick={(e) => {
+                                if (e.target === e.currentTarget) setCalendarDetailModal(null);
+                            }}
+                            role="presentation"
+                        >
+                            <div
+                                className="w-full max-w-lg rounded-3xl border shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 slide-in-from-bottom-4 duration-300 max-h-[85vh]"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                onClick={(e) => e.stopPropagation()}
+                                role="dialog"
+                                aria-modal="true"
+                            >
+                                <div className="p-5 border-b flex items-center justify-between shrink-0" style={{ borderColor: colors.border }}>
+                                    <div className="flex items-center gap-3 min-w-0">
+                                        <div className="p-2 rounded-xl shrink-0" style={{ backgroundColor: colors.primaryDim }}>
+                                            {calendarDetailModal.kind === 'request' ? (
+                                                <FileText size={20} style={{ color: colors.primary }} />
+                                            ) : (
+                                                <Phone size={20} style={{ color: colors.primary }} />
+                                            )}
+                                        </div>
+                                        <h3 className="font-bold text-xl truncate" style={{ color: colors.textMain }}>
+                                            {calendarDetailModal.kind === 'request' ? 'Request details' : 'Sales call details'}
+                                        </h3>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarDetailModal(null)}
+                                        className="p-2 rounded-full hover:bg-white/10 transition-colors shrink-0"
+                                        style={{ color: colors.textMuted }}
+                                        aria-label="Close"
+                                    >
+                                        <X size={20} />
+                                    </button>
+                                </div>
+
+                                <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar flex-1 min-h-0">
+                                    {calendarDetailModal.kind === 'request' ? (
+                                        calendarModalResolvedRequest ? (
+                                            <>
+                                                <div>
+                                                    <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Name</p>
+                                                    <p className="font-bold text-lg" style={{ color: colors.textMain }}>
+                                                        {calendarModalResolvedRequest.requestName || calendarModalResolvedRequest.confirmationNo || `Request #${calendarModalResolvedRequest.id}`}
+                                                    </p>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Confirmation</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{calendarModalResolvedRequest.confirmationNo || '—'}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Type</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{calendarModalResolvedRequest.requestType || '—'}</p>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Account</p>
+                                                    <p className="text-sm font-medium" style={{ color: colors.textMain }}>{calendarModalResolvedRequest.accountName || calendarModalResolvedRequest.account || '—'}</p>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Check-in / start</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{calendarModalResolvedRequest.checkIn || calendarModalResolvedRequest.eventStart || '—'}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Check-out / end</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{calendarModalResolvedRequest.checkOut || calendarModalResolvedRequest.eventEnd || '—'}</p>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Operational date (calendar)</p>
+                                                    <p className="text-sm font-medium" style={{ color: colors.textMain }}>{getPrimaryOperationalDate(calendarModalResolvedRequest) || '—'}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Status</p>
+                                                    <StatusBadge status={String(calendarModalResolvedRequest.status || 'Inquiry')} theme={theme} />
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <p className="text-sm" style={{ color: colors.textMuted }}>
+                                                This request is not in the current list (it may have been removed or belongs to another property). Try refreshing or open Requests to search.
+                                            </p>
+                                        )
+                                    ) : (
+                                        (() => {
+                                            const lead = calendarDetailModal.lead;
+                                            const stageKey = String(lead?.stage || 'new').toLowerCase();
+                                            const stMeta = crmCalendarStageMeta(stageKey, colors);
+                                            const rev = Number(lead?.value ?? 0);
+                                            return (
+                                                <>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Company / account</p>
+                                                        <p className="font-bold text-lg" style={{ color: colors.textMain }}>{lead?.company || '—'}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Subject</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{lead?.subject || '—'}</p>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Stage</p>
+                                                            <p className="text-sm font-bold" style={{ color: stMeta.color }}>{stMeta.label}</p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Last contact</p>
+                                                            <p className="text-sm font-medium" style={{ color: colors.textMain }}>{lead?.lastContact || lead?.date || '—'}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>City</p>
+                                                            <p className="text-sm font-medium" style={{ color: colors.textMain }}>{lead?.city || '—'}</p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Expected revenue</p>
+                                                            <p className="text-sm font-medium" style={{ color: colors.textMain }}>
+                                                                {rev ? formatMoney(Number(rev), 0) : '—'}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    {lead?.nextStep ? (
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Next step</p>
+                                                            <p className="text-sm font-medium whitespace-pre-wrap" style={{ color: colors.textMain }}>{lead.nextStep}</p>
+                                                        </div>
+                                                    ) : null}
+                                                    {lead?.description ? (
+                                                        <div>
+                                                            <p className="text-[10px] uppercase font-black tracking-widest mb-1 opacity-60" style={{ color: colors.textMuted }}>Description</p>
+                                                            <p className="text-sm whitespace-pre-wrap" style={{ color: colors.textMuted }}>{lead.description}</p>
+                                                        </div>
+                                                    ) : null}
+                                                </>
+                                            );
+                                        })()
+                                    )}
+                                </div>
+
+                                <div className="p-5 border-t flex flex-wrap gap-3 justify-end shrink-0" style={{ borderColor: colors.border }}>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarDetailModal(null)}
+                                        className="px-4 py-2.5 rounded-xl text-sm font-bold border transition-colors"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        Close
+                                    </button>
+                                    {calendarDetailModal.kind === 'request' ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setPendingOpenRequestId(String(calendarDetailModal.requestId));
+                                                setRequestsSubView('list');
+                                                setCurrentView('requests');
+                                                setCalendarDetailModal(null);
+                                            }}
+                                            className="px-4 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg transition-all hover:opacity-95"
+                                            style={{ backgroundColor: colors.primary }}
+                                        >
+                                            Open in Requests
+                                        </button>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            disabled={!calendarDetailModal.lead?.id}
+                                            onClick={() => {
+                                                const id = calendarDetailModal.lead?.id;
+                                                if (!id) return;
+                                                setPendingOpenCrmLeadId(String(id));
+                                                setCurrentView('crm');
+                                                setCalendarDetailModal(null);
+                                            }}
+                                            className="px-4 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg transition-all hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            style={{ backgroundColor: colors.primary }}
+                                        >
+                                            Open in Sales Calls
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {showTaskModal && (
+                        <div className="fixed inset-0 z-[220] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-300">
+                            <div className="w-full max-w-lg rounded-3xl border shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 slide-in-from-bottom-4 duration-300" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <div className="p-5 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 rounded-xl bg-primaryDim" style={{ backgroundColor: colors.primaryDim }}>
+                                            <ClipboardList size={20} style={{ color: colors.primary }} />
+                                        </div>
+                                        <h3 className="font-bold text-xl" style={{ color: colors.textMain }}>
+                                            {taskModalReadOnly ? 'View Task' : editingTask ? 'Edit Task' : 'New Task'}
+                                        </h3>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            disabled={taskModalReadOnly}
+                                            onClick={() => setTaskFormData({ ...taskFormData, star: !taskFormData.star })}
+                                            className="p-2 rounded-full hover:bg-white/10 transition-colors disabled:opacity-40"
+                                            style={{ color: taskFormData.star ? colors.orange : colors.textMuted }}
+                                        >
+                                            <Star size={20} fill={taskFormData.star ? colors.orange : 'transparent'} />
+                                        </button>
+                                        <button onClick={() => setShowTaskModal(false)} className="p-2 rounded-full hover:bg-white/10 transition-colors" style={{ color: colors.textMuted }}>
+                                            <X size={20} />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="p-6 space-y-5 overflow-y-auto max-h-[70vh] custom-scrollbar">
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>What needs to be done?</label>
+                                            <input
+                                                type="text"
+                                                autoFocus={!taskModalReadOnly}
+                                                readOnly={taskModalReadOnly}
+                                                value={taskFormData.task}
+                                                onChange={e => setTaskFormData({ ...taskFormData, task: e.target.value })}
+                                                className="w-full px-4 py-3 rounded-2xl border focus:ring-4 transition-all text-lg font-bold shadow-sm outline-none"
+                                                style={{
+                                                    backgroundColor: colors.primaryDim,
+                                                    borderColor: colors.primary + '40',
+                                                    color: colors.textMain,
+                                                    '--tw-ring-color': colors.primary + '20'
+                                                } as any}
+                                                placeholder="Task subject..."
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Description & Notes</label>
+                                            <textarea
+                                                rows={3}
+                                                readOnly={taskModalReadOnly}
+                                                value={taskFormData.description}
+                                                onChange={e => setTaskFormData({ ...taskFormData, description: e.target.value })}
+                                                className="w-full px-4 py-3 rounded-2xl border focus:ring-4 transition-all text-sm resize-none outline-none shadow-inner"
+                                                style={{
+                                                    backgroundColor: colors.textMuted + '10',
+                                                    borderColor: colors.border,
+                                                    color: colors.textMain,
+                                                    '--tw-ring-color': colors.primary + '10'
+                                                } as any}
+                                                placeholder="Add more details about this task..."
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Assigned User</label>
+                                            <select
+                                                disabled={taskModalReadOnly}
+                                                value={taskFormData.assignedTo}
+                                                onChange={e => setTaskFormData({ ...taskFormData, assignedTo: e.target.value })}
+                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm appearance-none cursor-pointer font-medium disabled:opacity-50"
+                                                style={{
+                                                    backgroundColor: colors.orange + '10',
+                                                    borderColor: colors.orange + '40',
+                                                    color: colors.textMain
+                                                }}
+                                            >
+                                                <option value="" className="bg-black">Unassigned</option>
+                                                {taskAssignableUsers.map((user) => (
+                                                    <option key={user.id} value={user.name} className="bg-black">{user.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Client/Account</label>
+                                            <input
+                                                type="text"
+                                                readOnly={taskModalReadOnly}
+                                                value={taskFormData.client}
+                                                onChange={e => setTaskFormData({ ...taskFormData, client: e.target.value })}
+                                                placeholder="e.g. Saudi Aramco"
+                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm font-medium shadow-sm"
+                                                style={{
+                                                    backgroundColor: colors.cyan + '10',
+                                                    borderColor: colors.cyan + '40',
+                                                    color: colors.textMain
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-3 gap-4">
+                                        <div className="col-span-1">
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Due Date</label>
+                                            <input
+                                                type="date"
+                                                readOnly={taskModalReadOnly}
+                                                value={taskFormData.date}
+                                                onChange={e => setTaskFormData({ ...taskFormData, date: e.target.value })}
+                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm font-bold shadow-inner"
+                                                style={{
+                                                    backgroundColor: colors.blue + '10',
+                                                    borderColor: colors.blue + '30',
+                                                    color: colors.textMain
+                                                }}
+                                            />
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Priority</label>
+                                            <select
+                                                disabled={taskModalReadOnly}
+                                                value={taskFormData.priority}
+                                                onChange={e => setTaskFormData({ ...taskFormData, priority: e.target.value })}
+                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm appearance-none cursor-pointer font-bold shadow-lg disabled:opacity-50"
+                                                style={{
+                                                    backgroundColor: taskFormData.priority === 'High' ? colors.red + '20' :
+                                                        taskFormData.priority === 'Medium' ? colors.yellow + '20' :
+                                                            colors.green + '20',
+                                                    borderColor: taskFormData.priority === 'High' ? colors.red :
+                                                        taskFormData.priority === 'Medium' ? colors.yellow :
+                                                            colors.green,
+                                                    color: taskFormData.priority === 'High' ? colors.red :
+                                                        taskFormData.priority === 'Medium' ? colors.yellow :
+                                                            colors.green
+                                                }}
+                                            >
+                                                <option value="High" className="bg-black text-red-500">High 🔥</option>
+                                                <option value="Medium" className="bg-black text-yellow-500">Medium ⚡</option>
+                                                <option value="Low" className="bg-black text-green-500">Low ⚓</option>
+                                            </select>
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Category</label>
+                                            <select
+                                                disabled={taskModalReadOnly}
+                                                value={taskFormData.category}
+                                                onChange={e => setTaskFormData({ ...taskFormData, category: e.target.value })}
+                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm appearance-none cursor-pointer font-bold disabled:opacity-50"
+                                                style={{
+                                                    backgroundColor: colors.purple + '10',
+                                                    borderColor: colors.purple + '30',
+                                                    color: colors.textMain
+                                                }}
+                                            >
+                                                {TASK_CATEGORIES.map(cat => (
+                                                    <option key={cat} value={cat} className="bg-black">{cat}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="p-5 bg-black/40 flex flex-wrap gap-4 justify-end items-center">
+                                    {editingTask && canDeleteTasks(currentUser) && !taskModalReadOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={handleDeleteTask}
+                                            className="px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all flex items-center gap-2 text-red-500 hover:bg-red-500/10"
+                                        >
+                                            <Trash2 size={14} /> Delete
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTaskModal(false)}
+                                        className="px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:bg-white/5"
+                                        style={{ color: colors.textMuted }}
+                                    >
+                                        Cancel
+                                    </button>
+                                    {!taskModalReadOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={handleSaveTask}
+                                            className="px-10 py-2.5 rounded-xl text-sm font-bold uppercase tracking-widest transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl"
+                                            style={{ backgroundColor: colors.primary, color: '#000', boxShadow: `0 8px 25px ${colors.primary}40` }}
+                                        >
+                                            {editingTask ? 'Update Task' : 'Add Task'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    <div className="w-full mt-8 mb-4 text-center">
+                        <p className="text-[10px] uppercase tracking-widest opacity-50 font-medium" style={{ color: colors.textMuted }}>
+                            All rights reserved to AS @2026
+                        </p>
+                    </div>
+                </main>
+            </div>
+
+            {/* Events & Catering: embedded MICE request wizard (saves via same API as Requests) */}
+            {showEventsRequestModal && eventsEmbeddedRequestType && (
+                <div
+                    className="fixed inset-0 z-[210] flex items-center justify-center p-3 md:p-6"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
+                    onClick={() => {
+                        setShowEventsRequestModal(false);
+                        setEventsEmbeddedRequestType(null);
+                    }}
+                >
+                    <div className="w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <RequestsManager
+                            key={`emb-${eventsEmbeddedRequestType}`}
+                            embedded
+                            theme={theme}
+                            subView="new_request"
+                            searchParams={eventsModalSearchParams}
+                            setSearchParams={(p: any) => setEventsModalSearchParams((prev) => ({ ...prev, ...p }))}
+                            initialRequestType={eventsEmbeddedRequestType}
+                            activeProperty={activeProperty}
+                            accounts={accounts}
+                            setAccounts={setAccounts}
+                            onAfterRequestsMutate={refreshSharedRequests}
+                            onEmbeddedComplete={() => {
+                                setShowEventsRequestModal(false);
+                                setEventsEmbeddedRequestType(null);
+                            }}
+                            onEmbeddedCancel={() => {
+                                setShowEventsRequestModal(false);
+                                setEventsEmbeddedRequestType(null);
+                            }}
+                            segmentOptions={propertySegmentLabels}
+                            accountTypeOptions={propertyAccountTypeLabels}
+                            canDeleteRequest={canDeleteRequests(currentUser)}
+                            readOnlyOperational={!canMutateOperational(currentUser)}
+                            currentUser={currentUser}
+                            currency={currentCurrency}
+                        />
+                    </div>
+                </div>
+            )}
+
+            {/* New Event Modal */}
+            {showNewEventModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
+                    onClick={() => { setShowNewEventModal(false); setSelectedEventType(null); }}>
+                    <div className="w-full max-w-2xl rounded-2xl border-2 shadow-2xl p-6 animate-in fade-in zoom-in duration-300"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                        onClick={(e) => e.stopPropagation()}>
+
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-2xl font-bold" style={{ color: colors.textMain }}>Create New Event</h2>
+                            <button
+                                onClick={() => { setShowNewEventModal(false); setSelectedEventType(null); }}
+                                className="p-2 rounded-lg hover:bg-white/10 transition-colors"
+                                style={{ color: colors.textMuted }}>
+                                <X size={24} />
+                            </button>
+                        </div>
+
+                        {!selectedEventType ? (
+                            <>
+                                <p className="text-sm mb-6" style={{ color: colors.textMuted }}>
+                                    Select the type of event you want to create:
+                                </p>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    {[
+                                        {
+                                            type: 'Group Accommodation',
+                                            label: 'Event with Accommodation',
+                                            color: colors.blue,
+                                            icon: '🏨',
+                                            desc: 'Event including hotel bookings',
+                                            showIn: ['calendar'],
+                                            action: () => {
+                                                setPendingRequestType('event_rooms');
+                                                setRequestsSubView('new_request');
+                                                setCurrentView('requests');
+                                                setShowNewEventModal(false);
+                                            }
+                                        },
+                                        {
+                                            type: 'Accommodation Only',
+                                            label: 'Accommodation Only',
+                                            color: colors.cyan,
+                                            icon: '🛏️',
+                                            desc: 'Room blocks without events',
+                                            showIn: ['calendar'],
+                                            action: () => {
+                                                setPendingRequestType('accommodation');
+                                                setRequestsSubView('new_request');
+                                                setCurrentView('requests');
+                                                setShowNewEventModal(false);
+                                            }
+                                        },
+                                        {
+                                            type: 'Series Group',
+                                            label: 'Series Group',
+                                            color: colors.purple,
+                                            icon: '📅',
+                                            desc: 'Recurring group events',
+                                            showIn: ['calendar'],
+                                            action: () => {
+                                                setPendingRequestType('series');
+                                                setRequestsSubView('new_request');
+                                                setCurrentView('requests');
+                                                setShowNewEventModal(false);
+                                            }
+                                        },
+                                        {
+                                            type: 'Events',
+                                            label: 'Event',
+                                            color: '#ff6b35',
+                                            icon: '🎉',
+                                            desc: 'Special events and occasions',
+                                            showIn: ['calendar'],
+                                            action: () => {
+                                                setPendingRequestType('event');
+                                                setRequestsSubView('new_request');
+                                                setCurrentView('requests');
+                                                setShowNewEventModal(false);
+                                            }
+                                        },
+                                        {
+                                            type: 'Sales Calls',
+                                            label: 'Sales Calls',
+                                            color: colors.green,
+                                            icon: '📞',
+                                            desc: 'Client sales meetings',
+                                            showIn: ['calendar'],
+                                            className: 'col-span-2 mx-auto w-[calc(50%-0.5rem)]',
+                                            action: () => {
+                                                setShowSalesCallModal(true);
+                                                setShowNewEventModal(false);
+                                            }
+                                        },
+                                    ]
+                                        .filter(item => item.showIn.includes(eventModalSource))
+                                        .map((item) => (
+                                            <button
+                                                key={item.type}
+                                                onClick={item.action}
+                                                className={`p-6 rounded-xl border-2 text-left transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-current/20 ${item.className || ''}`}
+                                                style={{
+                                                    backgroundColor: item.color + '15',
+                                                    borderColor: item.color,
+                                                    boxShadow: `0 0 0 ${item.color}00`
+                                                }}>
+                                                <div className="text-4xl mb-3">{item.icon}</div>
+                                                <div className="font-bold text-lg mb-1" style={{ color: colors.textMain }}>{item.label}</div>
+                                                <div className="text-xs" style={{ color: colors.textMuted }}>{item.desc}</div>
+                                            </button>
+                                        ))}
+                                </div>
+                            </>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex items-center gap-3 p-4 rounded-lg border-2"
+                                    style={{
+                                        backgroundColor: (() => {
+                                            switch (selectedEventType) {
+                                                case 'Group Accommodation': return colors.blue + '15';
+                                                case 'Series Group': return colors.purple + '15';
+                                                case 'Events': return '#ff6b3515';
+                                                case 'Sales Calls': return colors.green + '15';
+                                                default: return colors.bg;
+                                            }
+                                        })(),
+                                        borderColor: (() => {
+                                            switch (selectedEventType) {
+                                                case 'Group Accommodation': return colors.blue;
+                                                case 'Series Group': return colors.purple;
+                                                case 'Events': return '#ff6b35';
+                                                case 'Sales Calls': return colors.green;
+                                                default: return colors.border;
+                                            }
+                                        })()
+                                    }}>
+                                    <button
+                                        onClick={() => setSelectedEventType(null)}
+                                        className="p-1 rounded hover:bg-white/10"
+                                        style={{ color: colors.textMuted }}>
+                                        <ChevronLeft size={20} />
+                                    </button>
+                                    <div>
+                                        <div className="text-xs uppercase font-bold tracking-wide" style={{ color: colors.textMuted }}>Creating</div>
+                                        <div className="font-bold text-lg" style={{ color: colors.textMain }}>
+                                            {eventModalSource === 'events_page' ?
+                                                (selectedEventType === 'Events' ? 'Event' : 'Event with Accommodation') :
+                                                selectedEventType}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Event Form */}
+                                <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                                    <div>
+                                        <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Event Title</label>
+                                        <input
+                                            type="text"
+                                            placeholder="Enter event title..."
+                                            className="w-full px-4 py-3 rounded-lg border-2 text-sm transition-colors focus:outline-none focus:border-current"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Start Date</label>
+                                            <input
+                                                type="date"
+                                                className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>End Date</label>
+                                            <input
+                                                type="date"
+                                                className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {selectedEventType === 'Group Accommodation' && (
+                                        <>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Number of PAX</label>
+                                                <input
+                                                    type="number"
+                                                    placeholder="Enter number of guests..."
+                                                    className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Hotel/Accommodation</label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Enter hotel name..."
+                                                    className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                        </>
+                                    )}
+
+                                    {selectedEventType === 'Series Group' && (
+                                        <>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Recurrence Pattern</label>
+                                                <select className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
+                                                    <option>Daily</option>
+                                                    <option>Weekly</option>
+                                                    <option>Monthly</option>
+                                                    <option>Yearly</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Number of Occurrences</label>
+                                                <input
+                                                    type="number"
+                                                    placeholder="How many times?"
+                                                    className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                        </>
+                                    )}
+
+                                    {selectedEventType === 'Sales Calls' && (
+                                        <>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Client Name</label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Enter client name..."
+                                                    className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Call Type</label>
+                                                <select className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
+                                                    <option>Initial Contact</option>
+                                                    <option>Follow-up</option>
+                                                    <option>Proposal Presentation</option>
+                                                    <option>Closing</option>
+                                                </select>
+                                            </div>
+                                        </>
+                                    )}
+
+                                    <div>
+                                        <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Status</label>
+                                        <select className="w-full px-4 py-3 rounded-lg border-2 text-sm"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
+                                            <option>Tentative</option>
+                                            <option>Confirmed</option>
+                                            <option>Definite</option>
+                                            <option>Paid/Active</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold mb-2 uppercase tracking-wide" style={{ color: colors.textMuted }}>Notes</label>
+                                        <textarea
+                                            rows={4}
+                                            placeholder="Add any additional notes..."
+                                            className="w-full px-4 py-3 rounded-lg border-2 text-sm resize-none"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-3 pt-4 border-t-2" style={{ borderColor: colors.border }}>
+                                    <button
+                                        onClick={() => { setShowNewEventModal(false); setSelectedEventType(null); }}
+                                        className="flex-1 px-6 py-3 rounded-lg font-bold text-sm uppercase tracking-wide transition-all hover:bg-white/10"
+                                        style={{ backgroundColor: colors.bg, color: colors.textMuted }}>
+                                        Cancel
+                                    </button>
+                                    <button
+                                        className="flex-1 px-6 py-3 rounded-lg font-bold text-sm uppercase tracking-wide transition-all hover:scale-105 active:scale-95"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}>
+                                        Create Event
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Sales Call Modal (Calendar Overlay) */}
+            <AddSalesCallModal
+                isOpen={showSalesCallModal}
+                onClose={() => setShowSalesCallModal(false)}
+                onSave={handleSalesCallSave}
+                accounts={accounts}
+                theme={theme}
+                stages={[
+                    { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
+                    { id: 'qualified', title: 'QUALIFIED', color: colors.cyan },
+                    { id: 'proposal', title: 'PROPOSAL', color: colors.yellow },
+                    { id: 'negotiation', title: 'NEGOTIATION', color: colors.orange },
+                    { id: 'won', title: 'WON', color: colors.green },
+                    { id: 'notInterested', title: 'Not Interested', color: '#8b0000' }
+                ]}
+                onCreateAccount={handleCreateAccount}
+            />
+
+            {/* Create Account Modal (Overlay) */}
+            <AddAccountModal
+                isOpen={showAddAccountModal}
+                onClose={() => setShowAddAccountModal(false)}
+                onSave={handleSaveAccount}
+                theme={theme}
+                accountTypeOptions={propertyAccountTypeLabels}
+            />
+        </div>
+    );
+}

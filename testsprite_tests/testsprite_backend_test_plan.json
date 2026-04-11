@@ -1,0 +1,77 @@
+[
+  {
+    "id": "TC001",
+    "title": "GET /api/health returns ok status",
+    "description": "Verify GET http://localhost:8000/api/health returns 200 and JSON with status ok."
+  },
+  {
+    "id": "TC002",
+    "title": "GET / returns welcome message",
+    "description": "Verify GET http://localhost:8000/ returns 200 and a JSON message field."
+  },
+  {
+    "id": "TC003",
+    "title": "POST /api/login success with valid user",
+    "description": "POST http://localhost:8000/api/login with username Abdullah and password password123 returns 200, JSON body contains user object without password field, and Set-Cookie session_id is present."
+  },
+  {
+    "id": "TC004",
+    "title": "POST /api/login rejects wrong password",
+    "description": "POST http://localhost:8000/api/login with valid username and wrong password returns 401 with detail message."
+  },
+  {
+    "id": "TC005",
+    "title": "POST /api/login rejects missing password",
+    "description": "POST http://localhost:8000/api/login with only username returns 400 and error mentions password."
+  },
+  {
+    "id": "TC006",
+    "title": "GET /api/users returns list without passwords",
+    "description": "GET http://localhost:8000/api/users returns 200 and a JSON array; no object contains a password key."
+  },
+  {
+    "id": "TC007",
+    "title": "GET /api/properties returns array",
+    "description": "GET http://localhost:8000/api/properties returns 200 and a JSON array of properties."
+  },
+  {
+    "id": "TC008",
+    "title": "GET /api/rooms with propertyId filter",
+    "description": "GET http://localhost:8000/api/rooms?propertyId=P5jj48x718 returns 200 and a JSON array."
+  },
+  {
+    "id": "TC009",
+    "title": "GET /api/venues with propertyId filter",
+    "description": "GET http://localhost:8000/api/venues?propertyId=P5jj48x718 returns 200 and a JSON array."
+  },
+  {
+    "id": "TC010",
+    "title": "GET /api/taxes with propertyId returns tax rows",
+    "description": "GET http://localhost:8000/api/taxes?propertyId=P5jj48x718 returns 200 and a JSON array (may include default VAT/municipality/service rows)."
+  },
+  {
+    "id": "TC011",
+    "title": "GET /api/financials with propertyId filter",
+    "description": "GET http://localhost:8000/api/financials?propertyId=P5jj48x718 returns 200 and a JSON array."
+  },
+  {
+    "id": "TC012",
+    "title": "GET /api/requests with propertyId filter",
+    "description": "GET http://localhost:8000/api/requests?propertyId=P5jj48x718 returns 200 and a JSON array."
+  },
+  {
+    "id": "TC013",
+    "title": "GET /api/crm-state with propertyId",
+    "description": "GET http://localhost:8000/api/crm-state?propertyId=P5jj48x718 returns 200 with JSON containing propertyId, leads object, and accountActivities."
+  },
+  {
+    "id": "TC014",
+    "title": "POST /api/requests creates then DELETE removes",
+    "description": "POST http://localhost:8000/api/requests with JSON body including propertyId P5jj48x718, type accommodation, status draft returns 200 with id; then DELETE http://localhost:8000/api/requests/{id} returns success."
+  },
+  {
+    "id": "TC015",
+    "title": "POST /api/crm-state persists CRM payload",
+    "description": "POST http://localhost:8000/api/crm-state after logging in: first GET http://localhost:8000/api/crm-state?propertyId=P5jj48x718, then POST the same JSON body back (propertyId, leads, accountActivities). The leads field must be an object whose keys are only pipeline buckets: new, qualified, proposal, negotiation, won, notInterested — each value is an array of lead objects (use the GET response leads as the POST leads). Expect 200 and response propertyId P5jj48x718 and leads containing those bucket keys."
+  }
+]

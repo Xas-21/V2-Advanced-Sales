@@ -1,0 +1,1182 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+    Phone, Mail, MapPin, X, Plus, Edit, Trash2, ChevronDown,
+    PhoneCall, Send, FileText, MessageSquare, History
+} from 'lucide-react';
+import {
+    PieChart, Pie, Cell, ResponsiveContainer, Tooltip
+} from 'recharts';
+import {
+    computeAccountMetrics,
+    buildAccountTimeline,
+    filterOpenBookingRequests,
+    type TimelineItem
+} from './accountProfileData';
+import { formatSarCompact } from './formatSar';
+import { getTagColor, setTagColorForName, TAG_COLORS_EVENT, readTagColors, writeTagColors } from './tagColorSettings';
+import type { ContractRecord, ContractStatus } from './contractsStore';
+import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+
+export interface CRMProfileViewProps {
+    lead: any;
+    theme: any;
+    onClose: () => void;
+    onLeadChange: (next: any) => void;
+    linkedRequests?: any[];
+    salesCalls?: any[];
+    opportunityLeads?: any[];
+    currentUser?: any;
+    onOpenRequest?: (requestId: string) => void;
+    onAddOpportunity?: () => void;
+    onEditAccount?: () => void;
+    /** View-only profile: hide all create/edit/delete controls. */
+    readOnly?: boolean;
+    /** Delete account (Head of Sales + Admin). */
+    canDeleteAccount?: boolean;
+    /** Edit/delete manual timeline entries (Head of Sales + Admin). */
+    canManageManualTimeline?: boolean;
+    /** Rename/remove tags & colors (Admin only). */
+    canManageAccountTags?: boolean;
+    appendAuditLog?: (action: string, details: string) => void;
+    onDeleteAccount?: () => void;
+    accountContracts?: ContractRecord[];
+    onUpdateContractStatus?: (contractId: string, status: ContractStatus) => void;
+    onUpdateContractMeta?: (contractId: string, patch: { startDate?: string; endDate?: string }) => void;
+    onUploadSignedContract?: (contractId: string, file: File) => Promise<void> | void;
+    onDownloadContractFile?: (contractId: string, kind: 'word' | 'pdf' | 'signed') => void;
+    onStartNewContractForAccount?: () => void;
+    canDeleteContractRecords?: boolean;
+    onDeleteContractRecord?: (contractId: string) => void;
+    currency?: CurrencyCode;
+}
+
+const STAGE_LABELS: Record<string, string> = {
+    new: 'Upcoming',
+    qualified: 'Qualified',
+    proposal: 'Proposal',
+    negotiation: 'Negotiation',
+    won: 'Won',
+    notInterested: 'Not interested'
+};
+
+function timelineIcon(item: TimelineItem, colors: any) {
+    const wrap = (child: React.ReactNode, bg: string) => (
+        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ backgroundColor: `${bg}20` }}>
+            {child}
+        </div>
+    );
+    switch (item.icon) {
+        case 'call':
+            return wrap(<PhoneCall size={18} style={{ color: colors.blue }} />, colors.blue);
+        case 'request':
+            return wrap(<FileText size={18} style={{ color: colors.cyan }} />, colors.cyan);
+        case 'note':
+            return wrap(<MessageSquare size={18} style={{ color: colors.purple }} />, colors.purple);
+        default:
+            return wrap(<Send size={18} style={{ color: colors.orange }} />, colors.orange);
+    }
+}
+
+export default function CRMProfileView({
+    lead,
+    theme,
+    onClose,
+    onLeadChange,
+    linkedRequests = [],
+    salesCalls = [],
+    opportunityLeads = [],
+    currentUser,
+    onOpenRequest,
+    onAddOpportunity,
+    onEditAccount,
+    readOnly = false,
+    canDeleteAccount = false,
+    canManageManualTimeline = false,
+    canManageAccountTags = false,
+    appendAuditLog,
+    onDeleteAccount,
+    accountContracts = [],
+    onUpdateContractStatus,
+    onUpdateContractMeta,
+    onUploadSignedContract,
+    onDownloadContractFile,
+    onStartNewContractForAccount,
+    canDeleteContractRecords = false,
+    onDeleteContractRecord,
+    currency = 'SAR',
+}: CRMProfileViewProps) {
+    const colors = theme.colors;
+    const selectedCurrency = resolveCurrencyCode(currency);
+    const [expandedContact, setExpandedContact] = useState<number | null>(0);
+    const [isContactModalOpen, setIsContactModalOpen] = useState(false);
+    const [newContactData, setNewContactData] = useState({
+        firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: ''
+    });
+    const [editingContactIdx, setEditingContactIdx] = useState<number | null>(null);
+    const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; idx: number | null; name: string }>({
+        isOpen: false, idx: null, name: ''
+    });
+
+    const tags = lead.tags || [];
+    const metrics = useMemo(() => computeAccountMetrics(linkedRequests), [linkedRequests]);
+    const openBookingRequests = useMemo(() => filterOpenBookingRequests(linkedRequests), [linkedRequests]);
+    const timelineItems = useMemo(
+        () =>
+            buildAccountTimeline({
+                requestsForAccount: linkedRequests,
+                salesCalls,
+                manualActivities: lead.activities || []
+            }),
+        [linkedRequests, salesCalls, lead.activities]
+    );
+    const winRate = metrics.winRate;
+    const totalSpend = metrics.totalSpend;
+    const totalRequests = metrics.totalRequests;
+    const preferredBusiness = useMemo(() => {
+        const counts: Record<string, number> = {
+            Group: 0,
+            Series: 0,
+            MICE: 0,
+            Accom: 0,
+        };
+        for (const req of linkedRequests || []) {
+            const t = String(req?.requestType || '').toLowerCase().trim();
+            if (!t) continue;
+            if (t === 'series' || t.includes('series')) {
+                counts.Series += 1;
+            } else if (
+                t === 'event' ||
+                t === 'event only' ||
+                t === 'event_rooms' ||
+                t === 'event with rooms' ||
+                t === 'event with room' ||
+                t.includes('event with room')
+            ) {
+                counts.MICE += 1;
+            } else if (t === 'group' || t === 'group_acc' || t.includes('group')) {
+                counts.Group += 1;
+            } else if (t === 'accommodation' || t === 'accommodation only' || t.includes('accommodation')) {
+                counts.Accom += 1;
+            } else {
+                counts.Accom += 1;
+            }
+        }
+        const palette: Record<string, string> = {
+            Group: colors.blue,
+            Series: colors.cyan,
+            MICE: colors.purple,
+            Accom: colors.orange,
+        };
+        const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+        const data = Object.entries(counts)
+            .filter(([, value]) => value > 0)
+            .map(([name, value]) => ({
+                name,
+                value,
+                color: palette[name] || colors.textMuted,
+                pct: total > 0 ? `${Math.round((value / total) * 100)}%` : '0%',
+            }));
+        return { total, data };
+    }, [linkedRequests, colors.blue, colors.cyan, colors.purple, colors.orange, colors.textMuted]);
+    const initial = (lead.company || '?').toString().charAt(0) || '?';
+
+    const [showActivityModal, setShowActivityModal] = useState(false);
+    const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
+    const [activityForm, setActivityForm] = useState({ title: '', body: '' });
+    const [tagDraft, setTagDraft] = useState('');
+    const [showTagField, setShowTagField] = useState(false);
+    const [tagColorTick, setTagColorTick] = useState(0);
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [editingTagIdx, setEditingTagIdx] = useState<number | null>(null);
+    const [tagRenameDraft, setTagRenameDraft] = useState('');
+
+    useEffect(() => {
+        const h = () => setTagColorTick((t) => t + 1);
+        window.addEventListener(TAG_COLORS_EVENT, h);
+        return () => window.removeEventListener(TAG_COLORS_EVENT, h);
+    }, []);
+
+    const auditLog = lead.profileAuditLog || [];
+
+    const handleSaveContact = () => {
+        if (!newContactData.firstName || !newContactData.lastName) return;
+        const fullName = `${newContactData.firstName} ${newContactData.lastName}`;
+
+        const currentContacts = lead.contacts || [{
+            name: lead.contact, position: lead.position,
+            email: lead.email, phone: lead.phone,
+            city: lead.city, country: lead.country
+        }];
+
+        const contactData = {
+            name: fullName,
+            position: newContactData.position,
+            email: newContactData.email,
+            phone: newContactData.phone,
+            city: newContactData.city,
+            country: newContactData.country
+        };
+
+        let updatedContacts;
+        if (editingContactIdx !== null) {
+            updatedContacts = [...currentContacts];
+            updatedContacts[editingContactIdx] = contactData;
+        } else {
+            updatedContacts = [...currentContacts, contactData];
+        }
+
+        const primary = updatedContacts[0];
+        onLeadChange({
+            ...lead,
+            contacts: updatedContacts,
+            contact: primary?.name ?? lead.contact,
+            position: primary?.position ?? lead.position,
+            email: primary?.email ?? lead.email,
+            phone: primary?.phone ?? lead.phone
+        });
+        appendAuditLog?.(editingContactIdx !== null ? 'Contact updated' : 'Contact added', fullName);
+        setNewContactData({ firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: '' });
+        setIsContactModalOpen(false);
+        setEditingContactIdx(null);
+        if (editingContactIdx === null) setExpandedContact(updatedContacts.length - 1);
+    };
+
+    const handleDeleteContact = () => {
+        if (deleteConfirm.idx === null) return;
+        const currentContacts = lead.contacts || [{
+            name: lead.contact, position: lead.position,
+            email: lead.email, phone: lead.phone,
+            city: lead.city, country: lead.country
+        }];
+
+        const updatedContacts = currentContacts.filter((_: any, i: number) => i !== deleteConfirm.idx);
+        const primary = updatedContacts[0];
+        onLeadChange({
+            ...lead,
+            contacts: updatedContacts,
+            contact: primary?.name ?? '',
+            position: primary?.position ?? '',
+            email: primary?.email ?? '',
+            phone: primary?.phone ?? ''
+        });
+        appendAuditLog?.('Contact removed', deleteConfirm.name);
+        setDeleteConfirm({ isOpen: false, idx: null, name: '' });
+        setExpandedContact(null);
+    };
+
+    const contactList = lead.contacts || [{
+        name: lead.contact, position: lead.position,
+        email: lead.email, phone: lead.phone,
+        city: lead.city, country: lead.country
+    }];
+
+    return (
+        <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
+            <div className="shrink-0 p-6 border-b flex justify-between items-start" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="flex items-start gap-4">
+                    <button type="button" onClick={onClose} className="p-2 rounded hover:bg-white/5" style={{ color: colors.textMuted }}>
+                        <X size={20} />
+                    </button>
+                    <div className="flex items-start gap-4">
+                        <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white"
+                            style={{ backgroundColor: colors.primary }}>
+                            {initial}
+                        </div>
+                        <div>
+                            <h1 className="text-2xl font-bold mb-1" style={{ color: colors.textMain }}>{lead.company}</h1>
+                            <p className="text-sm" style={{ color: colors.textMuted }}>{lead.contact} • {lead.position}</p>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 justify-end">
+                    <button
+                        type="button"
+                        onClick={() => setShowHistoryModal(true)}
+                        className="px-3 py-2 rounded border hover:bg-white/5 flex items-center gap-2 text-sm"
+                        style={{ borderColor: colors.border, color: colors.textMain }}
+                        title="Profile history and user actions"
+                    >
+                        <History size={16} /> History
+                    </button>
+                    {!readOnly && onEditAccount && (
+                        <button
+                            type="button"
+                            onClick={onEditAccount}
+                            className="px-4 py-2 rounded border hover:bg-white/5 flex items-center gap-2"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                        >
+                            <Edit size={16} /> Edit
+                        </button>
+                    )}
+                    {!readOnly && canDeleteAccount && onDeleteAccount && (
+                        <button
+                            type="button"
+                            onClick={onDeleteAccount}
+                            className="px-4 py-2 rounded border flex items-center gap-2 text-red-500 hover:bg-red-500/10"
+                            style={{ borderColor: 'rgba(239,68,68,0.35)' }}
+                        >
+                            <Trash2 size={16} /> Delete account
+                        </button>
+                    )}
+                    {!readOnly && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setEditingActivityId(null);
+                                setActivityForm({ title: '', body: '' });
+                                setShowActivityModal(true);
+                            }}
+                            className="px-4 py-2 rounded font-bold flex items-center gap-2"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            <Plus size={16} /> New Activity
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+                <div className="grid grid-cols-3 gap-6">
+                    <div className="space-y-6">
+                        <div className="p-6 rounded-xl border flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Contact Information</h3>
+                                {!readOnly && (
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingContactIdx(null);
+                                            setNewContactData({ firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: '' });
+                                            setIsContactModalOpen(true);
+                                        }}
+                                        className="p-1 rounded hover:bg-white/10 transition-colors"
+                                        title="Add Contact Person"
+                                        style={{ color: colors.primary }}>
+                                        <Plus size={16} />
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="space-y-1">
+                                {contactList.map((contact: any, idx: number) => (
+                                    <div key={idx} className="border-b last:border-0" style={{ borderColor: colors.border }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedContact(expandedContact === idx ? null : idx)}
+                                            className="w-full flex items-center justify-between py-3 text-left group hover:bg-white/5 px-2 rounded-lg transition-colors"
+                                        >
+                                            <div>
+                                                <p className="font-bold text-sm" style={{ color: colors.textMain }}>{contact.name}</p>
+                                                <p className="text-[10px] uppercase tracking-wider opacity-70" style={{ color: colors.textMuted }}>{contact.position}</p>
+                                            </div>
+                                            <ChevronDown size={14} className={`transition-transform duration-300 ${expandedContact === idx ? 'rotate-180' : ''}`} style={{ color: colors.textMuted }} />
+                                        </button>
+
+                                        {expandedContact === idx && (
+                                            <div className="pb-4 px-2 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                                                <div className="flex items-center gap-3">
+                                                    <Mail size={14} style={{ color: colors.primary }} />
+                                                    <div className="flex-1">
+                                                        <p className="text-[10px] uppercase font-bold opacity-70 mb-0.5" style={{ color: colors.textMuted }}>Email</p>
+                                                        <p className="text-sm font-medium break-all" style={{ color: colors.textMain }}>{contact.email || 'N/A'}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-3">
+                                                    <Phone size={14} style={{ color: colors.primary }} />
+                                                    <div className="flex-1">
+                                                        <p className="text-[10px] uppercase font-bold opacity-70 mb-0.5" style={{ color: colors.textMuted }}>Phone</p>
+                                                        <p className="text-sm font-medium" style={{ color: colors.textMain }}>{contact.phone || 'N/A'}</p>
+                                                    </div>
+                                                </div>
+                                                {(contact.city || contact.country) && (
+                                                    <div className="flex items-center gap-3">
+                                                        <MapPin size={14} style={{ color: colors.primary }} />
+                                                        <div className="flex-1">
+                                                            <p className="text-[10px] uppercase font-bold opacity-70 mb-0.5" style={{ color: colors.textMuted }}>Address</p>
+                                                            <p className="text-sm font-medium" style={{ color: colors.textMain }}>{[contact.city, contact.country].filter(Boolean).join(', ')}</p>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {!readOnly && (
+                                                    <div className="pt-2 mt-2 flex justify-end items-center gap-2 border-t" style={{ borderColor: colors.border }}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                const names = contact.name.split(' ');
+                                                                setNewContactData({
+                                                                    firstName: names[0] || '',
+                                                                    lastName: names.slice(1).join(' ') || '',
+                                                                    position: contact.position || '',
+                                                                    email: contact.email || '',
+                                                                    phone: contact.phone || '',
+                                                                    city: contact.city || '',
+                                                                    country: contact.country || ''
+                                                                });
+                                                                setEditingContactIdx(idx);
+                                                                setIsContactModalOpen(true);
+                                                            }}
+                                                            className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold border hover:bg-white/5 transition-colors"
+                                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                                        >
+                                                            <Edit size={12} /> Edit
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setDeleteConfirm({ isOpen: true, idx, name: contact.name })}
+                                                            className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold text-red-500 hover:bg-red-500/10 transition-colors"
+                                                        >
+                                                            <Trash2 size={12} /> Delete
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: colors.textMuted }}>Tags</h3>
+                            <p className="text-[10px] mb-3 opacity-80" style={{ color: colors.textMuted }}>
+                                Pick a color for each tag (saved for everyone). CRM cards use the same colors.
+                            </p>
+                            <div className="flex flex-wrap gap-2 items-center" key={tagColorTick}>
+                                {tags.map((tag: string, idx: number) => {
+                                    const tc = getTagColor(tag, colors.primary);
+                                    return (
+                                        <span
+                                            key={`${tag}-${idx}`}
+                                            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium border"
+                                            style={{ backgroundColor: `${tc}22`, color: tc, borderColor: `${tc}40` }}
+                                        >
+                                            {editingTagIdx === idx ? (
+                                                <input
+                                                    type="text"
+                                                    value={tagRenameDraft}
+                                                    onChange={(e) => setTagRenameDraft(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') {
+                                                            const nt = tagRenameDraft.trim();
+                                                            if (nt && nt !== tag && !tags.includes(nt)) {
+                                                                const next = [...tags];
+                                                                const oldTag = next[idx];
+                                                                next[idx] = nt;
+                                                                const prevColor = getTagColor(oldTag, colors.primary);
+                                                                const map = { ...readTagColors() };
+                                                                delete map[oldTag];
+                                                                map[nt] = prevColor;
+                                                                writeTagColors(map);
+                                                                onLeadChange({ ...lead, tags: next });
+                                                                appendAuditLog?.('Tag renamed', `${oldTag} → ${nt}`);
+                                                            }
+                                                            setEditingTagIdx(null);
+                                                            setTagRenameDraft('');
+                                                        }
+                                                    }}
+                                                    className="w-24 px-1 py-0.5 rounded text-[10px] bg-black/20 border"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    autoFocus
+                                                />
+                                            ) : (
+                                                <span>{tag}</span>
+                                            )}
+                                            {canManageAccountTags && !readOnly && (
+                                                <input
+                                                    type="color"
+                                                    value={tc.length === 7 ? tc : '#c09a4e'}
+                                                    onChange={(e) => {
+                                                        setTagColorForName(tag, e.target.value);
+                                                        setTagColorTick((t) => t + 1);
+                                                    }}
+                                                    className="w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent"
+                                                    title="Tag color"
+                                                />
+                                            )}
+                                            {canManageAccountTags && !readOnly && editingTagIdx !== idx && (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        className="p-0.5 rounded hover:bg-white/10"
+                                                        style={{ color: colors.textMuted }}
+                                                        title="Rename tag"
+                                                        onClick={() => {
+                                                            setEditingTagIdx(idx);
+                                                            setTagRenameDraft(tag);
+                                                        }}
+                                                    >
+                                                        <Edit size={12} />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="p-0.5 rounded hover:bg-red-500/20"
+                                                        style={{ color: colors.red || '#ef4444' }}
+                                                        title="Remove tag"
+                                                        onClick={() => {
+                                                            const next = tags.filter((_: string, i: number) => i !== idx);
+                                                            onLeadChange({ ...lead, tags: next });
+                                                            appendAuditLog?.('Tag removed', tag);
+                                                        }}
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                </>
+                                            )}
+                                        </span>
+                                    );
+                                })}
+                                {canManageAccountTags && !readOnly && (showTagField ? (
+                                    <span className="inline-flex items-center gap-1">
+                                        <input
+                                            type="text"
+                                            value={tagDraft}
+                                            onChange={(e) => setTagDraft(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    const t = tagDraft.trim();
+                                                    if (t && !tags.includes(t)) {
+                                                        onLeadChange({ ...lead, tags: [...tags, t] });
+                                                        appendAuditLog?.('Tag added', t);
+                                                    }
+                                                    setTagDraft('');
+                                                    setShowTagField(false);
+                                                }
+                                            }}
+                                            placeholder="Tag"
+                                            className="px-2 py-1 rounded text-xs border min-w-[100px]"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg, color: colors.textMain }}
+                                            autoFocus
+                                        />
+                                        <button
+                                            type="button"
+                                            className="text-[10px] font-bold"
+                                            style={{ color: colors.primary }}
+                                            onClick={() => {
+                                                const t = tagDraft.trim();
+                                                if (t && !tags.includes(t)) {
+                                                    onLeadChange({ ...lead, tags: [...tags, t] });
+                                                    appendAuditLog?.('Tag added', t);
+                                                }
+                                                setTagDraft('');
+                                                setShowTagField(false);
+                                            }}
+                                        >
+                                            Add
+                                        </button>
+                                    </span>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTagField(true)}
+                                        className="px-3 py-1 rounded-full text-xs border hover:bg-white/5"
+                                        style={{ borderColor: colors.border, color: colors.textMuted }}
+                                    >
+                                        + Add Tag
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3
+                                className="text-xs font-bold uppercase tracking-wider mb-4"
+                                style={{ color: colors.textMuted }}
+                                title="Win rate = definite or actual requests ÷ all requests excluding cancelled or lost. Spend = sum of paid amounts on linked requests."
+                            >
+                                Performance
+                            </h3>
+                            <div className="space-y-4">
+                                <div>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-xs" style={{ color: colors.textMuted }}>Win rate</span>
+                                        <span className="text-sm font-bold" style={{ color: colors.green }}>{winRate}%</span>
+                                    </div>
+                                    <div className="h-2 rounded-full bg-black/20 overflow-hidden">
+                                        <div className="h-full rounded-full" style={{ width: `${Math.min(winRate, 100)}%`, backgroundColor: colors.green }}></div>
+                                    </div>
+                                    <p className="text-[10px] mt-1 opacity-70" style={{ color: colors.textMuted }}>
+                                        % of non-cancelled / non-lost requests in definite or actual status
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-xs mb-1" style={{ color: colors.textMuted }}>Total spend (paid)</p>
+                                    <p className="text-xl font-bold font-mono" style={{ color: colors.primary }}>
+                                        {formatCurrencyAmount(totalSpend, selectedCurrency, { maximumFractionDigits: 0 })}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-xs mb-1" style={{ color: colors.textMuted }}>Total requests</p>
+                                    <p className="text-xl font-bold" style={{ color: colors.textMain }}>{totalRequests}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs mb-1" style={{ color: colors.textMuted }}>Open pipeline (bookings)</p>
+                                    <p className="text-lg font-bold" style={{ color: colors.textMain }}>{metrics.openPipelineCount}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="text-xs font-bold uppercase tracking-wider mb-4" style={{ color: colors.textMuted }}>Preferred Business</h3>
+                            {preferredBusiness.total === 0 ? (
+                                <p className="text-sm italic py-6 text-center" style={{ color: colors.textMuted }}>
+                                    No requests under this account yet.
+                                </p>
+                            ) : (
+                                <>
+                                    <ResponsiveContainer width="100%" height={150}>
+                                        <PieChart>
+                                            <Pie data={preferredBusiness.data} cx="50%" cy="50%" innerRadius={40} outerRadius={60} dataKey="value">
+                                                {preferredBusiness.data.map((item) => (
+                                                    <Cell key={item.name} fill={item.color} />
+                                                ))}
+                                            </Pie>
+                                            <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {preferredBusiness.data.map((item) => (
+                                            <div key={item.name} className="flex items-center gap-2">
+                                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }}></div>
+                                                <span className="text-[10px]" style={{ color: colors.textMuted }}>{item.name}</span>
+                                                <span className="text-[10px] font-bold ml-auto" style={{ color: colors.textMain }}>{item.pct}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="col-span-2 space-y-6">
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Active Opportunities</h3>
+                                {onAddOpportunity && (
+                                    <button
+                                        type="button"
+                                        onClick={onAddOpportunity}
+                                        className="text-xs flex items-center gap-1 hover:opacity-70"
+                                        style={{ color: colors.primary }}
+                                    >
+                                        + Add Opportunity
+                                    </button>
+                                )}
+                            </div>
+                            <div className="space-y-3">
+                                {opportunityLeads.length === 0 && openBookingRequests.length === 0 && (
+                                    <p className="text-sm italic py-6 text-center" style={{ color: colors.textMuted }}>
+                                        No open pipeline items or booking opportunities for this account.
+                                    </p>
+                                )}
+                                {opportunityLeads.map((ol: any) => (
+                                    <div key={ol.id} className="p-4 rounded-lg border" style={{ borderColor: colors.border }}>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h4 className="font-bold mb-1" style={{ color: colors.textMain }}>
+                                                    {ol.subject || ol.company || 'Sales opportunity'}
+                                                </h4>
+                                                <p className="text-xs" style={{ color: colors.textMuted }}>
+                                                    Last contact: {ol.lastContact || '—'} · {ol.accountManager || currentUser?.name || '—'}
+                                                </p>
+                                            </div>
+                                            <div className="text-right">
+                                                <span
+                                                    className="px-2 py-1 rounded text-xs font-medium"
+                                                    style={{ backgroundColor: `${colors.orange}20`, color: colors.orange }}
+                                                >
+                                                    {STAGE_LABELS[String(ol.stage || '').toLowerCase()] || ol.stage || '—'}
+                                                </span>
+                                                <p className="text-sm font-bold font-mono mt-1" style={{ color: colors.primary }}>
+                                                    {formatSarCompact(ol.value)}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {openBookingRequests.map((req: any) => (
+                                    <div key={req.id} className="p-4 rounded-lg border border-dashed" style={{ borderColor: colors.border }}>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h4 className="font-bold mb-1" style={{ color: colors.textMain }}>
+                                                    {req.requestName || req.id || 'Request'}
+                                                </h4>
+                                                <p className="text-xs" style={{ color: colors.textMuted }}>Booking · {req.status || '—'}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                {onOpenRequest && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => onOpenRequest(String(req.id))}
+                                                        className="text-xs font-bold underline"
+                                                        style={{ color: colors.primary }}
+                                                    >
+                                                        Open request
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Contracts</h3>
+                                {onStartNewContractForAccount && (
+                                    <button
+                                        type="button"
+                                        onClick={onStartNewContractForAccount}
+                                        className="text-xs font-bold px-3 py-1.5 rounded border hover:bg-white/5"
+                                        style={{ borderColor: colors.border, color: colors.primary }}
+                                    >
+                                        + New Contract
+                                    </button>
+                                )}
+                            </div>
+                            {!accountContracts.length ? (
+                                <p className="text-sm italic py-2" style={{ color: colors.textMuted }}>
+                                    No contracts linked to this account yet.
+                                </p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {accountContracts.map((c) => (
+                                        <div key={c.id} className="p-3 rounded-lg border" style={{ borderColor: colors.border }}>
+                                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+                                                <div className="md:col-span-2">
+                                                    <p className="text-sm font-bold" style={{ color: colors.textMain }}>
+                                                        {c.agreementFileName} · term {c.termNumber}
+                                                    </p>
+                                                    <p className="text-[10px]" style={{ color: colors.textMuted }}>
+                                                        {c.templateName} · {new Date(c.createdAt).toLocaleDateString()}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] uppercase opacity-60" style={{ color: colors.textMuted }}>Start</label>
+                                                    <input
+                                                        type="date"
+                                                        value={c.startDate || ''}
+                                                        onChange={(e) => onUpdateContractMeta?.(c.id, { startDate: e.target.value })}
+                                                        className="w-full p-1.5 rounded border bg-black/20 text-xs"
+                                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] uppercase opacity-60" style={{ color: colors.textMuted }}>End</label>
+                                                    <input
+                                                        type="date"
+                                                        value={c.endDate || ''}
+                                                        onChange={(e) => onUpdateContractMeta?.(c.id, { endDate: e.target.value })}
+                                                        className="w-full p-1.5 rounded border bg-black/20 text-xs"
+                                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] uppercase opacity-60" style={{ color: colors.textMuted }}>Status</label>
+                                                    <select
+                                                        value={c.status}
+                                                        onChange={(e) => onUpdateContractStatus?.(c.id, e.target.value as ContractStatus)}
+                                                        className="w-full p-1.5 rounded border bg-black/20 text-xs"
+                                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    >
+                                                        <option>Generated</option>
+                                                        <option>Signed</option>
+                                                        <option>Expired</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2 mt-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onDownloadContractFile?.(c.id, 'word')}
+                                                    className="text-[10px] px-2 py-1 rounded border hover:bg-white/5"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                >
+                                                    Word
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onDownloadContractFile?.(c.id, 'pdf')}
+                                                    className="text-[10px] px-2 py-1 rounded border hover:bg-white/5"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                >
+                                                    PDF
+                                                </button>
+                                                <label
+                                                    className="text-[10px] px-2 py-1 rounded border hover:bg-white/5 cursor-pointer"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                >
+                                                    Upload Signed
+                                                    <input
+                                                        type="file"
+                                                        className="hidden"
+                                                        onChange={async (e) => {
+                                                            const f = e.target.files?.[0];
+                                                            if (!f) return;
+                                                            await onUploadSignedContract?.(c.id, f);
+                                                        }}
+                                                    />
+                                                </label>
+                                                {c.signedFileName && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => onDownloadContractFile?.(c.id, 'signed')}
+                                                        className="text-[10px] px-2 py-1 rounded border hover:bg-white/5"
+                                                        style={{ borderColor: colors.border, color: colors.primary }}
+                                                    >
+                                                        Signed: {c.signedFileName}
+                                                    </button>
+                                                )}
+                                                {canDeleteContractRecords && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (!window.confirm('Delete this contract record permanently?')) return;
+                                                            onDeleteContractRecord?.(c.id);
+                                                        }}
+                                                        className="text-[10px] px-2 py-1 rounded border text-red-500 hover:bg-red-500/10"
+                                                        style={{ borderColor: 'rgba(239,68,68,0.35)' }}
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="text-xs font-bold uppercase tracking-wider mb-4" style={{ color: colors.textMuted }}>Activity Timeline</h3>
+                            <div className="space-y-4">
+                                {timelineItems.length === 0 && (
+                                    <p className="text-sm italic py-6 text-center" style={{ color: colors.textMuted }}>
+                                        No sales calls, request logs, or manual activities yet.
+                                    </p>
+                                )}
+                                {timelineItems.map((item) => {
+                                    const isManual = item.meta?.source === 'manual';
+                                    const actId = item.meta?.activityId;
+                                    return (
+                                        <div key={item.id} className="flex gap-4">
+                                            {timelineIcon(item, colors)}
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex justify-between items-start mb-1 gap-2">
+                                                    <h4 className="font-bold text-sm" style={{ color: colors.textMain }}>{item.title}</h4>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        {!readOnly && canManageManualTimeline && isManual && actId && (
+                                                            <>
+                                                                <button
+                                                                    type="button"
+                                                                    className="text-[10px] font-bold px-2 py-0.5 rounded border hover:bg-white/5"
+                                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                                    onClick={() => {
+                                                                        const act = (lead.activities || []).find(
+                                                                            (a: any) => String(a.id) === String(actId)
+                                                                        );
+                                                                        if (!act) return;
+                                                                        setEditingActivityId(String(act.id));
+                                                                        setActivityForm({
+                                                                            title: act.title || '',
+                                                                            body: act.body || ''
+                                                                        });
+                                                                        setShowActivityModal(true);
+                                                                    }}
+                                                                >
+                                                                    Edit
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="text-[10px] font-bold px-2 py-0.5 rounded border text-red-500 hover:bg-red-500/10"
+                                                                    style={{ borderColor: 'rgba(239,68,68,0.35)' }}
+                                                                    onClick={() => {
+                                                                        if (!window.confirm('Remove this activity from the timeline?')) return;
+                                                                        const next = (lead.activities || []).filter(
+                                                                            (a: any) => String(a.id) !== String(actId)
+                                                                        );
+                                                                        onLeadChange({ ...lead, activities: next });
+                                                                        appendAuditLog?.('Activity removed', item.title || '');
+                                                                    }}
+                                                                >
+                                                                    Delete
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                        <span className="text-xs" style={{ color: colors.textMuted }}>{item.whenLabel}</span>
+                                                    </div>
+                                                </div>
+                                                <p className="text-sm mb-1 whitespace-pre-wrap" style={{ color: colors.textMuted }}>{item.body || '—'}</p>
+                                                <p className="text-xs" style={{ color: colors.textMuted }}>by {item.by}</p>
+                                                {item.meta?.requestId && onOpenRequest && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => onOpenRequest(String(item.meta!.requestId))}
+                                                        className="text-[10px] font-bold mt-1 underline"
+                                                        style={{ color: colors.primary }}
+                                                    >
+                                                        View request
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {isContactModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="w-full max-w-md p-6 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 border"
+                        style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}>
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>{editingContactIdx !== null ? 'Edit Contact Person' : 'Add Contact Person'}</h3>
+                            <button type="button" onClick={() => setIsContactModalOpen(false)} style={{ color: colors.textMuted }} className="hover:text-white transition-colors"><X size={20} /></button>
+                        </div>
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>First Name</label>
+                                    <input type="text"
+                                        value={newContactData.firstName}
+                                        onChange={e => setNewContactData({ ...newContactData, firstName: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="First Name"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Last Name</label>
+                                    <input type="text"
+                                        value={newContactData.lastName}
+                                        onChange={e => setNewContactData({ ...newContactData, lastName: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="Last Name"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Position</label>
+                                <input type="text"
+                                    value={newContactData.position}
+                                    onChange={e => setNewContactData({ ...newContactData, position: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="Job Title"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Email</label>
+                                <input type="email"
+                                    value={newContactData.email}
+                                    onChange={e => setNewContactData({ ...newContactData, email: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="email@example.com"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Phone</label>
+                                <input type="text"
+                                    value={newContactData.phone}
+                                    onChange={e => setNewContactData({ ...newContactData, phone: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="+966 ..."
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>City</label>
+                                    <input type="text"
+                                        value={newContactData.city}
+                                        onChange={e => setNewContactData({ ...newContactData, city: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="City"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Country</label>
+                                    <input type="text"
+                                        value={newContactData.country}
+                                        onChange={e => setNewContactData({ ...newContactData, country: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="Country"
+                                    />
+                                </div>
+                            </div>
+                            <div className="pt-4">
+                                <button
+                                    type="button"
+                                    onClick={handleSaveContact}
+                                    className="w-full py-3 rounded-lg font-bold text-black hover:opacity-90 transition-opacity"
+                                    style={{ backgroundColor: colors.primary }}
+                                >
+                                    {editingContactIdx !== null ? 'Save Changes' : 'Save Contact'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showHistoryModal && (
+                <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="w-full max-w-lg max-h-[80vh] flex flex-col p-6 rounded-2xl shadow-2xl border"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="flex justify-between items-center mb-4 shrink-0">
+                            <h3 className="text-lg font-bold flex items-center gap-2" style={{ color: colors.textMain }}>
+                                <History size={20} /> Profile history
+                            </h3>
+                            <button type="button" onClick={() => setShowHistoryModal(false)} className="p-1" style={{ color: colors.textMuted }}><X size={20} /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto space-y-3 text-left text-sm pr-1">
+                            {auditLog.length === 0 ? (
+                                <p className="italic text-center py-8" style={{ color: colors.textMuted }}>No logged actions yet.</p>
+                            ) : (
+                                [...auditLog].reverse().map((entry: any) => (
+                                    <div key={entry.id} className="p-3 rounded-lg border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <div className="flex justify-between gap-2 mb-1">
+                                            <span className="font-bold text-xs" style={{ color: colors.primary }}>{entry.action}</span>
+                                            <span className="text-[10px] opacity-70" style={{ color: colors.textMuted }}>
+                                                {entry.at ? new Date(entry.at).toLocaleString() : ''}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs" style={{ color: colors.textMain }}>{entry.details}</p>
+                                        <p className="text-[10px] mt-1 opacity-60" style={{ color: colors.textMuted }}>by {entry.userName || '—'}</p>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showActivityModal && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="w-full max-w-md p-6 rounded-2xl shadow-2xl border animate-in zoom-in-95 duration-200"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>{editingActivityId ? 'Edit activity' : 'New activity'}</h3>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowActivityModal(false);
+                                    setEditingActivityId(null);
+                                    setActivityForm({ title: '', body: '' });
+                                }}
+                                className="p-1"
+                                style={{ color: colors.textMuted }}
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>Title</label>
+                                <input
+                                    type="text"
+                                    value={activityForm.title}
+                                    onChange={(e) => setActivityForm({ ...activityForm, title: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-lg border text-sm"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>Details</label>
+                                <textarea
+                                    rows={3}
+                                    value={activityForm.body}
+                                    onChange={(e) => setActivityForm({ ...activityForm, body: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-lg border text-sm"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                />
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const title = activityForm.title.trim();
+                                    if (!title) return;
+                                    if (editingActivityId) {
+                                        const next = (lead.activities || []).map((a: any) =>
+                                            String(a.id) === editingActivityId
+                                                ? {
+                                                      ...a,
+                                                      title,
+                                                      body: activityForm.body.trim()
+                                                  }
+                                                : a
+                                        );
+                                        onLeadChange({ ...lead, activities: next });
+                                        appendAuditLog?.('Activity updated', title);
+                                    } else {
+                                        const row = {
+                                            id: `act-${Date.now()}`,
+                                            at: new Date().toISOString(),
+                                            title,
+                                            body: activityForm.body.trim(),
+                                            user: currentUser?.name || currentUser?.email || 'Staff'
+                                        };
+                                        onLeadChange({
+                                            ...lead,
+                                            activities: [...(lead.activities || []), row]
+                                        });
+                                        appendAuditLog?.('Activity added', title);
+                                    }
+                                    setShowActivityModal(false);
+                                    setEditingActivityId(null);
+                                    setActivityForm({ title: '', body: '' });
+                                }}
+                                className="w-full py-3 rounded-lg font-bold text-black"
+                                style={{ backgroundColor: colors.primary }}
+                            >
+                                {editingActivityId ? 'Save changes' : 'Save activity'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {deleteConfirm.isOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="w-full max-w-sm p-6 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 border"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="text-center mb-6">
+                            <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4" style={{ color: colors.red }}>
+                                <Trash2 size={24} />
+                            </div>
+                            <h3 className="text-lg font-bold mb-2" style={{ color: colors.textMain }}>Delete Contact</h3>
+                            <p className="text-sm" style={{ color: colors.textMuted }}>Are you sure you want to delete <span className="font-bold text-white">{deleteConfirm.name}</span>? This action cannot be undone.</p>
+                        </div>
+                        <div className="flex gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setDeleteConfirm({ isOpen: false, idx: null, name: '' })}
+                                className="flex-1 py-2.5 rounded-lg font-bold border hover:bg-white/5 transition-colors"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleDeleteContact}
+                                className="flex-1 py-2.5 rounded-lg font-bold bg-red-500 text-white hover:bg-red-600 transition-colors"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}

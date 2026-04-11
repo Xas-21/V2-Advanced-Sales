@@ -1,0 +1,28 @@
+# Blueprint for https://render.com — create two services from this repo.
+# 1) Deploy the API first; copy its URL (no trailing slash).
+# 2) Create the static site and set VITE_API_BASE_URL to that URL, then rebuild.
+
+services:
+  - type: web
+    name: advanced-sales-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+  - type: web
+    name: advanced-sales-ui
+    runtime: static
+    rootDir: .
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
