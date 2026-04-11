@@ -3,11 +3,14 @@ import os
 print("VisaTour Backend: LOADING MAIN APP...")
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 # Ensure the backend directory is in the path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv()
 
-from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact
+from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts
+from utils import storage_mode
 
 app = FastAPI(title="VisaTour ERP Backend", version="1.0.0", redirect_slashes=False)
 
@@ -30,10 +33,15 @@ app.include_router(financials.router)
 app.include_router(reqs.router)
 app.include_router(crm_state.router)
 app.include_router(contact.router)
+app.include_router(accounts.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "routers": ["reqs", "auth", "others"]}
+    return {
+        "status": "ok",
+        "storage": storage_mode(),
+        "routers": ["reqs", "auth", "others"],
+    }
 
 @app.get("/")
 def read_root():
