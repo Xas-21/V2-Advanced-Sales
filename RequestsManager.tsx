@@ -636,6 +636,7 @@ export default function RequestsManager({
                     ...updatedLogs,
                 ];
             }
+            const eventWindow = getEventDateWindow(formData || {});
             const payload = {
                 ...formData,
                 id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
@@ -656,6 +657,8 @@ export default function RequestsManager({
                 adr: fin.adr || 0,
                 paidAmount: fin.paidAmount.toFixed(2),
                 payments: formData.payments || [],
+                eventStart: String(formData.eventStart || eventWindow.start || '').slice(0, 10),
+                eventEnd: String(formData.eventEnd || eventWindow.end || eventWindow.start || '').slice(0, 10),
                 logs: updatedLogs,
                 paymentStatus: fin.paymentStatus, // Unpaid, Deposit, Paid
                 segment: resolvedSegment,
@@ -824,8 +827,13 @@ export default function RequestsManager({
 
     const calculateEvtFinancials = (data?: any) => {
         const form = data || evtForm;
-        const eventCostNoTax = (form.agenda || []).reduce((acc: number, item: any) =>
-            acc + (Number(item.rate) * Number(item.pax)) + Number(item.rental), 0);
+        const eventCostNoTax = (form.agenda || []).reduce((acc: number, item: any) => {
+            const start = String(item?.startDate || '').slice(0, 10);
+            const end = String(item?.endDate || item?.startDate || '').slice(0, 10);
+            const rowDays = start && end ? inclusiveCalendarDays(start, end) : 1;
+            const safeDays = Math.max(1, rowDays || 1);
+            return acc + (((Number(item?.rate) || 0) * (Number(item?.pax) || 0)) + (Number(item?.rental) || 0)) * safeDays;
+        }, 0);
         
         let eventTaxMultiplier = 0;
         taxesList.forEach(tax => {
@@ -938,7 +946,7 @@ export default function RequestsManager({
     const renderAccommodationForm = () => {
         const fin = calculateAccFinancials();
         const eventAgendaSpanDays = agendaSpanInclusiveDays(accForm.agenda || []);
-        const eventDayDenomForm = Math.max(1, fin.totalEventDays || (accForm.checkIn && accForm.checkOut ? inclusiveCalendarDays(accForm.checkIn, accForm.checkOut) : 1));
+        const eventDayDenomForm = Math.max(1, fin.totalEventDays || eventAgendaSpanDays || 1);
         const eventCostPerDayForm = fin.eventCostWithTax / eventDayDenomForm;
         const remainingBalanceForm = Math.max(0, (fin.grandTotalWithTax || 0) - (fin.paidAmount || 0));
 
@@ -1239,17 +1247,7 @@ export default function RequestsManager({
                         <Calendar size={16} /> Section 2: Stay & Deadlines
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        {requestType === 'event' ? (
-                            <div className="md:col-span-3">
-                                <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
-                                    Total Event Days (from Section 5: Event Agenda)
-                                </label>
-                                <div className="px-3 py-2 rounded border bg-black/10 font-bold flex items-center gap-2 max-w-md" style={{ borderColor: colors.border, color: colors.textMain }}>
-                                    <Moon size={14} className="opacity-40" /> {eventAgendaSpanDays || 0} Day(s)
-                                </div>
-                                <p className="text-[10px] mt-2 opacity-50" style={{ color: colors.textMuted }}>Set start and end dates on each agenda row; span is from the earliest start to the latest end.</p>
-                            </div>
-                        ) : (
+                        {requestType !== 'event' && (
                             <>
                                 <div>
                                     <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
@@ -1276,17 +1274,17 @@ export default function RequestsManager({
                             </>
                         )}
 
-                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                        <div>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Offer Acceptance Deadline</label>
                             <input type="date" value={accForm.offerDeadline} onChange={e => setAccForm({ ...accForm, offerDeadline: e.target.value })}
                                 className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
                         </div>
-                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                        <div>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Deposit Deadline</label>
                             <input type="date" value={accForm.depositDeadline} onChange={e => setAccForm({ ...accForm, depositDeadline: e.target.value })}
                                 className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
                         </div>
-                        <div className={requestType === 'event' ? "col-span-1" : ""}>
+                        <div>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Full Payment Deadline</label>
                             <input type="date" value={accForm.paymentDeadline} onChange={e => setAccForm({ ...accForm, paymentDeadline: e.target.value })}
                                 className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
@@ -1460,10 +1458,17 @@ export default function RequestsManager({
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <Users size={16} /> Section 5: Event Agenda
                             </h3>
-                            <button onClick={addAgendaRow}
-                                className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
-                                <Plus size={16} /> Add Agenda Row
-                            </button>
+                            <div className="flex items-center gap-3">
+                                {(requestType === 'event' || requestType === 'event_rooms') && (
+                                    <div className="px-3 py-2 rounded border bg-black/10 font-bold flex items-center gap-2 text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        <Moon size={14} className="opacity-50" /> {eventAgendaSpanDays || 0} Day(s)
+                                    </div>
+                                )}
+                                <button onClick={addAgendaRow}
+                                    className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                                    <Plus size={16} /> Add Agenda Row
+                                </button>
+                            </div>
                         </div>
 
                         <div className="space-y-4">
@@ -3325,8 +3330,9 @@ export default function RequestsManager({
 
             const arrivalFilter = String(params?.arrival || '').trim();
             const departureFilter = String(params?.departure || '').trim();
-            const reqStart = String(req.checkIn || req.eventStart || '').trim();
-            const reqEnd = String(req.checkOut || req.eventEnd || '').trim();
+            const evWindow = getEventDateWindow(req);
+            const reqStart = String(req.checkIn || req.eventStart || evWindow.start || '').trim();
+            const reqEnd = String(req.checkOut || req.eventEnd || evWindow.end || evWindow.start || '').trim();
             const arrivalMatch = !arrivalFilter || reqStart >= arrivalFilter;
             const departureMatch = !departureFilter || reqEnd <= departureFilter;
 
@@ -3463,17 +3469,27 @@ export default function RequestsManager({
 
                             {column === 'dates' && (
                                 <div className={`flex flex-col ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
-                                    {request.checkIn && request.checkIn !== '-' ? (
-                                        <>
-                                            <div className="flex gap-2"><span className="opacity-50">In:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.checkIn}</span></div>
-                                            <div className="flex gap-2"><span className="opacity-50">Out:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.checkOut}</span></div>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <div className="flex gap-2"><span className="opacity-50">Start:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.eventStart}</span></div>
-                                            <div className="flex gap-2"><span className="opacity-50">End:</span> <span className="font-medium" style={{ color: colors.textMain }}>{request.eventEnd}</span></div>
-                                        </>
-                                    )}
+                                    {(() => {
+                                        const evWindow = getEventDateWindow(request);
+                                        const checkInVal = String(request.checkIn || '').trim();
+                                        const checkOutVal = String(request.checkOut || '').trim();
+                                        const startVal = String(request.eventStart || evWindow.start || '').trim();
+                                        const endVal = String(request.eventEnd || evWindow.end || evWindow.start || '').trim();
+                                        if (checkInVal && checkInVal !== '-') {
+                                            return (
+                                                <>
+                                                    <div className="flex gap-2"><span className="opacity-50">In:</span> <span className="font-medium" style={{ color: colors.textMain }}>{checkInVal || '-'}</span></div>
+                                                    <div className="flex gap-2"><span className="opacity-50">Out:</span> <span className="font-medium" style={{ color: colors.textMain }}>{checkOutVal || '-'}</span></div>
+                                                </>
+                                            );
+                                        }
+                                        return (
+                                            <>
+                                                <div className="flex gap-2"><span className="opacity-50">Start:</span> <span className="font-medium" style={{ color: colors.textMain }}>{startVal || '-'}</span></div>
+                                                <div className="flex gap-2"><span className="opacity-50">End:</span> <span className="font-medium" style={{ color: colors.textMain }}>{endVal || '-'}</span></div>
+                                            </>
+                                        );
+                                    })()}
                                 </div>
                             )}
 

@@ -130,7 +130,7 @@ export default function Reports({
         valueRange: { min: 0, max: 500_000_000 },
     });
     const [selectedColumns, setSelectedColumns] = useState<string[]>([
-        'Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Amount',
+        'Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Paid Amount', 'Unpaid Amount', 'Amount',
     ]);
     const [exportFormat, setExportFormat] = useState<'pdf' | 'excel' | 'csv'>('pdf');
     const [showPreview, setShowPreview] = useState(false);
@@ -158,9 +158,9 @@ export default function Reports({
     ];
 
     const availableColumns: Record<ReportEntity, string[]> = {
-        Requests: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Nights', 'Room Nights', 'PAX', 'AVG ADR', 'Rate / Night', 'Amount'],
+        Requests: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Nights', 'Room Nights', 'PAX', 'DDR', 'AVG ADR', 'Paid Amount', 'Unpaid Amount', 'Amount'],
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
-        MICE: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'PAX', 'Event Revenue', 'Amount'],
+        MICE: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount'],
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
     };
 
@@ -200,7 +200,8 @@ export default function Reports({
 
         const passRequestFilters = (r: any, miceOnly: boolean) => {
             const k = normalizeRequestTypeKey(r.requestType);
-            if (miceOnly && k !== 'event' && k !== 'event_rooms') return false;
+            const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+            if (miceOnly && agenda.length === 0) return false;
             if (!matchesStatusFilter(st, r.status)) return false;
             const amt = requestTotalValue(r);
             if (amt < vmin || amt > vmax) return false;
@@ -236,7 +237,19 @@ export default function Reports({
             const eventRevenue = agenda.reduce((sum: number, row: any) => {
                 return sum + (Number(row?.rate || 0) * Number(row?.pax || 0)) + Number(row?.rental || 0);
             }, 0);
-            return { pax, eventRevenue };
+            const ddr = pax > 0 ? eventRevenue / pax : 0;
+            return { pax, eventRevenue, ddr };
+        };
+
+        const paymentBlock = (r: any) => {
+            const total = requestTotalValue(r);
+            const paid = Array.isArray(r?.payments) && r.payments.length
+                ? r.payments.reduce((sum: number, p: any) => sum + (Number(p?.amount || 0) || 0), 0)
+                : parseFloat(String(r?.paidAmount ?? 0).replace(/,/g, '')) || 0;
+            const unpaid = Math.max(0, total - paid);
+            const status = String(r?.paymentStatus || '').trim()
+                || (paid >= total && total > 0 ? 'Paid' : paid > 0 ? 'Deposit' : 'Unpaid');
+            return { paid, unpaid, status };
         };
 
         const requestsFiltered = scopedRequests.filter((r) => passRequestFilters(r, false));
@@ -250,6 +263,9 @@ export default function Reports({
             let totalPax = 0;
             let totalRoomNights = 0;
             let weightedAdrSum = 0;
+            let totalPaid = 0;
+            let totalUnpaid = 0;
+            let totalEventRevenue = 0;
             let requestCount = 0;
             const typeCounter: Record<string, number> = {
                 accommodation: 0,
@@ -271,79 +287,60 @@ export default function Reports({
 
                 const roomBlock = calculateRoomBlock(r);
                 const eventBlock = calculateEventBlock(r);
+                const pay = paymentBlock(r);
                 totalPax += eventBlock.pax;
                 totalRoomNights += roomBlock.roomNights;
                 weightedAdrSum += roomBlock.avgAdr * roomBlock.roomNights;
+                totalEventRevenue += eventBlock.eventRevenue;
+                totalPaid += pay.paid;
+                totalUnpaid += pay.unpaid;
 
-                if (typeKey === 'event_rooms') {
-                    rows.push({
-                        'Request ID': r.id || '—',
-                        Line: 'Rooms',
-                        Client: client,
-                        'Request Type': 'Event with rooms',
-                        Date: date,
-                        Status: status,
-                        Nights: roomBlock.reqNights || 0,
-                        'Room Nights': roomBlock.roomNights || 0,
-                        PAX: '—',
-                        'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
-                        'Rate / Night': roomBlock.ratePerNight ? formatSar(roomBlock.ratePerNight, selectedCurrency) : '—',
-                        'Event Revenue': '—',
-                        Amount: formatSar(roomBlock.roomRevenue, selectedCurrency),
-                    });
-                    rows.push({
-                        'Request ID': r.id || '—',
-                        Line: 'Event',
-                        Client: client,
-                        'Request Type': 'Event with rooms',
-                        Date: date,
-                        Status: status,
-                        Nights: '—',
-                        'Room Nights': '—',
-                        PAX: eventBlock.pax || 0,
-                        'AVG ADR': '—',
-                        'Rate / Night': '—',
-                        'Event Revenue': formatSar(eventBlock.eventRevenue, selectedCurrency),
-                        Amount: formatSar(eventBlock.eventRevenue, selectedCurrency),
-                    });
-                } else {
-                    rows.push({
-                        'Request ID': r.id || '—',
-                        Line: typeKey === 'event' ? 'Event' : 'Single',
-                        Client: client,
-                        'Request Type': requestTypeLabel(r.requestType),
-                        Date: date,
-                        Status: status,
-                        Nights: roomBlock.reqNights || 0,
-                        'Room Nights': roomBlock.roomNights || 0,
-                        PAX: eventBlock.pax || 0,
-                        'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
-                        'Rate / Night': roomBlock.ratePerNight ? formatSar(roomBlock.ratePerNight, selectedCurrency) : '—',
-                        'Event Revenue': eventBlock.eventRevenue ? formatSar(eventBlock.eventRevenue, selectedCurrency) : '—',
-                        Amount: formatSar(total, selectedCurrency),
-                    });
-                }
+                rows.push({
+                    'Request ID': r.id || '—',
+                    Line: 'Single',
+                    Client: client,
+                    'Request Type': requestTypeLabel(r.requestType),
+                    Date: date,
+                    Status: status,
+                    'Payment Status': pay.status,
+                    Nights: roomBlock.reqNights || 0,
+                    'Room Nights': roomBlock.roomNights || 0,
+                    PAX: eventBlock.pax || 0,
+                    DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
+                    'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
+                    'Event Revenue': eventBlock.eventRevenue ? formatSar(eventBlock.eventRevenue, selectedCurrency) : '—',
+                    'Paid Amount': formatSar(pay.paid, selectedCurrency),
+                    'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
+                    Amount: formatSar(total, selectedCurrency),
+                });
             }
 
             const avgAdr = totalRoomNights > 0 ? weightedAdrSum / totalRoomNights : 0;
-            const avgRateNight = totalRoomNights > 0 ? totalAmount / totalRoomNights : 0;
+            const avgValue = requestCount > 0 ? totalAmount / requestCount : 0;
+            const avgDdr = totalPax > 0 ? totalEventRevenue / totalPax : 0;
 
+            const baseSummary: Record<string, string | number> = {
+                [selectedEntity === 'MICE' ? 'Total MICE requests' : 'Total requests']: requestCount,
+                'Total value': formatSar(totalAmount, selectedCurrency),
+                'AVG Value': formatSar(avgValue, selectedCurrency),
+                'Total PAX': totalPax.toLocaleString(),
+                'AVG DDR': formatSar(avgDdr, selectedCurrency),
+                'Total paid': formatSar(totalPaid, selectedCurrency),
+                'Total unpaid': formatSar(totalUnpaid, selectedCurrency),
+            };
+            if (selectedEntity === 'Requests') {
+                baseSummary['AVG ADR'] = formatSar(avgAdr, selectedCurrency);
+                baseSummary.Accommodation = typeCounter.accommodation || 0;
+                baseSummary['Event only'] = typeCounter.event || 0;
+                baseSummary['Event with rooms'] = typeCounter.event_rooms || 0;
+                baseSummary['Series groups'] = typeCounter.series || 0;
+            }
             return {
                 rows,
-                summary: {
-                    'Total requests': requestCount,
-                    'Total value': formatSar(totalAmount, selectedCurrency),
-                    'Total PAX': totalPax.toLocaleString(),
-                    'AVG ADR': formatSar(avgAdr, selectedCurrency),
-                    'Rate per night': formatSar(avgRateNight, selectedCurrency),
-                    Accommodation: typeCounter.accommodation || 0,
-                    'Event only': typeCounter.event || 0,
-                    'Event with rooms': typeCounter.event_rooms || 0,
-                    'Series groups': typeCounter.series || 0,
-                },
+                summary: baseSummary,
                 exportColumns: selectedEntity === 'MICE'
-                    ? ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'PAX', 'Event Revenue', 'Amount']
-                    : ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Nights', 'Room Nights', 'PAX', 'AVG ADR', 'Rate / Night', 'Amount'],
+                    ? ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount']
+                    : ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Nights', 'Room Nights', 'PAX', 'DDR', 'AVG ADR', 'Paid Amount', 'Unpaid Amount', 'Amount'],
             };
         }
 
@@ -402,7 +399,8 @@ export default function Reports({
         if (!showPreview || !reportPack.rows.length) return;
         const stamp = new Date().toISOString().slice(0, 10);
         const base = `${String(selectedEntity).toLowerCase()}-report-${stamp}`;
-        const cols = reportPack.exportColumns;
+        const cols = (selectedColumns && selectedColumns.length ? selectedColumns : reportPack.exportColumns)
+            .filter((c) => reportPack.exportColumns.includes(c));
         const rows = reportPack.rows;
 
         if (exportFormat === 'csv') {

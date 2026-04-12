@@ -142,6 +142,26 @@ export default function Settings({
         { id: 'muni', label: 'Municipality Fee', rate: 10, scope: { accommodation: true, transport: false, foodAndBeverage: false, events: true } },
         { id: 'service', label: 'Service Fee', rate: 12, scope: { accommodation: true, transport: false, foodAndBeverage: true, events: false } }
     ]);
+    const safeRoomTypes = useMemo(() => (Array.isArray(roomTypes) ? roomTypes : []), [roomTypes]);
+    const safeVenues = useMemo(
+        () =>
+            (Array.isArray(venues) ? venues : []).map((venue: any) => ({
+                ...venue,
+                shapes: Array.isArray(venue?.shapes) ? venue.shapes : [],
+            })),
+        [venues]
+    );
+    const safeTaxes = useMemo(
+        () =>
+            (Array.isArray(taxes) ? taxes : []).map((tax: any) => ({
+                ...tax,
+                scope:
+                    tax?.scope && typeof tax.scope === 'object'
+                        ? tax.scope
+                        : { accommodation: false, transport: false, foodAndBeverage: false, events: false },
+            })),
+        [taxes]
+    );
 
     // Profile Config
     const [userProfile, setUserProfile] = useState({
@@ -463,6 +483,23 @@ export default function Settings({
     const [selectedYearDetails, setSelectedYearDetails] = useState<any>(null);
     const [isEditingFinancials, setIsEditingFinancials] = useState(false);
     const [tempYearData, setTempYearData] = useState<any>(null);
+    const normalizedFinancialData = useMemo(() => {
+        const rows = Array.isArray(financialData) ? financialData : [];
+        const normalized = rows
+            .map((row: any) => ({
+                ...row,
+                year: Number(row?.year || 0),
+                months: Array.isArray(row?.months) && row.months.length ? row.months : generateInitialMonths(),
+            }))
+            .filter((row: any) => Number.isFinite(row.year) && row.year > 0)
+            .sort((a: any, b: any) => a.year - b.year);
+        if (normalized.length > 0) return normalized;
+        return [{ year: new Date().getFullYear(), months: generateInitialMonths() }];
+    }, [financialData]);
+    const nextFinancialYear = useMemo(
+        () => Number(normalizedFinancialData[normalizedFinancialData.length - 1]?.year || new Date().getFullYear()) + 1,
+        [normalizedFinancialData]
+    );
 
     const [activePropTab, setActivePropTab] = useState('rooms');
 
@@ -1940,7 +1977,7 @@ export default function Settings({
                         </tr>
                     </thead>
                     <tbody className="divide-y" style={{ borderColor: colors.border }}>
-                        {roomTypes.map((room) => (
+                        {safeRoomTypes.map((room) => (
                             <tr key={room.id} className="hover:bg-white/5 transition-colors">
                                 <td className="p-4 font-medium" style={{ color: colors.textMain }}>{room.name}</td>
                                 <td className="p-4 text-sm font-mono" style={{ color: colors.primary }}>{room.size || '-'}</td>
@@ -1989,7 +2026,7 @@ export default function Settings({
                         </tr>
                     </thead>
                     <tbody className="divide-y" style={{ borderColor: colors.border }}>
-                        {venues.map((venue) => (
+                        {safeVenues.map((venue) => (
                             <tr key={venue.id} className="hover:bg-white/5 transition-colors">
                                 <td className="p-4">
                                     <div className="flex items-center gap-2">
@@ -2055,7 +2092,7 @@ export default function Settings({
             </div>
             
             <div className="space-y-6">
-                {taxes.map((tax, idx) => (
+                {safeTaxes.map((tax, idx) => (
                     <div key={tax.id} className="p-6 rounded-xl border flex flex-col md:flex-row gap-6" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                         {/* Details */}
                         <div className="flex-1">
@@ -2066,7 +2103,8 @@ export default function Settings({
                                         type="number"
                                         value={tax.rate}
                                         onChange={(e) => {
-                                            const newTaxes = [...taxes];
+                                            const newTaxes = Array.isArray(taxes) ? [...taxes] : [];
+                                            if (!newTaxes[idx]) newTaxes[idx] = { ...tax, scope: { ...tax.scope } };
                                             newTaxes[idx].rate = Number(e.target.value);
                                             setTaxes(newTaxes);
                                         }}
@@ -2081,7 +2119,7 @@ export default function Settings({
                         <div className="flex-1 border-l pl-6" style={{ borderColor: colors.border }}>
                             <label className="block text-[10px] font-bold uppercase tracking-wider mb-3 opacity-70" style={{ color: colors.textMuted }}>Applied To Scope</label>
                             <div className="flex flex-wrap gap-3">
-                                {(Object.entries(tax.scope) as [string, boolean][]).map(([scopeKey, enabled]) => (
+                                {(Object.entries(tax.scope || {}) as [string, boolean][]).map(([scopeKey, enabled]) => (
                                     <label key={scopeKey} className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity">
                                         <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${enabled ? 'bg-primary border-primary' : 'bg-transparent'}`}
                                             style={{ borderColor: enabled ? colors.primary : colors.textMuted }}>
@@ -2091,7 +2129,8 @@ export default function Settings({
                                             type="checkbox"
                                             checked={enabled}
                                             onChange={() => {
-                                                const newTaxes = [...taxes];
+                                                const newTaxes = Array.isArray(taxes) ? [...taxes] : [];
+                                                if (!newTaxes[idx]) newTaxes[idx] = { ...tax, scope: { ...tax.scope } };
                                                 // @ts-ignore
                                                 newTaxes[idx].scope[scopeKey] = !enabled;
                                                 setTaxes(newTaxes);
@@ -2248,18 +2287,27 @@ export default function Settings({
                 </div>
                 <button
                     onClick={() => {
-                        const lastYear = financialData[financialData.length - 1].year;
-                        setFinancialData([...financialData, { year: lastYear + 1, months: generateInitialMonths() }]);
+                        setFinancialData((prev: any[]) => {
+                            const baseRows =
+                                Array.isArray(prev) && prev.length
+                                    ? prev
+                                    : [{ year: new Date().getFullYear(), months: generateInitialMonths() }];
+                            const maxYear = baseRows.reduce((max, row) => {
+                                const y = Number(row?.year || 0);
+                                return Number.isFinite(y) ? Math.max(max, y) : max;
+                            }, 0);
+                            return [...baseRows, { year: Math.max(maxYear, new Date().getFullYear()) + 1, months: generateInitialMonths() }];
+                        });
                     }}
                     className="px-4 py-2 rounded flex items-center gap-2 hover:brightness-110 transition-all text-sm font-bold"
                     style={{ backgroundColor: colors.primary, color: '#000' }}
                 >
-                    <Plus size={16} /> Add Year {financialData[financialData.length - 1].year + 1}
+                    <Plus size={16} /> Add Year {nextFinancialYear}
                 </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {financialData.map((data) => (
+                {normalizedFinancialData.map((data) => (
                     <div
                         key={data.year}
                         onClick={() => setSelectedYearDetails(data)}
@@ -2349,7 +2397,10 @@ export default function Settings({
                                 <button
                                     onClick={() => {
                                         if (window.confirm(`Are you sure you want to delete all financial data for ${selectedYearDetails.year}?`)) {
-                                            setFinancialData(financialData.filter(y => y.year !== selectedYearDetails.year));
+                                            setFinancialData((prev: any[]) => {
+                                                const kept = (Array.isArray(prev) ? prev : []).filter((y: any) => y.year !== selectedYearDetails.year);
+                                                return kept.length ? kept : [{ year: new Date().getFullYear(), months: generateInitialMonths() }];
+                                            });
                                             const itemId = selectedYearDetails.id || `${managingProperty?.id}_${selectedYearDetails.year}`;
                                             const suffix = managingProperty?.id ? `?propertyId=${encodeURIComponent(String(managingProperty.id))}` : '';
                                             fetch(apiUrl(`/api/financials/${itemId}${suffix}`), { method: 'DELETE' });

@@ -311,8 +311,16 @@ const isSeriesRequest = (req: any) => String(req?.requestType || '').toLowerCase
 const getPrimaryOperationalDate = (req: any): string => {
     const checkIn = parseYmd(req?.checkIn);
     const eventStart = parseYmd(req?.eventStart);
-    if (checkIn && eventStart) return checkIn <= eventStart ? checkIn : eventStart;
-    return checkIn || eventStart || '';
+    const agendaStart = (() => {
+        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+        const starts = agenda
+            .map((row: any) => parseYmd(row?.startDate || row?.endDate))
+            .filter(Boolean) as string[];
+        if (!starts.length) return '';
+        return starts.sort()[0];
+    })();
+    const candidates = [checkIn, eventStart, agendaStart].filter(Boolean).sort();
+    return candidates.length ? candidates[0] : '';
 };
 
 const getRequestCountDates = (req: any): string[] => {
@@ -393,22 +401,44 @@ const getMonthKey = (iso: string) => {
     return parsed ? parsed.slice(0, 7) : '';
 };
 
+type DashboardAxisGranularity = 'month' | 'day';
+type DashboardAxisPoint = { key: string; month: string };
+
 const monthNameToIndex = (name: any) => {
+    const num = Number(name);
+    if (Number.isFinite(num) && num >= 1 && num <= 12) return num - 1;
     const raw = String(name || '').trim().toLowerCase();
     const names = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-    return names.indexOf(raw);
+    const fullIdx = names.indexOf(raw);
+    if (fullIdx >= 0) return fullIdx;
+    const short = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    return short.indexOf(raw);
 };
 
-const buildMonthAxis = (range: { start: string; end: string }) => {
+const buildDashboardAxis = (range: { start: string; end: string }): { granularity: DashboardAxisGranularity; points: DashboardAxisPoint[] } => {
     const startIso = parseYmd(range.start);
     const endIso = parseYmd(range.end);
-    if (!startIso || !endIso || startIso > endIso) return [];
+    if (!startIso || !endIso || startIso > endIso) return { granularity: 'month', points: [] };
     const start = new Date(`${startIso}T00:00:00`);
     const end = new Date(`${endIso}T00:00:00`);
+    const sameMonth = start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth();
+    if (sameMonth) {
+        const points: DashboardAxisPoint[] = [];
+        const cursor = new Date(start);
+        while (cursor <= end) {
+            const iso = toYmd(cursor);
+            points.push({
+                key: iso,
+                month: String(cursor.getDate()).padStart(2, '0'),
+            });
+            cursor.setDate(cursor.getDate() + 1);
+        }
+        return { granularity: 'day', points };
+    }
     const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
     const endBoundary = new Date(end.getFullYear(), end.getMonth(), 1);
     const singleYear = start.getFullYear() === end.getFullYear();
-    const out: Array<{ key: string; month: string }> = [];
+    const out: DashboardAxisPoint[] = [];
     while (cursor <= endBoundary) {
         const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
         const label = singleYear
@@ -417,7 +447,13 @@ const buildMonthAxis = (range: { start: string; end: string }) => {
         out.push({ key, month: label });
         cursor.setMonth(cursor.getMonth() + 1);
     }
-    return out;
+    return { granularity: 'month', points: out };
+};
+
+const getDashboardAxisKey = (iso: string, granularity: DashboardAxisGranularity) => {
+    const parsed = parseYmd(iso);
+    if (!parsed) return '';
+    return granularity === 'day' ? parsed : getMonthKey(parsed);
 };
 
 const recentRequests = [
@@ -590,9 +626,6 @@ function computeRequestTotalWithTax(req: any, taxes: any[] = []) {
 
 /** Dashboard / KPI revenue: line-item subtotals only (no tax/fees). Uses persisted grandTotalNoTax when lines are empty. */
 function computeRequestCostBreakdown(req: any) {
-    if (normalizeStatus(req?.status) === 'Cancelled') {
-        return { roomsRevenue: 0, eventRevenue: 0, transportRevenue: 0, totalRevenue: 0 };
-    }
     const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
     const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
     const transport = Array.isArray(req?.transportation) ? req.transportation : [];
@@ -617,11 +650,26 @@ function computeRequestCostBreakdown(req: any) {
         return sum + (count * rate * nights);
     }, 0);
     let eventRevenue = agenda.reduce((sum: number, item: any) => {
-        return sum + (Number(item?.rate || 0) * Number(item?.pax || 0)) + Number(item?.rental || 0);
+        const start = parseYmd(item?.startDate);
+        const end = parseYmd(item?.endDate || item?.startDate);
+        let rowDays = 1;
+        if (start && end) {
+            const ms = new Date(`${end}T00:00:00`).getTime() - new Date(`${start}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        }
+        const rowCost = (Number(item?.rate || 0) * Number(item?.pax || 0)) + Number(item?.rental || 0);
+        return sum + (rowCost * rowDays);
     }, 0);
     const transportRevenue = transport.reduce((sum: number, row: any) => sum + Number(row?.costPerWay || 0), 0);
     let lineSum = roomsRevenue + eventRevenue + transportRevenue;
-    const storedNoTax = asNumber(req?.grandTotalNoTax ?? req?.totalCostNoTax ?? 0);
+    const storedNoTax = asNumber(
+        req?.grandTotalNoTax ??
+        req?.totalCostNoTax ??
+        req?.totalCost ??
+        req?.grandTotal ??
+        req?.totalAmount ??
+        0
+    );
     if (lineSum <= 0 && storedNoTax > 0) {
         if (isMiceRequest(req)) {
             eventRevenue = storedNoTax;
@@ -2631,19 +2679,34 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                     <Bar dataKey="totalRequests" name="Total Requests" fill={colors.blue} radius={[4, 4, 0, 0]} barSize={20} />
                 </BarChart>
             ) : chartTab === 'Rooms' ? (
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
-                    <defs>
-                        <linearGradient id="colorRooms" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor={colors.cyan} stopOpacity={0.3} />
-                            <stop offset="95%" stopColor={colors.cyan} stopOpacity={0} />
-                        </linearGradient>
-                    </defs>
+                <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
-                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
-                    <Area type="monotone" dataKey="rooms" stroke={colors.cyan} strokeWidth={2} fill="url(#colorRooms)" />
-                </AreaChart>
+                    <YAxis
+                        yAxisId="left"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        allowDecimals={false}
+                        domain={[0, 'dataMax']}
+                    />
+                    <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        tickFormatter={moneyTickFormatter}
+                    />
+                    <Tooltip
+                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                        formatter={moneyTooltipFormatter}
+                    />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
+                    <Bar yAxisId="left" dataKey="rooms" name="Rooms" fill={colors.cyan} radius={[4, 4, 0, 0]} barSize={16} />
+                    <Line yAxisId="left" type="monotone" dataKey="roomNights" name="Room Nights" stroke={colors.blue} strokeWidth={2} dot={{ r: 2 }} />
+                    <Line yAxisId="right" type="monotone" dataKey="roomsRevenue" name="Rooms Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
+                </ComposedChart>
             ) : chartTab === 'Events' || chartTab === 'MICE' ? (
                 <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
@@ -3498,7 +3561,7 @@ export default function AdvancedSalesDashboard() {
         return () => {
             cancelled = true;
         };
-    }, [activeProperty?.id]);
+    }, [activeProperty?.id, currentView]);
 
     useEffect(() => {
         let cancelled = false;
@@ -3814,13 +3877,17 @@ export default function AdvancedSalesDashboard() {
     }, [dashboardCurrentRange, dashboardLyRange]);
 
     const chartData = useMemo(() => {
-        const axis = buildMonthAxis(dashboardCurrentRange);
+        const axisConfig = buildDashboardAxis(dashboardCurrentRange);
+        const axis = axisConfig.points;
+        const keyFor = (iso: string) => getDashboardAxisKey(iso, axisConfig.granularity);
         const byMonth = new Map<string, any>(
             axis.map((m) => [m.key, {
                 month: m.month,
                 revenue: 0,
                 totalRequests: 0,
                 rooms: 0,
+                roomNights: 0,
+                roomsRevenue: 0,
                 miceRequests: 0,
                 miceRevenue: 0,
                 inquiry: 0,
@@ -3835,7 +3902,7 @@ export default function AdvancedSalesDashboard() {
         for (const req of scopedRequests) {
             const primaryDate = getPrimaryOperationalDate(req);
             if (!primaryDate || !isIsoInRange(primaryDate, dashboardCurrentRange)) continue;
-            const monthKey = getMonthKey(primaryDate);
+            const monthKey = keyFor(primaryDate);
             const row = byMonth.get(monthKey);
             if (!row) continue;
 
@@ -3850,7 +3917,7 @@ export default function AdvancedSalesDashboard() {
             if (!skipPerf) {
                 for (const unitDate of unitDates) {
                     if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
-                    const unitRow = byMonth.get(getMonthKey(unitDate));
+                    const unitRow = byMonth.get(keyFor(unitDate));
                     if (unitRow) unitRow.totalRequests += 1;
                 }
             }
@@ -3868,19 +3935,50 @@ export default function AdvancedSalesDashboard() {
             if (!skipPerf) {
                 const roomRows = Array.isArray(req?.rooms) ? req.rooms : [];
                 let roomContributed = false;
+                let roomRevenueAllocated = 0;
                 for (const rr of roomRows) {
                     const roomDate = parseYmd(rr?.arrival || req?.checkIn);
                     if (!roomDate || !isIsoInRange(roomDate, dashboardCurrentRange)) continue;
-                    const rrMonth = byMonth.get(getMonthKey(roomDate));
+                    const rrMonth = byMonth.get(keyFor(roomDate));
                     if (!rrMonth) continue;
-                    rrMonth.rooms += Number(rr?.count || 0);
+                    const count = Number(rr?.count || 0);
+                    const rate = Number(rr?.rate || 0);
+                    const inDate = parseYmd(rr?.arrival || req?.checkIn);
+                    const outDate = parseYmd(rr?.departure || req?.checkOut);
+                    let rowNights = Number(req?.nights || 0);
+                    if (inDate && outDate) {
+                        const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
+                        if (!Number.isNaN(ms)) rowNights = Math.max(0, Math.ceil(ms / 86400000));
+                    }
+                    rrMonth.rooms += count;
+                    rrMonth.roomNights += count * Math.max(0, rowNights);
+                    const rowRevenue = count * rate * Math.max(0, rowNights);
+                    rrMonth.roomsRevenue += rowRevenue;
+                    roomRevenueAllocated += rowRevenue;
                     roomContributed = true;
                 }
                 if (!roomContributed) {
                     const fallbackRoomDate = parseYmd(req?.checkIn);
+                    if (
+                        fallbackRoomDate &&
+                        isIsoInRange(fallbackRoomDate, dashboardCurrentRange) &&
+                        (Number(req?.totalRooms || 0) > 0 || Number(breakdown.roomsRevenue || 0) > 0)
+                    ) {
+                        const fallbackMonth = byMonth.get(keyFor(fallbackRoomDate));
+                        if (fallbackMonth) {
+                            const totalRooms = Number(req?.totalRooms || 0);
+                            const totalRoomNights = Number(req?.totalRoomNights || 0);
+                            const nights = Number(req?.nights || 0);
+                            fallbackMonth.rooms += totalRooms;
+                            fallbackMonth.roomNights += totalRoomNights > 0 ? totalRoomNights : totalRooms * Math.max(0, nights);
+                            fallbackMonth.roomsRevenue += Number(breakdown.roomsRevenue || 0);
+                        }
+                    }
+                } else if (roomRevenueAllocated <= 0 && Number(breakdown.roomsRevenue || 0) > 0) {
+                    const fallbackRoomDate = parseYmd(req?.checkIn);
                     if (fallbackRoomDate && isIsoInRange(fallbackRoomDate, dashboardCurrentRange)) {
-                        const fallbackMonth = byMonth.get(getMonthKey(fallbackRoomDate));
-                        if (fallbackMonth) fallbackMonth.rooms += Number(req?.totalRooms || 0);
+                        const fallbackMonth = byMonth.get(keyFor(fallbackRoomDate));
+                        if (fallbackMonth) fallbackMonth.roomsRevenue += Number(breakdown.roomsRevenue || 0);
                     }
                 }
             }
@@ -3891,6 +3989,8 @@ export default function AdvancedSalesDashboard() {
             revenue: 0,
             totalRequests: 0,
             rooms: 0,
+            roomNights: 0,
+            roomsRevenue: 0,
             miceRequests: 0,
             miceRevenue: 0,
             inquiry: 0,
@@ -3933,16 +4033,28 @@ export default function AdvancedSalesDashboard() {
             const y = Number(yearRow?.year);
             if (!Number.isFinite(y)) continue;
             const months = Array.isArray(yearRow?.months) ? yearRow.months : [];
-            for (const monthRow of months) {
-                const idx = monthNameToIndex(monthRow?.month);
-                if (idx < 0) continue;
-                const w = overlapWeight(y, idx);
-                if (w <= 0) continue;
-                roomsBudget += Number(monthRow?.roomsBudget || 0) * w;
-                roomsForecast += Number(monthRow?.roomsForecast || 0) * w;
-                fnbBudget += Number(monthRow?.foodAndBeverageBudget || 0) * w;
-                fnbForecast += Number(monthRow?.foodAndBeverageForecast || 0) * w;
+            if (months.length > 0) {
+                for (const monthRow of months) {
+                    const idx = monthNameToIndex(monthRow?.month);
+                    if (idx < 0) continue;
+                    const w = overlapWeight(y, idx);
+                    if (w <= 0) continue;
+                    roomsBudget += Number(monthRow?.roomsBudget ?? monthRow?.budget ?? 0) * w;
+                    roomsForecast += Number(monthRow?.roomsForecast ?? monthRow?.forecastRevenue ?? monthRow?.forecast ?? 0) * w;
+                    fnbBudget += Number(monthRow?.foodAndBeverageBudget ?? monthRow?.foodBeverageBudget ?? monthRow?.fnbBudget ?? 0) * w;
+                    fnbForecast += Number(monthRow?.foodAndBeverageForecast ?? monthRow?.foodBeverageForecast ?? monthRow?.fnbForecast ?? 0) * w;
+                }
+                continue;
             }
+            // Backward-compatible row shape: one row per month with year/month/budget/forecast fields.
+            const singleMonthIdx = monthNameToIndex(yearRow?.month);
+            if (singleMonthIdx < 0) continue;
+            const w = overlapWeight(y, singleMonthIdx);
+            if (w <= 0) continue;
+            roomsBudget += Number(yearRow?.roomsBudget ?? yearRow?.budget ?? 0) * w;
+            roomsForecast += Number(yearRow?.roomsForecast ?? yearRow?.forecastRevenue ?? yearRow?.forecast ?? 0) * w;
+            fnbBudget += Number(yearRow?.foodAndBeverageBudget ?? yearRow?.foodBeverageBudget ?? yearRow?.fnbBudget ?? 0) * w;
+            fnbForecast += Number(yearRow?.foodAndBeverageForecast ?? yearRow?.foodBeverageForecast ?? yearRow?.fnbForecast ?? 0) * w;
         }
 
         let roomsActual = 0;
@@ -3951,9 +4063,10 @@ export default function AdvancedSalesDashboard() {
             const primaryDate = getPrimaryOperationalDate(req);
             if (!primaryDate || !isIsoInRange(primaryDate, range)) continue;
             if (isDashboardExcludedRequest(req)) continue;
+            if (normalizeStatus(req?.status) !== 'Actual') continue;
             const breakdown = computeRequestCostBreakdown(req);
             if (breakdown.roomsRevenue > 0) roomsActual += breakdown.roomsRevenue;
-            if (isMiceRequest(req)) fnbActual += breakdown.eventRevenue;
+            if (breakdown.eventRevenue > 0) fnbActual += breakdown.eventRevenue;
         }
 
         const pct = (value: number, base: number) => (base > 0 ? (value / base) * 100 : 0);

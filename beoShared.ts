@@ -148,10 +148,13 @@ export function calculateAccFinancialsForRequest(
 
     const transCostNoTax = (form.transportation || []).reduce((acc: number, t: any) => acc + (Number(t.costPerWay || 0)), 0);
 
-    const eventCostNoTax = (form.agenda || []).reduce(
-        (acc: number, item: any) => acc + (Number(item.rate) * Number(item.pax)) + Number(item.rental),
-        0
-    ) || 0;
+    const eventCostNoTax = (form.agenda || []).reduce((acc: number, item: any) => {
+        const start = String(item?.startDate || '').slice(0, 10);
+        const end = String(item?.endDate || item?.startDate || '').slice(0, 10);
+        const rowDays = start && end ? inclusiveCalendarDays(start, end) : 1;
+        const safeDays = Math.max(1, rowDays || 1);
+        return acc + (((Number(item.rate) || 0) * (Number(item.pax) || 0)) + (Number(item.rental) || 0)) * safeDays;
+    }, 0) || 0;
 
     let roomsTaxMultiplier = 0;
     let eventTaxMultiplier = 0;
