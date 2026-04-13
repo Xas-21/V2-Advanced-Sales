@@ -17,6 +17,13 @@ export interface CloudinaryUploadResult {
     resource_type?: string;
 }
 
+interface CloudinaryDeleteRequest {
+    publicId: string;
+    resourceType?: 'raw' | 'image' | 'video' | 'auto';
+    deliveryType?: 'upload' | 'private' | 'authenticated';
+    invalidate?: boolean;
+}
+
 function parseErrorText(raw: string): string {
     const trimmed = String(raw || '').trim();
     if (!trimmed) return '';
@@ -62,4 +69,16 @@ export async function uploadFileToCloudinary(file: File, options?: { folder?: st
         throw new Error(text || 'Cloudinary upload failed.');
     }
     return uploadRes.json();
+}
+
+export async function deleteFileFromCloudinary(body: CloudinaryDeleteRequest): Promise<void> {
+    const res = await fetch(apiUrl('/api/uploads/cloudinary/delete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const text = parseErrorText(await res.text());
+        throw new Error(text || 'Failed to delete file from Cloudinary.');
+    }
 }

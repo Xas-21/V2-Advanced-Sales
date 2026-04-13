@@ -1,7 +1,7 @@
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import { jsPDF } from 'jspdf';
-import { uploadFileToCloudinary } from './cloudinaryUpload';
+import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 import { apiUrl } from './backendApi';
 
 export type ContractStatus = 'Generated' | 'Signed' | 'Expired';
@@ -196,11 +196,12 @@ function getByPath(obj: any, path: string): any {
 }
 
 async function pushTemplateToBackend(template: ContractTemplate): Promise<void> {
-    await fetch(apiUrl('/api/contracts/templates'), {
+    const res = await fetch(apiUrl('/api/contracts/templates'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(template),
     });
+    if (!res.ok) throw new Error(`Template sync failed (${res.status})`);
 }
 
 export async function getContractTemplates(propertyId?: string): Promise<ContractTemplate[]> {
@@ -211,26 +212,6 @@ export async function getContractTemplates(propertyId?: string): Promise<Contrac
         if (!res.ok) throw new Error(`Failed templates fetch (${res.status})`);
         const remote = (await res.json()) as ContractTemplate[];
         writeJson(TEMPLATE_KEY, remote);
-
-        // Backfill old browser-only templates into shared backend once.
-        const remoteIds = new Set(remote.map((t) => String(t.id)));
-        const localMissing = local.filter((t) => !remoteIds.has(String(t.id)));
-        for (const tpl of localMissing) {
-            try {
-                await pushTemplateToBackend(tpl);
-            } catch {
-                /* best-effort sync */
-            }
-        }
-        if (localMissing.length > 0) {
-            const merged = [...remote];
-            for (const t of localMissing) {
-                if (!merged.some((x) => String(x.id) === String(t.id))) merged.unshift(t);
-            }
-            writeJson(TEMPLATE_KEY, merged);
-            dispatchContractsChanged();
-            return merged.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
-        }
         return remote;
     } catch {
         return local.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
@@ -238,6 +219,20 @@ export async function getContractTemplates(propertyId?: string): Promise<Contrac
 }
 
 export async function deleteContractTemplate(templateId: string): Promise<void> {
+    const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
+    const target = all.find((t) => String(t.id) === String(templateId));
+    if (target?.templatePublicId) {
+        try {
+            await deleteFileFromCloudinary({
+                publicId: target.templatePublicId,
+                resourceType: 'raw',
+                deliveryType: 'upload',
+                invalidate: true,
+            });
+        } catch {
+            /* proceed with system delete even if cloud delete fails */
+        }
+    }
     try {
         await fetch(apiUrl(`/api/contracts/templates/${encodeURIComponent(templateId)}`), {
             method: 'DELETE',
@@ -245,7 +240,6 @@ export async function deleteContractTemplate(templateId: string): Promise<void> 
     } catch {
         /* keep local delete even if remote fails */
     }
-    const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
     const next = all.filter((t) => String(t.id) !== String(templateId));
     writeJson(TEMPLATE_KEY, next);
     dispatchContractsChanged();

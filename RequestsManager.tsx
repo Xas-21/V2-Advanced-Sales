@@ -38,7 +38,7 @@ import {
     calculateAccFinancialsForRequest,
 } from './beoShared';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
-import { uploadFileToCloudinary } from './cloudinaryUpload';
+import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 
 interface RequestsManagerProps {
     theme: any;
@@ -786,10 +786,36 @@ export default function RequestsManager({
         </div>
     );
 
+    const extractRequestDocPublicIds = (req: any): string[] => {
+        const ids: string[] = [];
+        const invoices = req?.invoices;
+        if (!invoices || typeof invoices !== 'object') return ids;
+        for (const value of Object.values(invoices as Record<string, any>)) {
+            if (!value || typeof value !== 'object') continue;
+            const pid = String((value as any).publicId || (value as any).public_id || '').trim();
+            if (pid) ids.push(pid);
+        }
+        return ids;
+    };
+
     const deleteRequest = async (id: string) => {
         if (readOnlyOperational) return;
         setIsLoading(true);
         try {
+            const req = requests.find((r: any) => String(r.id) === String(id));
+            const publicIds = extractRequestDocPublicIds(req);
+            for (const pid of publicIds) {
+                try {
+                    await deleteFileFromCloudinary({
+                        publicId: pid,
+                        resourceType: 'raw',
+                        deliveryType: 'upload',
+                        invalidate: true,
+                    });
+                } catch {
+                    /* continue deleting request even if cloud cleanup fails */
+                }
+            }
             const res = await fetch(apiUrl(`/api/requests/${id}`), {
                 method: 'DELETE'
             });
@@ -1135,7 +1161,20 @@ export default function RequestsManager({
             return null;
         };
 
-        const clearRequestDoc = (docId: RequestDocId) => {
+        const clearRequestDoc = async (docId: RequestDocId) => {
+            const current = getRequestDocMeta(docId);
+            if (current?.publicId) {
+                try {
+                    await deleteFileFromCloudinary({
+                        publicId: current.publicId,
+                        resourceType: 'raw',
+                        deliveryType: 'upload',
+                        invalidate: true,
+                    });
+                } catch {
+                    /* keep system cleanup even if cloud delete fails */
+                }
+            }
             setAccForm((prev: any) => ({
                 ...prev,
                 invoices: {
@@ -1148,6 +1187,19 @@ export default function RequestsManager({
         const uploadRequestDoc = async (docId: RequestDocId, file: File) => {
             setUploadingDocs((prev) => ({ ...prev, [docId]: true }));
             try {
+                const current = getRequestDocMeta(docId);
+                if (current?.publicId) {
+                    try {
+                        await deleteFileFromCloudinary({
+                            publicId: current.publicId,
+                            resourceType: 'raw',
+                            deliveryType: 'upload',
+                            invalidate: true,
+                        });
+                    } catch {
+                        /* continue with new upload */
+                    }
+                }
                 const uploaded = await uploadFileToCloudinary(file, {
                     folder: `visatour/requests/${activeProperty?.id || 'global'}`,
                 });
@@ -1689,7 +1741,7 @@ export default function RequestsManager({
                                                 {!readOnlyOperational && (
                                                     <button
                                                         type="button"
-                                                        onClick={() => clearRequestDoc(docId)}
+                                                    onClick={() => void clearRequestDoc(docId)}
                                                         className="px-2 py-0.5 rounded border"
                                                         style={{ borderColor: colors.border, color: colors.textMuted }}
                                                     >
