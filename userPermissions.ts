@@ -19,6 +19,7 @@ export const ALL_PERMISSION_IDS = [
     'tasks.deleteAny',
     'accounts.delete',
     'contracts.delete',
+    'contracts.templates.delete',
     'requests.delete',
     'requests.deletePayments',
     'crm.deleteCalls',
@@ -35,6 +36,7 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'tasks.deleteAny': 'Delete any task (To-Do)',
     'accounts.delete': 'Delete accounts',
     'contracts.delete': 'Delete contracts',
+    'contracts.templates.delete': 'Delete contract templates (Contracts library)',
     'requests.delete': 'Delete requests',
     'requests.deletePayments': 'Delete request payment / deposit lines',
     'crm.deleteCalls': 'Delete sales calls',
@@ -133,6 +135,10 @@ export function canDeleteAccounts(user: any): boolean {
 
 export function canDeleteContracts(user: any): boolean {
     return can(user, 'contracts.delete');
+}
+
+export function canDeleteContractTemplates(user: any): boolean {
+    return can(user, 'contracts.templates.delete');
 }
 
 export function canDeleteRequests(user: any): boolean {

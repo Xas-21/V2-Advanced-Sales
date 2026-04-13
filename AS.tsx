@@ -114,6 +114,7 @@ import {
     canAccessReports,
     canDeleteTasks,
     canDeleteContracts,
+    canDeleteContractTemplates,
     canMutateOperational,
     canDeleteRequests,
 } from './userPermissions';
@@ -5271,6 +5272,7 @@ export default function AdvancedSalesDashboard() {
                             currentUser={currentUser}
                             accountTypeOptions={propertyAccountTypeLabels}
                             canDeleteContracts={canDeleteContracts(currentUser)}
+                            canDeleteContractTemplates={canDeleteContractTemplates(currentUser)}
                             initialAccountId={pendingContractsAccountId}
                             onConsumedInitialAccountId={() => setPendingContractsAccountId(null)}
                         />

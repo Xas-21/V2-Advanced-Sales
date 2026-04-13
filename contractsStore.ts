@@ -164,6 +164,13 @@ export function getContractTemplates(propertyId?: string): ContractTemplate[] {
     return list.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
 }
 
+export function deleteContractTemplate(templateId: string): void {
+    const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
+    const next = all.filter((t) => String(t.id) !== String(templateId));
+    writeJson(TEMPLATE_KEY, next);
+    dispatchContractsChanged();
+}
+
 export async function uploadContractTemplate(params: {
     propertyId?: string;
     file: File;

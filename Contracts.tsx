@@ -15,6 +15,7 @@ import {
     CONTRACTS_CHANGED_EVENT,
     attachSignedContractFile,
     downloadContractArtifact,
+    deleteContractTemplate,
     deleteContractRecord,
     generateContractFromTemplate,
     getContractRecords,
@@ -37,6 +38,7 @@ interface ContractsProps {
     currentUser?: any;
     accountTypeOptions?: string[];
     canDeleteContracts?: boolean;
+    canDeleteContractTemplates?: boolean;
     initialAccountId?: string | null;
     onConsumedInitialAccountId?: () => void;
 }
@@ -68,6 +70,7 @@ export default function Contracts({
     currentUser,
     accountTypeOptions,
     canDeleteContracts = false,
+    canDeleteContractTemplates = false,
     initialAccountId,
     onConsumedInitialAccountId,
 }: ContractsProps) {
@@ -314,19 +317,33 @@ export default function Contracts({
                             <p className="text-sm" style={{ color: colors.textMuted }}>No templates uploaded yet.</p>
                         ) : (
                             templates.map((t) => (
-                                <button
-                                    key={t.id}
-                                    onClick={() => {
-                                        setSelectedTemplateId(t.id);
-                                        setAgreementFileName(t.name);
-                                        setCurrentView('generate');
-                                    }}
-                                    className="w-full text-left p-3 rounded border hover:bg-white/5"
-                                    style={{ borderColor: colors.border }}
-                                >
-                                    <p className="font-bold text-sm" style={{ color: colors.textMain }}>{t.name}</p>
-                                    <p className="text-xs" style={{ color: colors.textMuted }}>{t.variableCount} variables</p>
-                                </button>
+                                <div key={t.id} className="w-full p-3 rounded border" style={{ borderColor: colors.border }}>
+                                    <button
+                                        onClick={() => {
+                                            setSelectedTemplateId(t.id);
+                                            setAgreementFileName(t.name);
+                                            setCurrentView('generate');
+                                        }}
+                                        className="w-full text-left hover:bg-white/5 rounded"
+                                    >
+                                        <p className="font-bold text-sm" style={{ color: colors.textMain }}>{t.name}</p>
+                                        <p className="text-xs" style={{ color: colors.textMuted }}>{t.variableCount} variables</p>
+                                    </button>
+                                    {canDeleteContractTemplates && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (!window.confirm(`Delete template "${t.name}" from library?`)) return;
+                                                deleteContractTemplate(t.id);
+                                                if (selectedTemplateId === t.id) setSelectedTemplateId('');
+                                            }}
+                                            className="mt-2 px-2 py-1 rounded border text-[11px]"
+                                            style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#ef4444' }}
+                                        >
+                                            <Trash2 size={12} className="inline mr-1" /> Delete Template
+                                        </button>
+                                    )}
+                                </div>
                             ))
                         )}
                     </div>
