@@ -13,8 +13,9 @@ import {
     Wine,
     BedDouble,
     Users,
+    PhoneCall,
 } from 'lucide-react';
-import { filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
+import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 
@@ -23,13 +24,14 @@ interface ReportsProps {
     activeProperty?: any;
     sharedRequests?: any[];
     accounts?: any[];
+    crmLeads?: Record<string, any[]>;
     tasks?: any[];
     currency?: CurrencyCode;
 }
 
 const initialSavedReports: any[] = [];
 
-type ReportEntity = 'Requests' | 'Accounts' | 'MICE' | 'Tasks';
+type ReportEntity = 'Requests' | 'Accounts' | 'MICE' | 'Tasks' | 'Sales Calls';
 
 function normalizeRequestTypeKey(raw: string = '') {
     const t = String(raw || '').toLowerCase().trim();
@@ -116,6 +118,7 @@ export default function Reports({
     activeProperty,
     sharedRequests = [],
     accounts = [],
+    crmLeads = {},
     tasks = [],
     currency = 'SAR',
 }: ReportsProps) {
@@ -150,11 +153,24 @@ export default function Reports({
         );
     }, [tasks, pid]);
 
+    const scopedSalesCalls = useMemo(() => {
+        const flat = flattenCrmLeads(crmLeads || {});
+        return flat.filter((call: any) => {
+            if (!pid) return true;
+            if (call?.propertyId && String(call.propertyId) === String(pid)) return true;
+            const aid = String(call?.accountId || '').trim();
+            const acc = aid ? (accounts || []).find((a: any) => String(a?.id || '') === aid) : null;
+            if (acc?.propertyId && String(acc.propertyId) === String(pid)) return true;
+            return false;
+        });
+    }, [crmLeads, accounts, pid]);
+
     const entities = [
         { id: 'Requests' as ReportEntity, icon: BedDouble, label: 'Requests' },
         { id: 'Accounts' as ReportEntity, icon: Briefcase, label: 'Accounts' },
         { id: 'MICE' as ReportEntity, icon: Wine, label: 'MICE' },
         { id: 'Tasks' as ReportEntity, icon: Users, label: 'Tasks' },
+        { id: 'Sales Calls' as ReportEntity, icon: PhoneCall, label: 'Sales Calls' },
     ];
 
     const availableColumns: Record<ReportEntity, string[]> = {
@@ -162,9 +178,12 @@ export default function Reports({
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
         MICE: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount'],
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
+        'Sales Calls': ['ID', 'Date', 'Location', 'Address', 'Name', 'Position', 'Subject', 'Company', 'Stage', 'Outcome', 'Follow-up', 'Next Step', 'Expected Revenue', 'Owner'],
     };
 
-    const statusOptions = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'];
+    const statusOptions = selectedEntity === 'Sales Calls'
+        ? ['Upcoming Sales Calls', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
+        : ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'];
 
     const handleEntityChange = (entity: ReportEntity) => {
         setSelectedEntity(entity);
@@ -254,6 +273,67 @@ export default function Reports({
 
         const requestsFiltered = scopedRequests.filter((r) => passRequestFilters(r, false));
         const miceFiltered = scopedRequests.filter((r) => passRequestFilters(r, true));
+
+        if (selectedEntity === 'Sales Calls') {
+            const stageLabel = (raw: string) => {
+                const s = String(raw || '').toLowerCase().trim();
+                if (s === 'new') return 'Upcoming Sales Calls';
+                if (s === 'qualified') return 'QUALIFIED';
+                if (s === 'proposal') return 'PROPOSAL';
+                if (s === 'negotiation') return 'NEGOTIATION';
+                if (s === 'won') return 'WON';
+                if (s === 'notinterested') return 'Not Interested';
+                return String(raw || '—');
+            };
+            const selectedStatusesNormalized = (st || []).map((x: string) => x.trim().toLowerCase());
+            const rows = scopedSalesCalls
+                .filter((lead: any) => {
+                    const date = String(lead?.lastContact || lead?.date || '').slice(0, 10);
+                    if (!inDateRangeYMD(date, start, end)) return false;
+                    if (!selectedStatusesNormalized.length) return true;
+                    const label = stageLabel(String(lead?.stage || '')).toLowerCase();
+                    return selectedStatusesNormalized.includes(label);
+                })
+                .map((lead: any) => {
+                    const stage = stageLabel(String(lead?.stage || ''));
+                    const city = String(lead?.city || '').trim();
+                    const country = String(lead?.country || '').trim();
+                    const street = String(lead?.street || '').trim();
+                    const address = [street, city, country].filter(Boolean).join(', ');
+                    const outcome = String(lead?.description || '').trim() || '—';
+                    const followUpDate = String(lead?.followUpDate || '').trim();
+                    return {
+                        ID: String(lead?.id || '—'),
+                        Date: String(lead?.lastContact || lead?.date || '—').slice(0, 10) || '—',
+                        Location: [city, country].filter(Boolean).join(', ') || '—',
+                        Address: address || '—',
+                        Name: String(lead?.contact || '—'),
+                        Position: String(lead?.position || '—'),
+                        Subject: String(lead?.subject || '—'),
+                        Company: String(lead?.company || '—'),
+                        Stage: stage,
+                        Outcome: outcome,
+                        'Follow-up': followUpDate || 'No follow-up',
+                        'Next Step': String(lead?.nextStep || '—'),
+                        'Expected Revenue': formatSar(Number(lead?.value || 0), selectedCurrency),
+                        Owner: String(lead?.accountManager || lead?.ownerUserId || '—'),
+                    };
+                });
+
+            return {
+                rows,
+                summary: {
+                    'Total sales calls': rows.length,
+                    'With follow-up': rows.filter((r: any) => String(r['Follow-up']) !== 'No follow-up').length,
+                    'Open opportunities': rows.filter((r: any) => ['Upcoming Sales Calls', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION'].includes(String(r.Stage))).length,
+                    'Expected revenue': formatSar(
+                        rows.reduce((sum: number, r: any) => sum + (parseFloat(String(r['Expected Revenue']).replace(/[^\d.-]/g, '')) || 0), 0),
+                        selectedCurrency
+                    ),
+                },
+                exportColumns: availableColumns['Sales Calls'],
+            };
+        }
 
         if (selectedEntity === 'Requests' || selectedEntity === 'MICE') {
             const source = selectedEntity === 'MICE' ? miceFiltered : requestsFiltered;
@@ -387,12 +467,12 @@ export default function Reports({
             },
             exportColumns: availableColumns.Tasks,
         };
-    }, [selectedEntity, scopedRequests, scopedTasks, accounts, filters.dateRange, filters.statuses, filters.valueRange, selectedCurrency]);
+    }, [selectedEntity, scopedRequests, scopedTasks, scopedSalesCalls, accounts, filters.dateRange, filters.statuses, filters.valueRange, selectedCurrency]);
 
     const previewData = reportPack.rows;
 
     const showDateFilters = selectedEntity !== 'Accounts';
-    const showStatusFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE';
+    const showStatusFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls';
     const showValueFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE';
 
     const handleExport = () => {
@@ -531,7 +611,7 @@ export default function Reports({
                     <div>
                         <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Report Builder</h1>
                         <p className="text-sm" style={{ color: colors.textMuted }}>
-                            Professional reporting for Requests, Accounts, MICE, and Tasks.
+                            Professional reporting for Requests, Accounts, MICE, Tasks, and Sales Calls.
                             {activeProperty?.name ? (
                                 <span className="block mt-1 text-xs font-bold" style={{ color: colors.primary }}>Scope: {activeProperty.name}</span>
                             ) : null}

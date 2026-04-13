@@ -5282,6 +5282,7 @@ export default function AdvancedSalesDashboard() {
                             activeProperty={activeProperty}
                             sharedRequests={sharedRequests}
                             accounts={accounts}
+                            crmLeads={crmLeads}
                             tasks={tasks}
                             currency={currentCurrency}
                         />
