@@ -2,6 +2,7 @@ import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import { jsPDF } from 'jspdf';
 import { uploadFileToCloudinary } from './cloudinaryUpload';
+import { apiUrl } from './backendApi';
 
 export type ContractStatus = 'Generated' | 'Signed' | 'Expired';
 export type ContractOutputType = 'word' | 'pdf';
@@ -100,6 +101,30 @@ function formatDateYmd(d = new Date()): string {
     return d.toISOString().slice(0, 10);
 }
 
+function formatDateLong(value: string): string {
+    const v = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    const [y, m, d] = v.split('-').map((x) => Number(x));
+    if (!y || !m || !d) return v;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (Number.isNaN(dt.getTime())) return v;
+    const day = dt.getUTCDate();
+    const suffix = (n: number) => {
+        if (n % 100 >= 11 && n % 100 <= 13) return 'th';
+        if (n % 10 === 1) return 'st';
+        if (n % 10 === 2) return 'nd';
+        if (n % 10 === 3) return 'rd';
+        return 'th';
+    };
+    const month = dt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+    return `${day}${suffix(day)} ${month} ${dt.getUTCFullYear()}`;
+}
+
+function isDateLikeKey(rawKey: string): boolean {
+    const n = normalizeLookupKey(rawKey);
+    return n === 'today' || n === 'currentdate' || n.includes('startdate') || n.includes('fromdate') || n.includes('enddate') || n.includes('todate') || n.includes('expirydate') || n.includes('expirationdate') || n === 'date';
+}
+
 function autoExpire(record: ContractRecord): ContractRecord {
     if (!record.endDate) return record;
     if (record.status === 'Signed' || record.status === 'Generated') {
@@ -134,10 +159,21 @@ function toNestedValues(values: Record<string, string>): Record<string, any> {
         for (let i = 0; i < parts.length; i += 1) {
             const p = parts[i];
             if (!p) continue;
-            if (i === parts.length - 1) cur[p] = v ?? '';
-            else {
-                cur[p] = cur[p] || {};
-                cur = cur[p];
+            if (i === parts.length - 1) {
+                if (cur && typeof cur === 'object') cur[p] = v ?? '';
+            } else {
+                const nextVal = cur[p];
+                if (nextVal == null) {
+                    cur[p] = {};
+                    cur = cur[p];
+                } else if (typeof nextVal === 'object' && !Array.isArray(nextVal)) {
+                    cur = nextVal;
+                } else {
+                    // Conflict between flat and dotted variables (e.g., name + name.position).
+                    // Skip nested assignment and let normalized flat lookup resolve this tag.
+                    cur = null;
+                    break;
+                }
             }
         }
     });
@@ -159,12 +195,56 @@ function getByPath(obj: any, path: string): any {
     return cur;
 }
 
-export function getContractTemplates(propertyId?: string): ContractTemplate[] {
-    const list = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
-    return list.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
+async function pushTemplateToBackend(template: ContractTemplate): Promise<void> {
+    await fetch(apiUrl('/api/contracts/templates'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(template),
+    });
 }
 
-export function deleteContractTemplate(templateId: string): void {
+export async function getContractTemplates(propertyId?: string): Promise<ContractTemplate[]> {
+    const local = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
+    try {
+        const query = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : '';
+        const res = await fetch(apiUrl(`/api/contracts/templates${query}`));
+        if (!res.ok) throw new Error(`Failed templates fetch (${res.status})`);
+        const remote = (await res.json()) as ContractTemplate[];
+        writeJson(TEMPLATE_KEY, remote);
+
+        // Backfill old browser-only templates into shared backend once.
+        const remoteIds = new Set(remote.map((t) => String(t.id)));
+        const localMissing = local.filter((t) => !remoteIds.has(String(t.id)));
+        for (const tpl of localMissing) {
+            try {
+                await pushTemplateToBackend(tpl);
+            } catch {
+                /* best-effort sync */
+            }
+        }
+        if (localMissing.length > 0) {
+            const merged = [...remote];
+            for (const t of localMissing) {
+                if (!merged.some((x) => String(x.id) === String(t.id))) merged.unshift(t);
+            }
+            writeJson(TEMPLATE_KEY, merged);
+            dispatchContractsChanged();
+            return merged.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
+        }
+        return remote;
+    } catch {
+        return local.filter((x) => !propertyId || !x.propertyId || String(x.propertyId) === String(propertyId));
+    }
+}
+
+export async function deleteContractTemplate(templateId: string): Promise<void> {
+    try {
+        await fetch(apiUrl(`/api/contracts/templates/${encodeURIComponent(templateId)}`), {
+            method: 'DELETE',
+        });
+    } catch {
+        /* keep local delete even if remote fails */
+    }
     const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
     const next = all.filter((t) => String(t.id) !== String(templateId));
     writeJson(TEMPLATE_KEY, next);
@@ -200,6 +280,11 @@ export async function uploadContractTemplate(params: {
     const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
     all.unshift(t);
     writeJson(TEMPLATE_KEY, all);
+    try {
+        await pushTemplateToBackend(t);
+    } catch {
+        /* keep local fallback */
+    }
     dispatchContractsChanged();
     return t;
 }
@@ -244,27 +329,35 @@ export async function generateContractFromTemplate(params: {
         docBytes = fromBase64(tpl.templateBase64);
     }
     const zip = new PizZip(docBytes);
-    const nestedValues = toNestedValues(params.fieldValues || {});
-    const normalizedLookup: Record<string, string> = {};
+    const normalizedFieldValues: Record<string, string> = {};
     Object.entries(params.fieldValues || {}).forEach(([k, v]) => {
+        const raw = String(v ?? '');
+        normalizedFieldValues[k] = isDateLikeKey(k) ? formatDateLong(raw) : raw;
+    });
+    const nestedValues = toNestedValues(normalizedFieldValues);
+    const normalizedLookup: Record<string, string> = {};
+    Object.entries(normalizedFieldValues).forEach(([k, v]) => {
         normalizedLookup[normalizeLookupKey(k)] = String(v ?? '');
     });
     if (params.accountName) {
         normalizedLookup.companyname = String(params.accountName);
     }
     if (params.startDate) {
-        normalizedLookup.startdate = String(params.startDate);
-        normalizedLookup.fromdate = String(params.startDate);
-        normalizedLookup.effectivedate = String(params.startDate);
+        const f = formatDateLong(String(params.startDate));
+        normalizedLookup.startdate = f;
+        normalizedLookup.fromdate = f;
+        normalizedLookup.effectivedate = f;
     }
     if (params.endDate) {
-        normalizedLookup.enddate = String(params.endDate);
-        normalizedLookup.todate = String(params.endDate);
-        normalizedLookup.expirydate = String(params.endDate);
-        normalizedLookup.expirationdate = String(params.endDate);
+        const f = formatDateLong(String(params.endDate));
+        normalizedLookup.enddate = f;
+        normalizedLookup.todate = f;
+        normalizedLookup.expirydate = f;
+        normalizedLookup.expirationdate = f;
     }
-    normalizedLookup.today = formatDateYmd();
-    normalizedLookup.currentdate = formatDateYmd();
+    const todayLong = formatDateLong(formatDateYmd());
+    normalizedLookup.today = todayLong;
+    normalizedLookup.currentdate = todayLong;
 
     const doc = new Docxtemplater(zip, {
         delimiters: { start: '{', end: '}' },
@@ -287,7 +380,7 @@ export async function generateContractFromTemplate(params: {
         },
         nullGetter: () => '',
     });
-    doc.render(nestedValues);
+    doc.render({});
     const outBuffer = doc.getZip().generate({ type: 'arraybuffer' }) as ArrayBuffer;
     const wordBlob = new Blob([outBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

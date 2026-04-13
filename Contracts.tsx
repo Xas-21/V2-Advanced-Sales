@@ -60,7 +60,8 @@ const isEndDateVariable = (v: string) => {
     const n = normalizeVarKey(v);
     return n.includes('enddate') || n.includes('todate') || n.includes('expirydate') || n.includes('expirationdate');
 };
-const isDateLikeVariable = (v: string) => isTodayVariable(v) || normalizeVarKey(v).includes('date');
+const isDateLikeVariable = (v: string) =>
+    isTodayVariable(v) || isStartDateVariable(v) || isEndDateVariable(v) || normalizeVarKey(v) === 'date';
 
 export default function Contracts({
     theme,
@@ -99,14 +100,17 @@ export default function Contracts({
 
     const propertyId = activeProperty?.id ? String(activeProperty.id) : undefined;
 
-    const refreshContractsData = () => {
-        setTemplates(getContractTemplates(propertyId));
+    const refreshContractsData = async () => {
+        const tpl = await getContractTemplates(propertyId);
+        setTemplates(tpl);
         setRecords(getContractRecords({ propertyId }));
     };
 
     useEffect(() => {
-        refreshContractsData();
-        const onChanged = () => refreshContractsData();
+        void refreshContractsData();
+        const onChanged = () => {
+            void refreshContractsData();
+        };
         window.addEventListener(CONTRACTS_CHANGED_EVENT, onChanged);
         return () => window.removeEventListener(CONTRACTS_CHANGED_EVENT, onChanged);
     }, [propertyId]);
@@ -228,7 +232,7 @@ export default function Contracts({
             setStartDate('');
             setEndDate('');
             setAgreementFileName(record.agreementFileName);
-            refreshContractsData();
+            void refreshContractsData();
         } catch (e: any) {
             window.alert(e?.message || 'Failed to generate contract.');
         } finally {
@@ -332,10 +336,11 @@ export default function Contracts({
                                     {canDeleteContractTemplates && (
                                         <button
                                             type="button"
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 if (!window.confirm(`Delete template "${t.name}" from library?`)) return;
-                                                deleteContractTemplate(t.id);
+                                                await deleteContractTemplate(t.id);
                                                 if (selectedTemplateId === t.id) setSelectedTemplateId('');
+                                                void refreshContractsData();
                                             }}
                                             className="mt-2 px-2 py-1 rounded border text-[11px]"
                                             style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#ef4444' }}
@@ -565,7 +570,7 @@ export default function Contracts({
             <div className="flex justify-between items-center mb-6">
                 <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Generated Contracts</h1>
                 <div className="flex gap-2">
-                    <button onClick={refreshContractsData} className="px-3 py-2 rounded border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>
+                    <button onClick={() => void refreshContractsData()} className="px-3 py-2 rounded border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>
                         <RefreshCw size={16} />
                     </button>
                     <button onClick={() => setCurrentView('library')} className="px-4 py-2 bg-primary text-black rounded font-bold">Upload / New</button>
@@ -654,7 +659,7 @@ export default function Contracts({
                                                     const f = e.target.files?.[0];
                                                     if (!f) return;
                                                     await attachSignedContractFile(r.id, f);
-                                                    refreshContractsData();
+                                                    void refreshContractsData();
                                                 }}
                                             />
                                         </label>
@@ -680,7 +685,7 @@ export default function Contracts({
                                                 onClick={() => {
                                                     if (!window.confirm('Delete this contract record permanently?')) return;
                                                     deleteContractRecord(r.id);
-                                                    refreshContractsData();
+                                                    void refreshContractsData();
                                                 }}
                                                 className="px-2 py-1 rounded border text-xs"
                                                 style={{ borderColor: 'rgba(239,68,68,0.35)', color: '#ef4444' }}

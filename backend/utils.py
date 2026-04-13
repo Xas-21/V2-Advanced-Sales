@@ -20,6 +20,7 @@ REQUESTS_FILE = os.path.join(DATA_DIR, "requests.json")
 CRM_STATE_FILE = os.path.join(DATA_DIR, "crm_state.json")
 ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
+CONTRACT_TEMPLATES_FILE = os.path.join(DATA_DIR, "contract_templates.json")
 
 _DB_SCHEMA_READY = False
 _SPECIAL_TABLES_READY = False
