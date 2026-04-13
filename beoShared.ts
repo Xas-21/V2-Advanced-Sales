@@ -4,6 +4,111 @@ export function sumPaymentAmounts(payments: any[] | undefined): number {
     return (payments || []).reduce((acc, p) => acc + Number(p?.amount ?? 0), 0);
 }
 
+/** YYYY-MM-DD from common request date fields. */
+export function normalizeIsoDate(raw: unknown): string | null {
+    if (raw == null) return null;
+    const s = String(raw).trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    return s;
+}
+
+/** True when paid total covers grand total (2dp), and total is positive. */
+export function paymentsMeetOrExceedTotal(paidSum: number, totalCost: number): boolean {
+    if (!(totalCost > 0)) return false;
+    return Math.round(paidSum * 100) >= Math.round(totalCost * 100);
+}
+
+/** Local calendar YYYY-MM-DD in the user's timezone (any time of day maps to that calendar date). */
+export function localCalendarIsoDate(d: Date = new Date()): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+export function isSameLocalCalendarDay(iso: string | null | undefined, today: Date = new Date()): boolean {
+    const t = normalizeIsoDate(iso);
+    if (!t) return false;
+    return t === localCalendarIsoDate(today);
+}
+
+/**
+ * Earliest agenda session start only — no requestDate, receivedDate, deadlines, or stored eventStart fallback.
+ */
+export function getFirstAgendaStartIso(req: any): string | null {
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    const dates: string[] = [];
+    for (const item of agenda) {
+        const s = normalizeIsoDate(item?.startDate);
+        if (s) dates.push(s);
+    }
+    if (!dates.length) return null;
+    return dates.sort()[0];
+}
+
+/**
+ * Series: earliest room arrival; if none, property-level check-in only (no received/deadlines).
+ */
+export function getFirstSeriesArrivalIso(req: any): string | null {
+    const dates: string[] = [];
+    for (const g of Array.isArray(req?.rooms) ? req.rooms : []) {
+        const a = normalizeIsoDate(g?.arrival);
+        if (a) dates.push(a);
+    }
+    if (dates.length) return dates.sort()[0];
+    return normalizeIsoDate(req?.checkIn);
+}
+
+const PAID_STATUS_RE = /^paid$/i;
+
+/** Full payment: explicit Paid status or paid amount ≥ total (total must be > 0 for amount path). */
+export function isRequestPaidInFullForActual(req: any): boolean {
+    const ps = String(req?.paymentStatus ?? '').trim();
+    if (PAID_STATUS_RE.test(ps)) return true;
+
+    const total = parseFloat(String(req?.totalCost ?? '0').replace(/,/g, '')) || 0;
+    if (!(total > 0)) return false;
+
+    const hasLines = Array.isArray(req?.payments) && req.payments.length > 0;
+    const paid = hasLines
+        ? sumPaymentAmounts(req.payments)
+        : parseFloat(String(req?.paidAmount ?? '0').replace(/,/g, '')) || 0;
+    return paymentsMeetOrExceedTotal(paid, total);
+}
+
+/**
+ * Definite + paid in full + local calendar today equals check-in and/or first agenda start (per type).
+ * Does not use received date, offer/deposit/payment deadlines, or requestDate.
+ */
+export function shouldPromoteDefiniteToActual(req: any, today: Date = new Date()): boolean {
+    if (String(req?.status ?? '').trim() !== 'Definite') return false;
+    if (!isRequestPaidInFullForActual(req)) return false;
+
+    const t = normalizeRequestTypeKey(req?.requestType);
+    const todayIso = localCalendarIsoDate(today);
+
+    if (t === 'accommodation') {
+        const ci = normalizeIsoDate(req?.checkIn);
+        return ci !== null && ci === todayIso;
+    }
+    if (t === 'event') {
+        const firstAg = getFirstAgendaStartIso(req);
+        return firstAg !== null && firstAg === todayIso;
+    }
+    if (t === 'series') {
+        const firstArr = getFirstSeriesArrivalIso(req);
+        return firstArr !== null && firstArr === todayIso;
+    }
+    if (t === 'event_rooms') {
+        const ci = normalizeIsoDate(req?.checkIn);
+        const firstAg = getFirstAgendaStartIso(req);
+        return (ci !== null && ci === todayIso) || (firstAg !== null && firstAg === todayIso);
+    }
+    const ci = normalizeIsoDate(req?.checkIn);
+    const firstAg = getFirstAgendaStartIso(req);
+    return (ci !== null && ci === todayIso) || (firstAg !== null && firstAg === todayIso);
+}
+
 export function calculateNights(inDate: string, outDate: string) {
     if (!inDate || !outDate) return 0;
     const diff = new Date(outDate).getTime() - new Date(inDate).getTime();

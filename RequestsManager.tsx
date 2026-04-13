@@ -38,7 +38,10 @@ import {
     calculateAccFinancialsForRequest,
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
+    paymentsMeetOrExceedTotal,
+    shouldPromoteDefiniteToActual,
 } from './beoShared';
+import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 
@@ -79,6 +82,15 @@ const DEFAULT_CXL_REASONS = ['Price too high', 'Changed dates', 'Destination cha
 const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
 const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
 type RequestDocId = (typeof REQUEST_DOC_IDS)[number];
+
+/** Pipeline statuses we auto-promote to Definite when fully paid. */
+function canAutoDefiniteFromStatus(status: string): boolean {
+    const s = String(status || '').trim();
+    return s !== 'Definite' && s !== 'Actual' && s !== 'Cancelled';
+}
+
+const LOG_ACTUAL_FROM_DEFINITE =
+    'Definite, fully paid, and today matches check-in or first event day — set to Actual.';
 
 // Initial Form States
 const initialAccommodation = {
@@ -374,8 +386,10 @@ export default function RequestsManager({
             const url = activeProperty 
                 ? apiUrl(`/api/requests?propertyId=${activeProperty.id}`)
                 : apiUrl('/api/requests');
-            const res = await fetch(url);
-            const data = await res.json();
+            const data = await refreshRequestsWithDefiniteToActual(url, {
+                readOnly: readOnlyOperational,
+                requestLogUser,
+            });
             if (Array.isArray(data)) setRequests(data);
         } catch (err) {
             console.error("Error fetching requests:", err);
@@ -712,19 +726,76 @@ export default function RequestsManager({
                 String(formData.status || formData.accommodation?.status || defaultPipelineStatus).trim() ||
                 defaultPipelineStatus;
             let resolvedStatus = initialPipelineStatus;
-            if (paymentSum > 0 && initialPipelineStatus === 'Inquiry') {
+            if (
+                paymentSum > 0 &&
+                paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost) &&
+                canAutoDefiniteFromStatus(initialPipelineStatus)
+            ) {
+                resolvedStatus = 'Definite';
+                updatedLogs = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: `Full payment recorded while status was ${initialPipelineStatus} — set to Definite.`,
+                    },
+                    ...updatedLogs,
+                ];
+            } else if (
+                paymentSum > 0 &&
+                (initialPipelineStatus === 'Inquiry' || initialPipelineStatus === 'Accepted')
+            ) {
                 resolvedStatus = 'Tentative';
                 updatedLogs = [
                     {
                         date: new Date().toISOString(),
                         user: requestLogUser,
                         action: 'Status auto-updated',
-                        details: 'Payment recorded while status was Inquiry — set to Tentative.',
+                        details: `Payment recorded while status was ${initialPipelineStatus} — set to Tentative.`,
                     },
                     ...updatedLogs,
                 ];
             }
+            const becameDefiniteThisSave =
+                paymentSum > 0 &&
+                paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost) &&
+                canAutoDefiniteFromStatus(initialPipelineStatus);
             const eventWindow = getEventDateWindow(formData || {});
+            const requestTypeLabelForProbe =
+                normalizedType === 'event_rooms'
+                    ? 'Event with Rooms'
+                    : normalizedType.charAt(0).toUpperCase() + normalizedType.slice(1);
+            const resolvedCheckInForProbe =
+                normalizedType === 'event'
+                    ? String(eventWindow.start || formData.checkIn || '').slice(0, 10)
+                    : formData.checkIn;
+            const actualProbe = {
+                ...formData,
+                requestType: formData.requestType || requestTypeLabelForProbe,
+                status: 'Definite',
+                totalCost: resolvedTotalCost.toFixed(2),
+                payments: paymentsForStatus,
+                paidAmount: paymentSum.toFixed(2),
+                paymentStatus: fin.paymentStatus,
+                checkIn: resolvedCheckInForProbe || formData.checkIn,
+                eventStart: String(formData.eventStart || eventWindow.start || '').slice(0, 10),
+            };
+            if (
+                resolvedStatus === 'Definite' &&
+                !becameDefiniteThisSave &&
+                shouldPromoteDefiniteToActual(actualProbe)
+            ) {
+                resolvedStatus = 'Actual';
+                updatedLogs = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: LOG_ACTUAL_FROM_DEFINITE,
+                    },
+                    ...updatedLogs,
+                ];
+            }
             const payload = {
                 ...formData,
                 id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
@@ -747,6 +818,14 @@ export default function RequestsManager({
                 payments: formData.payments || [],
                 eventStart: String(formData.eventStart || eventWindow.start || '').slice(0, 10),
                 eventEnd: String(formData.eventEnd || eventWindow.end || eventWindow.start || '').slice(0, 10),
+                checkIn:
+                    normalizedType === 'event'
+                        ? String(eventWindow.start || formData.checkIn || '').slice(0, 10)
+                        : formData.checkIn,
+                checkOut:
+                    normalizedType === 'event'
+                        ? String(eventWindow.end || eventWindow.start || formData.checkOut || '').slice(0, 10)
+                        : formData.checkOut,
                 logs: updatedLogs,
                 paymentStatus: fin.paymentStatus, // Unpaid, Deposit, Paid
                 segment: resolvedSegment,
@@ -1156,22 +1235,66 @@ export default function RequestsManager({
             const amount = Number(newPayment.amount);
             if (isNaN(amount) || amount === 0) return;
 
-            const wasInquiry = String(accForm.status || '').trim() === 'Inquiry';
-            const autoLog = wasInquiry
-                ? [
-                      {
-                          date: new Date().toISOString(),
-                          user: requestLogUser,
-                          action: 'Status auto-updated',
-                          details: 'Payment posted while status was Inquiry — set to Tentative.',
-                      },
-                  ]
-                : [];
+            const st = String(accForm.status || '').trim();
+            const mergedPayments = [...accForm.payments, { ...newPayment, id: Date.now(), amount }];
+            const newPaid = sumPaymentAmounts(mergedPayments);
+            const total = Number(fin.grandTotalWithTax ?? fin.totalCostWithTax ?? 0) || 0;
+            const fullPayPromotion = paymentsMeetOrExceedTotal(newPaid, total) && canAutoDefiniteFromStatus(st);
+            const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+            const requestTypeLabel =
+                accForm.requestType ||
+                (requestType === 'event_rooms'
+                    ? 'Event with Rooms'
+                    : String(requestType || 'accommodation').charAt(0).toUpperCase() +
+                      String(requestType || 'accommodation').slice(1));
+            const actualProbe = {
+                ...accForm,
+                payments: mergedPayments,
+                status: 'Definite',
+                totalCost: total.toFixed(2),
+                paidAmount: newPaid.toFixed(2),
+                paymentStatus: paymentsMeetOrExceedTotal(newPaid, total) ? 'Paid' : fin.paymentStatus,
+                requestType: requestTypeLabel,
+            };
+
+            let nextStatus = accForm.status;
+            let autoLog: any[] = [];
+            if (st === 'Definite' && shouldPromoteDefiniteToActual(actualProbe)) {
+                nextStatus = 'Actual';
+                autoLog = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: LOG_ACTUAL_FROM_DEFINITE,
+                    },
+                ];
+            } else if (fullPayPromotion) {
+                nextStatus = 'Definite';
+                autoLog = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: `Full payment recorded while status was ${st} — set to Definite.`,
+                    },
+                ];
+            } else if (bumpToTentative) {
+                nextStatus = 'Tentative';
+                autoLog = [
+                    {
+                        date: new Date().toISOString(),
+                        user: requestLogUser,
+                        action: 'Status auto-updated',
+                        details: `Payment posted while status was ${st} — set to Tentative.`,
+                    },
+                ];
+            }
 
             setAccForm({
                 ...accForm,
-                payments: [...accForm.payments, { ...newPayment, id: Date.now(), amount }],
-                status: wasInquiry ? 'Tentative' : accForm.status,
+                payments: mergedPayments,
+                status: nextStatus,
                 logs: [
                     ...accForm.logs,
                     ...autoLog,
@@ -2852,21 +2975,71 @@ export default function RequestsManager({
                             const amt = Number(newPayment.amount || 0);
                             if (paymentModalSource === 'form') {
                                 setAccForm((prev: any) => {
-                                    const wasInquiry = String(prev.status || '').trim() === 'Inquiry';
-                                    const autoLog = wasInquiry
-                                        ? [
-                                              {
-                                                  date: new Date().toISOString(),
-                                                  user: requestLogUser,
-                                                  action: 'Status auto-updated',
-                                                  details: 'Deposit posted while status was Inquiry — set to Tentative.',
-                                              },
-                                          ]
-                                        : [];
+                                    const st = String(prev.status || '').trim();
+                                    const newPayments = [...(prev.payments || []), { ...newPayment, id: Date.now(), amount: amt }];
+                                    const paidSum = sumPaymentAmounts(newPayments);
+                                    const finAfter = calculateAccFinancialsForRequest(
+                                        { ...prev, payments: newPayments },
+                                        taxesList,
+                                        requestType
+                                    );
+                                    const total =
+                                        Number(finAfter.grandTotalWithTax ?? finAfter.totalCostWithTax ?? 0) || 0;
+                                    const fullPayPromotion =
+                                        paymentsMeetOrExceedTotal(paidSum, total) && canAutoDefiniteFromStatus(st);
+                                    const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+                                    const requestTypeLabel =
+                                        prev.requestType ||
+                                        (requestType === 'event_rooms'
+                                            ? 'Event with Rooms'
+                                            : String(requestType || 'accommodation').charAt(0).toUpperCase() +
+                                              String(requestType || 'accommodation').slice(1));
+                                    const actualProbe = {
+                                        ...prev,
+                                        payments: newPayments,
+                                        status: 'Definite',
+                                        totalCost: total.toFixed(2),
+                                        paidAmount: paidSum.toFixed(2),
+                                        paymentStatus: finAfter.paymentStatus,
+                                        requestType: requestTypeLabel,
+                                    };
+                                    let nextStatus = prev.status;
+                                    let autoLog: any[] = [];
+                                    if (st === 'Definite' && shouldPromoteDefiniteToActual(actualProbe)) {
+                                        nextStatus = 'Actual';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: LOG_ACTUAL_FROM_DEFINITE,
+                                            },
+                                        ];
+                                    } else if (fullPayPromotion) {
+                                        nextStatus = 'Definite';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: `Full payment recorded while status was ${st} — set to Definite.`,
+                                            },
+                                        ];
+                                    } else if (bumpToTentative) {
+                                        nextStatus = 'Tentative';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: `Deposit posted while status was ${st} — set to Tentative.`,
+                                            },
+                                        ];
+                                    }
                                     return {
                                         ...prev,
-                                        payments: [...(prev.payments || []), { ...newPayment, id: Date.now(), amount: amt }],
-                                        status: wasInquiry ? 'Tentative' : prev.status,
+                                        payments: newPayments,
+                                        status: nextStatus,
                                         logs: [
                                             ...(prev.logs || []),
                                             ...autoLog,
@@ -2886,20 +3059,55 @@ export default function RequestsManager({
                                     const totalCost = parseFloat(String(req.totalCost ?? '0').replace(/,/g, '')) || 0;
                                     let paymentStatus = 'Unpaid';
                                     if (totalCost > 0) {
-                                        if (paidSum >= totalCost) paymentStatus = 'Paid';
+                                        if (paymentsMeetOrExceedTotal(paidSum, totalCost)) paymentStatus = 'Paid';
                                         else if (paidSum > 0) paymentStatus = 'Deposit';
                                     }
-                                    const wasInquiry = String(req.status || '').trim() === 'Inquiry';
-                                    const autoLog = wasInquiry
-                                        ? [
-                                              {
-                                                  date: new Date().toISOString(),
-                                                  user: requestLogUser,
-                                                  action: 'Status auto-updated',
-                                                  details: 'Deposit posted while status was Inquiry — set to Tentative.',
-                                              },
-                                          ]
-                                        : [];
+                                    const st = String(req.status || '').trim();
+                                    const fullPayPromotion =
+                                        paymentsMeetOrExceedTotal(paidSum, totalCost) &&
+                                        canAutoDefiniteFromStatus(st);
+                                    const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+                                    const actualProbe = {
+                                        ...req,
+                                        payments: newPayments,
+                                        status: 'Definite',
+                                        paidAmount: paidSum.toFixed(2),
+                                        totalCost: req.totalCost,
+                                        paymentStatus,
+                                    };
+                                    let nextStatus = st;
+                                    let autoLog: any[] = [];
+                                    if (st === 'Definite' && shouldPromoteDefiniteToActual(actualProbe)) {
+                                        nextStatus = 'Actual';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: LOG_ACTUAL_FROM_DEFINITE,
+                                            },
+                                        ];
+                                    } else if (fullPayPromotion) {
+                                        nextStatus = 'Definite';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: `Full payment recorded while status was ${st} — set to Definite.`,
+                                            },
+                                        ];
+                                    } else if (bumpToTentative) {
+                                        nextStatus = 'Tentative';
+                                        autoLog = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Status auto-updated',
+                                                details: `Deposit posted while status was ${st} — set to Tentative.`,
+                                            },
+                                        ];
+                                    }
                                     const newLogs = [
                                         ...autoLog,
                                         { date: new Date().toISOString(), user: requestLogUser, action: `Posted deposit of ${amt} via ${newPayment.method}` },
@@ -2910,8 +3118,8 @@ export default function RequestsManager({
                                         paymentStatus,
                                         payments: newPayments,
                                         logs: newLogs,
+                                        status: nextStatus,
                                     };
-                                    if (wasInquiry) updateData.status = 'Tentative';
                                     if (selectedRequest && selectedRequest.id === req.id) {
                                         setSelectedRequest((prev: any) => prev ? { ...prev, ...updateData } : null);
                                     }
@@ -4051,8 +4259,8 @@ export default function RequestsManager({
             const arrivalFilter = String(params?.arrival || '').trim();
             const departureFilter = String(params?.departure || '').trim();
             const evWindow = getEventDateWindow(req);
-            const reqStart = String(req.checkIn || req.eventStart || evWindow.start || '').trim();
-            const reqEnd = String(req.checkOut || req.eventEnd || evWindow.end || evWindow.start || '').trim();
+            const reqStart = String(evWindow.start || req.checkIn || req.eventStart || '').trim();
+            const reqEnd = String(evWindow.end || evWindow.start || req.checkOut || req.eventEnd || '').trim();
             const arrivalMatch = !arrivalFilter || reqStart >= arrivalFilter;
             const departureMatch = !departureFilter || reqEnd <= departureFilter;
 
@@ -4190,11 +4398,26 @@ export default function RequestsManager({
                             {column === 'dates' && (
                                 <div className={`flex flex-col ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
                                     {(() => {
+                                        const rowType = normalizeRequestTypeKey(request.requestType);
                                         const evWindow = getEventDateWindow(request);
+                                        // Prefer agenda-derived window over stale eventStart/eventEnd (saved fields can lag behind agenda edits).
+                                        const startVal = String(evWindow.start || request.eventStart || '').trim();
+                                        const endVal = String(
+                                            evWindow.end || evWindow.start || request.eventEnd || request.eventStart || '',
+                                        ).trim();
                                         const checkInVal = String(request.checkIn || '').trim();
                                         const checkOutVal = String(request.checkOut || '').trim();
-                                        const startVal = String(request.eventStart || evWindow.start || '').trim();
-                                        const endVal = String(request.eventEnd || evWindow.end || evWindow.start || '').trim();
+
+                                        // Event-only: list dates follow event window, not legacy checkIn/checkOut.
+                                        if (rowType === 'event') {
+                                            return (
+                                                <>
+                                                    <div className="flex gap-2"><span className="opacity-50">Start:</span> <span className="font-medium" style={{ color: colors.textMain }}>{startVal || '-'}</span></div>
+                                                    <div className="flex gap-2"><span className="opacity-50">End:</span> <span className="font-medium" style={{ color: colors.textMain }}>{endVal || '-'}</span></div>
+                                                </>
+                                            );
+                                        }
+
                                         if (checkInVal && checkInVal !== '-') {
                                             return (
                                                 <>

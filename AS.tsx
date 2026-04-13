@@ -106,6 +106,9 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
 } from './beoShared';
+import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
+import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
+import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
 import {
     loadSegmentsForProperty,
     loadAccountTypesForProperty,
@@ -3136,6 +3139,132 @@ function getActivePropertyStorageKey(user: any): string {
     return userKey ? `${ACTIVE_PROPERTY_STORAGE_KEY}::${userKey}` : ACTIVE_PROPERTY_STORAGE_KEY;
 }
 
+type AlertsBellProps = {
+    colors: any;
+    bellSize: number;
+    panelRef: React.RefObject<HTMLDivElement | null>;
+    open: boolean;
+    setOpen: (v: boolean) => void;
+    activeAlerts: RequestAlert[];
+    getAlertRowStyle: (a: RequestAlert['accent']) => React.CSSProperties;
+    onDone: (a: RequestAlert) => void;
+    onViewRequest: (a: RequestAlert) => void;
+};
+
+function AlertsBell({
+    colors,
+    bellSize,
+    panelRef,
+    open,
+    setOpen,
+    activeAlerts,
+    getAlertRowStyle,
+    onDone,
+    onViewRequest,
+}: AlertsBellProps) {
+    return (
+        <div className="relative" ref={panelRef}>
+            <button
+                type="button"
+                onClick={() => setOpen(!open)}
+                className="relative p-1.5 rounded-md border transition-all hover:bg-white/10"
+                style={{ borderColor: colors.border, color: colors.textMuted }}
+                aria-expanded={open}
+                aria-haspopup="dialog"
+                title="Alerts"
+            >
+                <Bell size={bellSize} />
+                {activeAlerts.length > 0 ? (
+                    <span
+                        className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full text-[9px] font-black flex items-center justify-center leading-none"
+                        style={{ backgroundColor: colors.red, color: '#fff' }}
+                    >
+                        {activeAlerts.length > 99 ? '99+' : activeAlerts.length}
+                    </span>
+                ) : null}
+            </button>
+            {open ? (
+                <div
+                    className="absolute right-0 top-full mt-2 w-[min(100vw-2rem,22rem)] max-h-[min(70vh,440px)] overflow-y-auto rounded-xl border shadow-2xl z-[200] py-2"
+                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    role="dialog"
+                    aria-label="Alerts"
+                >
+                    {activeAlerts.length === 0 ? (
+                        <p className="px-4 py-6 text-xs text-center font-medium" style={{ color: colors.textMuted }}>
+                            No active alerts
+                        </p>
+                    ) : (
+                        activeAlerts.map((alert) => (
+                            <div
+                                key={alert.dismissKey}
+                                className="px-2 py-1.5 border-b last:border-b-0"
+                                style={{ borderColor: colors.border }}
+                            >
+                                <div
+                                    className="rounded-lg overflow-hidden border"
+                                    style={{
+                                        ...getAlertRowStyle(alert.accent),
+                                        borderRightWidth: 1,
+                                        borderTopWidth: 1,
+                                        borderBottomWidth: 1,
+                                        borderRightStyle: 'solid',
+                                        borderTopStyle: 'solid',
+                                        borderBottomStyle: 'solid',
+                                        borderRightColor: colors.border,
+                                        borderTopColor: colors.border,
+                                        borderBottomColor: colors.border,
+                                    }}
+                                >
+                                    <div className="p-2.5">
+                                        <p className="text-[10px] font-black uppercase tracking-wide" style={{ color: colors.textMuted }}>
+                                            {alert.title}
+                                            {alert.urgent ? <span style={{ color: colors.red }}> · Urgent</span> : null}
+                                        </p>
+                                        <p className="text-xs font-bold mt-1 leading-snug" style={{ color: colors.textMain }}>
+                                            {alert.body}
+                                        </p>
+                                        <p className="text-[10px] mt-1.5 opacity-70" style={{ color: colors.textMain }}>
+                                            Owner: <span className="font-bold">{alert.creatorName}</span>
+                                        </p>
+                                        {alert.anchorDate ? (
+                                            <p className="text-[9px] opacity-50 mt-0.5" style={{ color: colors.textMuted }}>
+                                                Anchor: {alert.anchorDate}
+                                            </p>
+                                        ) : null}
+                                        <div className="flex gap-2 mt-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => onDone(alert)}
+                                                className="flex-1 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide border transition-colors hover:opacity-90"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                Done
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => onViewRequest(alert)}
+                                                className="flex-1 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide border transition-colors hover:opacity-90"
+                                                style={{
+                                                    borderColor: colors.primary,
+                                                    color: colors.textMain,
+                                                    backgroundColor: `${colors.primary}18`,
+                                                }}
+                                            >
+                                                View request
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 export default function AdvancedSalesDashboard() {
     const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('as_themeId') || 'light');
     const [isSidebarPinned, setIsSidebarPinned] = useState(false);
@@ -3387,6 +3516,10 @@ export default function AdvancedSalesDashboard() {
     });
 
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+    const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
+    const [alertDetailRequest, setAlertDetailRequest] = useState<any | null>(null);
+    const [alertDayKey, setAlertDayKey] = useState(() => localDateKey(new Date()));
+    const [dismissMap, setDismissMap] = useState<Record<string, string>>({});
     const [properties, setProperties] = useState<any[]>([]);
     const [activeProperty, setActiveProperty] = useState<any>(null);
 
@@ -3434,6 +3567,52 @@ export default function AdvancedSalesDashboard() {
         const merged = [...byName.values()];
         return merged.length ? merged : curName ? [{ id: String(currentUser.id), name: curName }] : [];
     }, [activeProperty, systemUsers, currentUser]);
+
+    const resolveContactForAlert = useCallback(
+        (req: any) => {
+            const acc = getAccountForRequest(req, accounts);
+            if (!acc) return String(req?.account || req?.accountName || '—').trim() || '—';
+            const list = (Array.isArray(acc.contacts) ? acc.contacts : []).filter(
+                (c: any) => contactDisplayName(c) || c?.email || c?.phone,
+            );
+            if (list.length) return contactDisplayName(list[0]) || '—';
+            return String(acc?.name || req?.account || '—').trim() || '—';
+        },
+        [accounts],
+    );
+
+    const resolveCreatorForAlert = useCallback(
+        (req: any) => {
+            const id = req?.createdByUserId;
+            if (id == null || id === '') return 'Unknown';
+            const u = (systemUsers || []).find((x: any) => String(x.id) === String(id));
+            return String(u?.name || u?.username || '').trim() || 'Unknown';
+        },
+        [systemUsers],
+    );
+
+    const alertUserKey = useMemo(
+        () => String(currentUser?.id ?? currentUser?.username ?? currentUser?.email ?? 'anon').trim() || 'anon',
+        [currentUser?.id, currentUser?.username, currentUser?.email],
+    );
+
+    useEffect(() => {
+        const id = setInterval(() => {
+            const k = localDateKey(new Date());
+            setAlertDayKey((prev) => (prev !== k ? k : prev));
+        }, 45000);
+        return () => clearInterval(id);
+    }, []);
+
+    useEffect(() => {
+        const pid = activeProperty?.id;
+        const uid = alertUserKey;
+        if (!pid) {
+            setDismissMap({});
+            return;
+        }
+        setDismissMap(loadDismissMap(pid, uid));
+    }, [activeProperty?.id, alertUserKey, alertDayKey]);
 
     useEffect(() => {
         const pid = activeProperty?.id;
@@ -3529,8 +3708,10 @@ export default function AdvancedSalesDashboard() {
             const url = activeProperty?.id
                 ? apiUrl(`/api/requests?propertyId=${encodeURIComponent(activeProperty.id)}`)
                 : apiUrl('/api/requests');
-            const res = await fetch(url);
-            const data = await res.json();
+            const data = await refreshRequestsWithDefiniteToActual(url, {
+                readOnly: !canMutateOperational(currentUser),
+                requestLogUser: String(currentUser?.name || 'System').trim() || 'System',
+            });
             if (Array.isArray(data)) setSharedRequests(data);
         } catch (e) {
             console.error('refreshSharedRequests', e);
@@ -3795,6 +3976,49 @@ export default function AdvancedSalesDashboard() {
         const pid = activeProperty?.id;
         return (sharedRequests || []).filter((r: any) => !pid || !r.propertyId || r.propertyId === pid);
     }, [sharedRequests, activeProperty?.id]);
+
+    const activeAlerts = useMemo(() => {
+        const pid = activeProperty?.id;
+        if (!pid) return [];
+        const inputs = scopedRequests.map((r: any) => ({
+            request: r,
+            contactName: resolveContactForAlert(r),
+            creatorName: resolveCreatorForAlert(r),
+        }));
+        const raw = computeAllRequestAlerts(inputs, new Date());
+        const today = localDateKey(new Date());
+        return raw.filter((a) => !isDismissedForDate(dismissMap, a.dismissKey, today));
+    }, [
+        scopedRequests,
+        dismissMap,
+        activeProperty?.id,
+        resolveContactForAlert,
+        resolveCreatorForAlert,
+        alertDayKey,
+        alertUserKey,
+    ]);
+
+    const handleAlertDone = useCallback(
+        (alert: RequestAlert) => {
+            const pid = activeProperty?.id;
+            const uid = alertUserKey;
+            if (!pid) return;
+            const today = localDateKey(new Date());
+            const next = { ...dismissMap, [alert.dismissKey]: today };
+            saveDismissMap(pid, uid, next);
+            setDismissMap(next);
+        },
+        [activeProperty?.id, alertUserKey, dismissMap],
+    );
+
+    const handleViewAlertRequest = useCallback(
+        (alert: RequestAlert) => {
+            const r = scopedRequests.find((x: any) => String(x.id) === String(alert.requestId));
+            if (r) setAlertDetailRequest(r);
+            setAlertsPanelOpen(false);
+        },
+        [scopedRequests],
+    );
 
     const calendarCrmLeadsFlat = useMemo(() => {
         const flat = flattenCrmLeads(crmLeads);
@@ -4290,6 +4514,8 @@ export default function AdvancedSalesDashboard() {
     const dashboardPickerRef = useRef<HTMLDivElement>(null);
     const crmMonthPickerRef = useRef<HTMLDivElement>(null);
     const userDropdownRef = useRef<HTMLDivElement>(null);
+    const alertsPanelRef = useRef<HTMLDivElement>(null);
+    const alertsPanelMobileRef = useRef<HTMLDivElement>(null);
 
     // Global Click Outside Logic
     useEffect(() => {
@@ -4309,6 +4535,12 @@ export default function AdvancedSalesDashboard() {
             if (userDropdownRef.current && !userDropdownRef.current.contains(event.target as Node)) {
                 setUserDropdownOpen(false);
             }
+            const t = event.target as Node;
+            const inDesk = alertsPanelRef.current?.contains(t);
+            const inMob = alertsPanelMobileRef.current?.contains(t);
+            if (!inDesk && !inMob) {
+                setAlertsPanelOpen(false);
+            }
             if (eventTypeMenuRef.current && !eventTypeMenuRef.current.contains(event.target as Node)) {
                 setShowEventTypeMenu(false);
             }
@@ -4325,6 +4557,7 @@ export default function AdvancedSalesDashboard() {
         setShowDatePicker(false);
         setShowCrmMonthPicker(false);
         setCalendarDetailModal(null);
+        setAlertsPanelOpen(false);
     }, [currentView, eventsSubView, requestsSubView]);
 
     useEffect(() => {
@@ -4454,6 +4687,55 @@ export default function AdvancedSalesDashboard() {
             case 'todo': return 'To-Do Management';
             case 'settings': return 'Settings';
             default: return 'Dashboard';
+        }
+    };
+
+    const getAlertRowStyle = (accent: RequestAlert['accent']): React.CSSProperties => {
+        const lw = 4;
+        switch (accent) {
+            case 'yellow':
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: colors.yellow,
+                    backgroundColor: `${colors.yellow}14`,
+                };
+            case 'blue':
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: colors.blue,
+                    backgroundColor: `${colors.blue}14`,
+                };
+            case 'green':
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: colors.green,
+                    backgroundColor: `${colors.green}14`,
+                };
+            case 'lightGreen':
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: '#34d399',
+                    backgroundColor: 'rgba(52,211,153,0.12)',
+                };
+            case 'lightBlue':
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: '#38bdf8',
+                    backgroundColor: 'rgba(56,189,248,0.12)',
+                };
+            case 'red':
+            default:
+                return {
+                    borderLeftWidth: lw,
+                    borderLeftStyle: 'solid',
+                    borderLeftColor: colors.red,
+                    backgroundColor: `${colors.red}14`,
+                };
         }
     };
 
@@ -4607,7 +4889,17 @@ export default function AdvancedSalesDashboard() {
                         </div>
                         {/* Mobile Only Tools */}
                         <div className="flex md:hidden items-center gap-3">
-                            <Bell size={20} style={{ color: colors.textMuted }} />
+                            <AlertsBell
+                                colors={colors}
+                                bellSize={20}
+                                panelRef={alertsPanelMobileRef}
+                                open={alertsPanelOpen}
+                                setOpen={setAlertsPanelOpen}
+                                activeAlerts={activeAlerts}
+                                getAlertRowStyle={getAlertRowStyle}
+                                onDone={handleAlertDone}
+                                onViewRequest={handleViewAlertRequest}
+                            />
                             <select
                                 value={currentCurrency}
                                 onChange={(e) => handleCurrencyChange(e.target.value)}
@@ -5117,7 +5409,17 @@ export default function AdvancedSalesDashboard() {
                             </>
                         )}
                         <div className="flex items-center gap-3">
-                            <Bell size={18} style={{ color: colors.textMuted }} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                            <AlertsBell
+                                colors={colors}
+                                bellSize={18}
+                                panelRef={alertsPanelRef}
+                                open={alertsPanelOpen}
+                                setOpen={setAlertsPanelOpen}
+                                activeAlerts={activeAlerts}
+                                getAlertRowStyle={getAlertRowStyle}
+                                onDone={handleAlertDone}
+                                onViewRequest={handleViewAlertRequest}
+                            />
                             <select
                                 value={currentCurrency}
                                 onChange={(e) => handleCurrencyChange(e.target.value)}
@@ -6272,6 +6574,93 @@ export default function AdvancedSalesDashboard() {
                     </div>
                 </div>
             )}
+
+            {/* Request preview from alerts */}
+            {alertDetailRequest ? (
+                <div className="fixed inset-0 z-[210] flex items-center justify-center p-4">
+                    <button
+                        type="button"
+                        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                        aria-label="Close"
+                        onClick={() => setAlertDetailRequest(null)}
+                    />
+                    <div
+                        className="relative w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl border shadow-2xl p-5"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <div className="flex items-start justify-between gap-2 mb-4">
+                            <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: colors.textMain }}>
+                                Request details
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setAlertDetailRequest(null)}
+                                className="p-1 rounded-lg border"
+                                style={{ borderColor: colors.border, color: colors.textMuted }}
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+                        {(() => {
+                            const r = alertDetailRequest;
+                            const ev = getEventDateWindow(r);
+                            const rows: { label: string; value: string }[] = [
+                                { label: 'Confirmation', value: String(r.confirmationNo || r.id || '—') },
+                                { label: 'Request name', value: String(r.requestName || '—') },
+                                { label: 'Account', value: String(r.account || r.accountName || '—') },
+                                { label: 'Type', value: String(r.requestType || '—') },
+                                { label: 'Status', value: String(r.status || '—') },
+                                { label: 'Offer deadline', value: String(r.offerDeadline || '—') },
+                                { label: 'Deposit deadline', value: String(r.depositDeadline || '—') },
+                                { label: 'Payment deadline', value: String(r.paymentDeadline || '—') },
+                                { label: 'Check-in', value: String(r.checkIn || '—') },
+                                { label: 'Check-out', value: String(r.checkOut || '—') },
+                                { label: 'Event / agenda start', value: String(ev.start || '—') },
+                                { label: 'Event / agenda end', value: String(ev.end || '—') },
+                            ];
+                            return (
+                                <dl className="space-y-2 text-sm">
+                                    {rows.map((row) => (
+                                        <div key={row.label} className="flex gap-2 border-b pb-2 last:border-0" style={{ borderColor: colors.border }}>
+                                            <dt className="w-[40%] shrink-0 text-[10px] font-black uppercase opacity-50" style={{ color: colors.textMuted }}>
+                                                {row.label}
+                                            </dt>
+                                            <dd className="font-bold" style={{ color: colors.textMain }}>
+                                                {row.value}
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            );
+                        })()}
+                        <div className="flex gap-2 mt-5">
+                            <button
+                                type="button"
+                                onClick={() => setAlertDetailRequest(null)}
+                                className="flex-1 py-2.5 rounded-xl border text-xs font-bold"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                Close
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const id = String(alertDetailRequest.id ?? '');
+                                    setAlertDetailRequest(null);
+                                    setCurrentView('requests');
+                                    setRequestsSubView('list');
+                                    setPendingOpenRequestId(id);
+                                    setRequestsNavNonce((n) => n + 1);
+                                }}
+                                className="flex-1 py-2.5 rounded-xl text-xs font-bold text-black"
+                                style={{ backgroundColor: colors.primary }}
+                            >
+                                Open full request
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
 
             {/* Sales Call Modal (Calendar Overlay) */}
             <AddSalesCallModal
