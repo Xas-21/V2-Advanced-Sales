@@ -1,6 +1,7 @@
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import { jsPDF } from 'jspdf';
+import { uploadFileToCloudinary } from './cloudinaryUpload';
 
 export type ContractStatus = 'Generated' | 'Signed' | 'Expired';
 export type ContractOutputType = 'word' | 'pdf';
@@ -16,6 +17,8 @@ export interface ContractTemplate {
     variableCount: number;
     variables: string[];
     templateBase64: string;
+    templateUrl?: string;
+    templatePublicId?: string;
 }
 
 export interface ContractRecord {
@@ -38,6 +41,8 @@ export interface ContractRecord {
     generatedPdfBase64?: string;
     signedFileName?: string;
     signedFileBase64?: string;
+    signedFileUrl?: string;
+    signedFilePublicId?: string;
     createdAt: string;
     updatedAt: string;
     createdBy: string;
@@ -168,6 +173,9 @@ export async function uploadContractTemplate(params: {
     const buf = await params.file.arrayBuffer();
     const bytes = new Uint8Array(buf);
     const variables = parseVariablesFromDocxBytes(bytes);
+    const uploaded = await uploadFileToCloudinary(params.file, {
+        folder: `visatour/contracts/templates/${params.propertyId || 'global'}`,
+    });
     const t: ContractTemplate = {
         id: `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         propertyId: params.propertyId,
@@ -179,6 +187,8 @@ export async function uploadContractTemplate(params: {
         variableCount: variables.length,
         variables,
         templateBase64: toBase64(buf),
+        templateUrl: uploaded.secure_url,
+        templatePublicId: uploaded.public_id,
     };
     const all = readJson<ContractTemplate[]>(TEMPLATE_KEY, []);
     all.unshift(t);
@@ -214,7 +224,18 @@ export async function generateContractFromTemplate(params: {
     const tpl = allTemplates.find((x) => x.id === params.templateId);
     if (!tpl) throw new Error('Template not found.');
 
-    const docBytes = fromBase64(tpl.templateBase64);
+    let docBytes: Uint8Array;
+    if (tpl.templateUrl) {
+        try {
+            const response = await fetch(tpl.templateUrl);
+            if (!response.ok) throw new Error(`Template fetch failed (${response.status})`);
+            docBytes = new Uint8Array(await response.arrayBuffer());
+        } catch {
+            docBytes = fromBase64(tpl.templateBase64);
+        }
+    } else {
+        docBytes = fromBase64(tpl.templateBase64);
+    }
     const zip = new PizZip(docBytes);
     const nestedValues = toNestedValues(params.fieldValues || {});
     const normalizedLookup: Record<string, string> = {};
@@ -366,6 +387,9 @@ export function deleteContractRecord(recordId: string): void {
 
 export async function attachSignedContractFile(recordId: string, file: File): Promise<void> {
     const buf = await file.arrayBuffer();
+    const uploaded = await uploadFileToCloudinary(file, {
+        folder: 'visatour/contracts/signed',
+    });
     const all = readJson<ContractRecord[]>(RECORD_KEY, []);
     const next = all.map((r) =>
         r.id === recordId
@@ -373,6 +397,8 @@ export async function attachSignedContractFile(recordId: string, file: File): Pr
                   ...r,
                   signedFileName: file.name,
                   signedFileBase64: toBase64(buf),
+                  signedFileUrl: uploaded.secure_url,
+                  signedFilePublicId: uploaded.public_id,
                   status: 'Signed' as ContractStatus,
                   updatedAt: new Date().toISOString(),
               }

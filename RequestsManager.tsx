@@ -38,6 +38,7 @@ import {
     calculateAccFinancialsForRequest,
 } from './beoShared';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+import { uploadFileToCloudinary } from './cloudinaryUpload';
 
 interface RequestsManagerProps {
     theme: any;
@@ -71,6 +72,8 @@ interface RequestsManagerProps {
 const DEFAULT_ROOM_TYPE_OPTIONS = ['Standard', 'Deluxe', 'Suite', 'Villa', 'Executive'];
 
 const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft'] as const;
+const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
+type RequestDocId = (typeof REQUEST_DOC_IDS)[number];
 
 // Initial Form States
 const initialAccommodation = {
@@ -204,6 +207,7 @@ export default function RequestsManager({
     // Form Data States
     const [accForm, setAccForm] = useState(initialAccommodation);
     const [evtForm, setEvtForm] = useState(initialEvent);
+    const [uploadingDocs, setUploadingDocs] = useState<Record<string, boolean>>({});
     // Combined/Series forms would use similar structures or composite
 
     // Table state for All Requests view
@@ -1116,6 +1120,56 @@ export default function RequestsManager({
             });
         };
 
+        const getRequestDocMeta = (docId: RequestDocId): { name: string; url: string; publicId?: string } | null => {
+            const docValue = (accForm as any)?.invoices?.[docId];
+            if (!docValue) return null;
+            if (typeof docValue === 'string') {
+                return { name: docValue, url: docValue };
+            }
+            if (typeof docValue === 'object') {
+                const url = String(docValue.url || docValue.secure_url || '');
+                const name = String(docValue.name || docValue.original_filename || url || 'Uploaded file');
+                const publicId = String(docValue.publicId || docValue.public_id || '');
+                return { name, url, publicId: publicId || undefined };
+            }
+            return null;
+        };
+
+        const clearRequestDoc = (docId: RequestDocId) => {
+            setAccForm((prev: any) => ({
+                ...prev,
+                invoices: {
+                    ...(prev?.invoices || {}),
+                    [docId]: null,
+                },
+            }));
+        };
+
+        const uploadRequestDoc = async (docId: RequestDocId, file: File) => {
+            setUploadingDocs((prev) => ({ ...prev, [docId]: true }));
+            try {
+                const uploaded = await uploadFileToCloudinary(file, {
+                    folder: `visatour/requests/${activeProperty?.id || 'global'}`,
+                });
+                setAccForm((prev: any) => ({
+                    ...prev,
+                    invoices: {
+                        ...(prev?.invoices || {}),
+                        [docId]: {
+                            name: file.name,
+                            url: uploaded.secure_url,
+                            publicId: uploaded.public_id,
+                            uploadedAt: new Date().toISOString(),
+                        },
+                    },
+                }));
+            } catch (e: any) {
+                window.alert(e?.message || 'Failed to upload file to Cloudinary.');
+            } finally {
+                setUploadingDocs((prev) => ({ ...prev, [docId]: false }));
+            }
+        };
+
         const getFormTitle = () => {
             if (requestType === 'event') return 'Event Request';
             if (requestType === 'event_rooms') return 'Event with Rooms';
@@ -1594,18 +1648,54 @@ export default function RequestsManager({
                                 { id: 'inv2', label: 'Invoice 2 Attached' },
                                 { id: 'inv3', label: 'Invoice 3 Attached' },
                                 { id: 'agreement', label: 'Agreement Attached' }
-                            ].map(doc => (
+                            ].map((doc) => {
+                                const docId = doc.id as RequestDocId;
+                                const docMeta = getRequestDocMeta(docId);
+                                const isUploading = !!uploadingDocs[docId];
+                                return (
                                 <div key={doc.id} className="flex flex-col gap-1.5">
                                     <label className="text-[10px] font-bold uppercase opacity-50 px-1">{doc.label}</label>
                                     <div className="group relative">
-                                        <input type="file" className="hidden" id={`file-${doc.id}`} />
+                                        <input
+                                            type="file"
+                                            className="hidden"
+                                            id={`file-${doc.id}`}
+                                            onChange={(e) => {
+                                                const picked = e.target.files?.[0];
+                                                if (picked) void uploadRequestDoc(docId, picked);
+                                                e.target.value = '';
+                                            }}
+                                        />
                                         <label htmlFor={`file-${doc.id}`}
-                                            className="w-full px-4 py-2 rounded-lg border border-dashed border-white/20 bg-black/5 hover:bg-white/5 hover:border-primary/50 transition-all flex items-center justify-center gap-2 cursor-pointer text-xs font-medium">
-                                            <Box size={14} className="opacity-40" /> Choose File / Drag here
+                                            className={`w-full px-4 py-2 rounded-lg border border-dashed border-white/20 bg-black/5 hover:bg-white/5 hover:border-primary/50 transition-all flex items-center justify-center gap-2 text-xs font-medium ${isUploading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                                            <Box size={14} className="opacity-40" /> {isUploading ? 'Uploading...' : 'Choose File / Drag here'}
                                         </label>
                                     </div>
+                                    {docMeta ? (
+                                        <div className="flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-[10px]" style={{ borderColor: colors.border }}>
+                                            <a
+                                                href={docMeta.url || '#'}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="truncate underline"
+                                                style={{ color: colors.primary }}
+                                            >
+                                                {docMeta.name}
+                                            </a>
+                                            {!readOnlyOperational && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => clearRequestDoc(docId)}
+                                                    className="px-2 py-0.5 rounded border"
+                                                    style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
+                                        </div>
+                                    ) : null}
                                 </div>
-                            ))}
+                            )})}
                         </div>
                         <div className="flex flex-col h-full">
                             <label className="text-[10px] font-bold uppercase opacity-50 px-1 mb-1.5">Additional Note</label>
