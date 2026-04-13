@@ -10,6 +10,7 @@ export const USER_ROLE_OPTIONS = [
     'Sales Manager',
     'Sales Executive',
     'Sales Coordinator',
+    'Reservations Team',
 ] as const;
 
 export type UserRoleId = (typeof USER_ROLE_OPTIONS)[number];
@@ -68,6 +69,7 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
     'Sales Manager': permSet('mutate.operational'),
     'Sales Executive': permSet('mutate.operational'),
     'Sales Coordinator': permSet('mutate.operational'),
+    'Reservations Team': permSet('mutate.operational'),
 };
 
 export function normalizeUserRole(user: any): UserRoleId {
@@ -84,6 +86,7 @@ export function normalizeUserRole(user: any): UserRoleId {
     }
     if (r.includes('sales manager')) return 'Sales Manager';
     if (r.includes('sales coordinator')) return 'Sales Coordinator';
+    if (r.includes('reservations team') || r.includes('reservation team') || r === 'reservations') return 'Reservations Team';
     if (r.includes('sales executive')) return 'Sales Executive';
     if (r === 'sales team' || r === 'staff') return 'Sales Executive';
     if (r.includes('sales manager') || r === 'sales manager') return 'Sales Manager';

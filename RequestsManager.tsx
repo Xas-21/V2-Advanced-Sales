@@ -73,6 +73,8 @@ const DEFAULT_ROOM_TYPE_OPTIONS = ['Standard', 'Deluxe', 'Suite', 'Villa', 'Exec
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
 
 const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft', 'Cancelled'] as const;
+const DEFAULT_CXL_REASONS = ['Price too high', 'Changed dates', 'Destination change', 'Budget issues', 'Group cancelled', 'Competitor offer', 'Other'];
+const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
 const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
 type RequestDocId = (typeof REQUEST_DOC_IDS)[number];
 
@@ -236,10 +238,15 @@ export default function RequestsManager({
     const [showDeleteRequestConfirm, setShowDeleteRequestConfirm] = useState(false);
     const [pendingDeleteRequest, setPendingDeleteRequest] = useState<any | null>(null);
     const [cancelReason, setCancelReason] = useState('Price too high');
+    const [cxlReasons, setCxlReasons] = useState<string[]>(DEFAULT_CXL_REASONS);
     const [cancelNote, setCancelNote] = useState('');
     const [showBeoModal, setShowBeoModal] = useState(false);
     const [beoTargetRequestId, setBeoTargetRequestId] = useState<string | null>(null);
     const [beoNotesDraft, setBeoNotesDraft] = useState('');
+    const [showGisModal, setShowGisModal] = useState(false);
+    const [gisTargetRequestId, setGisTargetRequestId] = useState<string | null>(null);
+    const [gisBillingDraft, setGisBillingDraft] = useState('');
+    const [gisOpsNotesDraft, setGisOpsNotesDraft] = useState('');
 
     const getSearchOnlyParams = (params: any = {}) => {
         const { subView, ...rest } = params || {};
@@ -417,6 +424,76 @@ export default function RequestsManager({
         };
         loadVenuesRooms();
     }, [activeProperty?.id]);
+
+    useEffect(() => {
+        const loadCxlReasons = async () => {
+            const mergeUniqueReasons = (base: string[], incoming: string[]) => {
+                const out: string[] = [];
+                const seen = new Set<string>();
+                [...base, ...incoming].forEach((raw) => {
+                    const v = String(raw || '').trim();
+                    if (!v) return;
+                    const key = v.toLowerCase();
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    out.push(v);
+                });
+                return out;
+            };
+            if (!activeProperty?.id) {
+                setCxlReasons(DEFAULT_CXL_REASONS);
+                return;
+            }
+            let localReasons: string[] = [];
+            try {
+                const raw = localStorage.getItem(cxlStorageKey(activeProperty.id));
+                const parsed = raw ? JSON.parse(raw) : [];
+                localReasons = Array.isArray(parsed)
+                    ? parsed
+                          .map((row: any) => String(row?.label || row?.reason || row || '').trim())
+                          .filter(Boolean)
+                    : [];
+                if (localReasons.length > 0) {
+                    setCxlReasons(localReasons);
+                }
+            } catch {
+                // Ignore local cache read errors.
+            }
+            try {
+                const res = await fetch(apiUrl(`/api/cxl-reasons?propertyId=${encodeURIComponent(activeProperty.id)}`));
+                const data = res.ok ? await res.json() : [];
+                const backendReasons = Array.isArray(data)
+                    ? data
+                          .map((row: any) => String(row?.label || row?.reason || '').trim())
+                          .filter(Boolean)
+                    : [];
+                const mergedReasons = mergeUniqueReasons(localReasons, backendReasons);
+                if (mergedReasons.length) {
+                    setCxlReasons(mergedReasons);
+                    try {
+                        localStorage.setItem(
+                            cxlStorageKey(activeProperty.id),
+                            JSON.stringify(mergedReasons.map((label) => ({ label, reason: label, propertyId: activeProperty.id })))
+                        );
+                    } catch {
+                        // Ignore local cache write errors.
+                    }
+                } else {
+                    setCxlReasons(DEFAULT_CXL_REASONS);
+                }
+            } catch {
+                setCxlReasons((prev) => (prev.length ? prev : DEFAULT_CXL_REASONS));
+            }
+        };
+        loadCxlReasons();
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        if (!Array.isArray(cxlReasons) || cxlReasons.length === 0) return;
+        if (!cxlReasons.includes(cancelReason)) {
+            setCancelReason(cxlReasons[0]);
+        }
+    }, [cxlReasons, cancelReason]);
 
     const venueOptions = propertyVenues.length
         ? propertyVenues
@@ -2641,13 +2718,9 @@ export default function RequestsManager({
                                         className="w-full px-5 py-4 rounded-2xl bg-black/20 border-2 outline-none focus:border-primary transition-all text-sm font-bold appearance-none"
                                         style={{ borderColor: colors.border, color: colors.textMain }}
                                     >
-                                        <option value="Price too high">Price too high</option>
-                                        <option value="Changed dates">Changed dates</option>
-                                        <option value="Destination change">Destination change</option>
-                                        <option value="Budget issues">Budget issues</option>
-                                        <option value="Group cancelled">Group cancelled</option>
-                                        <option value="Competitor offer">Competitor offer</option>
-                                        <option value="Other">Other</option>
+                                        {cxlReasons.map((reason) => (
+                                            <option key={reason} value={reason}>{reason}</option>
+                                        ))}
                                     </select>
                                 </div>
 
@@ -2853,6 +2926,79 @@ export default function RequestsManager({
         </div>
     ) : null;
 
+    const parseNum = (val: any) => {
+        if (val == null) return 0;
+        const n = Number(String(val).replace(/,/g, ''));
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    const isGisEligibleType = (request: any) => {
+        const type = normalizeRequestTypeKey(request?.requestType);
+        return type === 'accommodation' || type === 'series' || type === 'event_rooms';
+    };
+
+    const buildGisRoomLines = (request: any) => {
+        const type = normalizeRequestTypeKey(request?.requestType);
+        const lines: Array<{
+            checkIn: string;
+            checkOut: string;
+            roomType: string;
+            occupancy: string;
+            roomCount: number;
+            rate: number;
+            nights: number;
+            roomNights: number;
+            revenue: number;
+            mealPlan: string;
+        }> = [];
+
+        if (type === 'series') {
+            const groups = Array.isArray(request?.rooms) ? request.rooms : [];
+            groups.forEach((g: any) => {
+                const checkIn = String(g?.arrival || request?.checkIn || '');
+                const checkOut = String(g?.departure || request?.checkOut || '');
+                const roomCount = Math.max(0, parseNum(g?.count));
+                const nights = Math.max(0, calculateNights(checkIn, checkOut));
+                const rate = Math.max(0, parseNum(g?.rate));
+                lines.push({
+                    checkIn,
+                    checkOut,
+                    roomType: String(g?.type || g?.roomType || 'Standard'),
+                    occupancy: String(g?.occupancy || 'N/A'),
+                    roomCount,
+                    rate,
+                    nights,
+                    roomNights: roomCount * nights,
+                    revenue: roomCount * nights * rate,
+                    mealPlan: String(g?.mealPlan || request?.mealPlan || '—'),
+                });
+            });
+            return lines.filter((l) => l.roomCount > 0 && l.nights > 0);
+        }
+
+        const checkIn = String(request?.checkIn || '');
+        const checkOut = String(request?.checkOut || '');
+        const nights = Math.max(0, calculateNights(checkIn, checkOut));
+        const rows = Array.isArray(request?.rooms) ? request.rooms : [];
+        rows.forEach((r: any) => {
+            const roomCount = Math.max(0, parseNum(r?.count));
+            const rate = Math.max(0, parseNum(r?.rate));
+            lines.push({
+                checkIn,
+                checkOut,
+                roomType: String(r?.type || r?.roomType || 'Standard'),
+                occupancy: String(r?.occupancy || 'N/A'),
+                roomCount,
+                rate,
+                nights,
+                roomNights: roomCount * nights,
+                revenue: roomCount * nights * rate,
+                mealPlan: String(r?.mealPlan || request?.mealPlan || '—'),
+            });
+        });
+        return lines.filter((l) => l.roomCount > 0 && l.nights > 0);
+    };
+
     const optionsModal = activeOptionsMenu !== null && (
         <div className="fixed inset-0 z-[130] flex items-center justify-center p-4" onClick={() => setActiveOptionsMenu(null)}>
             <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
@@ -2930,6 +3076,30 @@ export default function RequestsManager({
                                         <Printer size={12} />
                                     </div>
                                     <span>BEO</span>
+                                </button>
+                            );
+                        })()}
+                    {!readOnlyOperational &&
+                        (() => {
+                            const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                            if (!req || !isGisEligibleType(req)) return null;
+                            return (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setGisTargetRequestId(req.id);
+                                        setGisBillingDraft(String(req.gisBillingInstructions ?? ''));
+                                        setGisOpsNotesDraft(String(req.gisOperationalNotes ?? ''));
+                                        setShowGisModal(true);
+                                        setActiveOptionsMenu(null);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]"
+                                    style={{ color: colors.textMain }}
+                                >
+                                    <div className="w-6 h-6 rounded-md bg-cyan-500/10 flex items-center justify-center text-cyan-500">
+                                        <Printer size={12} />
+                                    </div>
+                                    <span>GIS</span>
                                 </button>
                             );
                         })()}
@@ -3047,9 +3217,9 @@ export default function RequestsManager({
                             <h3 className="font-bold text-lg mb-6" style={{ color: colors.textMain }}>Cancel Request</h3>
                             <div className="space-y-4 mb-6">
                                 <select value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className="w-full px-4 py-3 rounded-xl border bg-black/20 font-bold" style={{ borderColor: colors.border, color: colors.textMain }}>
-                                    <option value="Price too high">Price too high</option>
-                                    <option value="Booked elsewhere">Booked elsewhere</option>
-                                    <option value="Other">Other</option>
+                                    {cxlReasons.map((reason) => (
+                                        <option key={reason} value={reason}>{reason}</option>
+                                    ))}
                                 </select>
                                 <textarea value={cancelNote} onChange={(e) => setCancelNote(e.target.value)} className="w-full px-4 py-3 rounded-xl border bg-black/20 font-medium h-24" placeholder="Notes..." style={{ borderColor: colors.border, color: colors.textMain }} />
                             </div>
@@ -3127,7 +3297,7 @@ export default function RequestsManager({
                                         <div className="flex flex-wrap gap-2">
                                             <button
                                                 type="button"
-                                                onClick={() => printBeoDocument(beoReq, beoFin, beoNotesDraft, accounts)}
+                                                onClick={() => printBeoDocument(beoReq, beoFin, beoNotesDraft, accounts, activeProperty)}
                                                 className="px-4 py-2 rounded-xl bg-primary text-black font-bold text-xs flex items-center gap-2">
                                                 <Printer size={14} /> Print
                                             </button>
@@ -3151,34 +3321,71 @@ export default function RequestsManager({
                                         </div>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-6 text-left" style={{ color: colors.textMain }}>
-                                        <div className="border-b pb-4 mb-4" style={{ borderColor: colors.border }}>
-                                            <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoReq.confirmationNo}</h1>
-                                            <p className="text-sm mt-1 font-bold">{beoReq.account}</p>
-                                            <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoReq.status || '—'}</span> · Type: <span className="font-bold">{beoReq.requestType || beoTypeKey}</span></p>
-                                            <p className="text-xs font-mono opacity-50 mt-1">ID: {beoReq.id}</p>
+                                        <div className="border-b pb-4 mb-4 flex flex-wrap items-start justify-between gap-4" style={{ borderColor: colors.border }}>
+                                            <div>
+                                                <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoReq.confirmationNo}</h1>
+                                                <p className="text-sm mt-1 font-bold">{beoReq.account}</p>
+                                                <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoReq.status || '—'}</span> · Type: <span className="font-bold">{beoReq.requestType || beoTypeKey}</span></p>
+                                                <p className="text-xs font-mono opacity-50 mt-1">ID: {beoReq.id}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                {activeProperty?.logoUrl ? (
+                                                    <img src={activeProperty.logoUrl} alt="Property logo" className="h-14 ml-auto object-contain max-w-[180px]" />
+                                                ) : null}
+                                                <p className="text-xs font-bold mt-2" style={{ color: colors.textMain }}>{activeProperty?.name || 'Property'}</p>
+                                            </div>
                                         </div>
 
                                         <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Contacts (from account)</h4>
-                                        {!beoAcc ? (
-                                            <p className="text-sm opacity-50 italic mb-4">No linked account profile — add account or link by name/ID to show phone and email.</p>
-                                        ) : (
-                                            <div className="space-y-3 mb-6">
-                                                {(Array.isArray(beoAcc.contacts) ? beoAcc.contacts : []).filter((c: any) => contactDisplayName(c) || c?.email || c?.phone).map((c: any, i: number) => (
-                                                    <div key={i} className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                                        <p className="font-bold">{contactDisplayName(c) || 'Contact'}</p>
-                                                        {c.position ? <p className="text-xs opacity-60">{c.position}</p> : null}
-                                                        {c.email ? <p className="text-xs mt-1">Email: {c.email}</p> : null}
-                                                        {c.phone ? <p className="text-xs">Phone: {c.phone}</p> : null}
-                                                    </div>
-                                                ))}
-                                                {!(Array.isArray(beoAcc.contacts) ? beoAcc.contacts : []).some((c: any) => contactDisplayName(c) || c?.email || c?.phone) && (beoAcc.email || beoAcc.phone) && (
-                                                    <div className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                                        {beoAcc.email ? <p className="text-xs">Email: {beoAcc.email}</p> : null}
-                                                        {beoAcc.phone ? <p className="text-xs">Phone: {beoAcc.phone}</p> : null}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
+                                        <div className="overflow-x-auto mb-6">
+                                            <table className="w-full text-xs border-collapse">
+                                                <thead>
+                                                    <tr className="border-b opacity-70" style={{ borderColor: colors.border }}>
+                                                        <th className="text-left py-2 pr-2 w-10">#</th>
+                                                        <th className="text-left py-2 pr-2">Name</th>
+                                                        <th className="text-left py-2 pr-2">Position</th>
+                                                        <th className="text-left py-2 pr-2">Phone</th>
+                                                        <th className="text-left py-2">Email</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {!beoAcc ? (
+                                                        <tr>
+                                                            <td className="py-2 pr-2">1</td>
+                                                            <td className="py-2 pr-2 font-bold">Primary Contact</td>
+                                                            <td className="py-2 pr-2">—</td>
+                                                            <td className="py-2 pr-2">—</td>
+                                                            <td className="py-2">—</td>
+                                                        </tr>
+                                                    ) : (
+                                                        (() => {
+                                                            const list = (Array.isArray(beoAcc.contacts) ? beoAcc.contacts : [])
+                                                                .filter((c: any) => contactDisplayName(c) || c?.email || c?.phone || c?.position);
+                                                            if (list.length > 0) {
+                                                                return list.map((c: any, i: number) => (
+                                                                    <tr key={i} className="border-b" style={{ borderColor: colors.border }}>
+                                                                        <td className="py-2 pr-2">{i + 1}</td>
+                                                                        <td className="py-2 pr-2 font-bold">{contactDisplayName(c) || `Contact ${i + 1}`}</td>
+                                                                        <td className="py-2 pr-2">{c?.position || '—'}</td>
+                                                                        <td className="py-2 pr-2">{c?.phone || '—'}</td>
+                                                                        <td className="py-2">{c?.email || '—'}</td>
+                                                                    </tr>
+                                                                ));
+                                                            }
+                                                            return (
+                                                                <tr>
+                                                                    <td className="py-2 pr-2">1</td>
+                                                                    <td className="py-2 pr-2 font-bold">Primary Contact</td>
+                                                                    <td className="py-2 pr-2">—</td>
+                                                                    <td className="py-2 pr-2">{beoAcc?.phone || '—'}</td>
+                                                                    <td className="py-2">{beoAcc?.email || '—'}</td>
+                                                                </tr>
+                                                            );
+                                                        })()
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
 
                                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-6">
                                             <div><span className="font-bold uppercase text-[10px] opacity-50">Start</span><br />{beoEv.start || '—'}</div>
@@ -3330,6 +3537,295 @@ export default function RequestsManager({
                                 </div>
                             </div>
                         </>
+                    );
+                })()}
+
+                {showGisModal && gisTargetRequestId && (() => {
+                    const gisReq = requests.find((r: any) => String(r.id) === String(gisTargetRequestId)) || (selectedRequest?.id === gisTargetRequestId ? selectedRequest : null);
+                    if (!gisReq) return null;
+                    const gisType = normalizeRequestTypeKey(gisReq.requestType);
+                    if (!isGisEligibleType(gisReq)) return null;
+                    const gisAcc = getAccountForRequest(gisReq, accounts);
+                    const roomLines = buildGisRoomLines(gisReq);
+                    const totalRooms = roomLines.reduce((s, l) => s + l.roomCount, 0);
+                    const totalRoomNights = roomLines.reduce((s, l) => s + l.roomNights, 0);
+                    const totalRevenueRows = roomLines.reduce((s, l) => s + l.revenue, 0);
+                    const totalCost = Math.max(totalRevenueRows, parseNum(gisReq.totalCost));
+                    const paidAmount = parseNum(gisReq.paidAmount);
+                    const remaining = Math.max(0, totalCost - paidAmount);
+                    const contacts = (Array.isArray(gisAcc?.contacts) ? gisAcc.contacts : [])
+                        .filter((c: any) => contactDisplayName(c) || c?.email || c?.phone);
+
+                    return (
+                        <div className="fixed inset-0 z-[165] flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" aria-hidden />
+                            <div className="relative w-full max-w-5xl max-h-[92vh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden animate-in zoom-in duration-200"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <div className="shrink-0 p-4 border-b flex flex-wrap items-center gap-2 justify-between" style={{ borderColor: colors.border }}>
+                                    <h3 className="font-black text-sm uppercase tracking-wider" style={{ color: colors.textMain }}>Group Information Sheet (GIS)</h3>
+                                    <div className="flex flex-wrap gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const popup = window.open('', '_blank', 'width=1200,height=900');
+                                                if (!popup) return;
+                                                const esc = (v: any) =>
+                                                    String(v ?? '')
+                                                        .replace(/&/g, '&amp;')
+                                                        .replace(/</g, '&lt;')
+                                                        .replace(/>/g, '&gt;');
+                                                const linesHtml = roomLines.map((l, idx) => `
+                                                    <tr>
+                                                        <td>${idx + 1}</td>
+                                                        <td>${esc(l.checkIn || '—')}</td>
+                                                        <td>${esc(l.checkOut || '—')}</td>
+                                                        <td>${esc(l.roomType)}</td>
+                                                        <td>${esc(l.occupancy)}</td>
+                                                        <td style="text-align:center;">${l.roomCount}</td>
+                                                        <td style="text-align:center;">${l.nights}</td>
+                                                        <td style="text-align:center;">${l.roomNights}</td>
+                                                        <td style="text-align:right;">${formatMoney(l.rate, 0)}</td>
+                                                        <td style="text-align:right;">${formatMoney(l.revenue, 0)}</td>
+                                                        <td>${esc(l.mealPlan || '—')}</td>
+                                                    </tr>
+                                                `).join('');
+                                                const contactRowsHtml = contacts.length
+                                                    ? contacts.map((c: any, idx: number) => `
+                                                        <tr>
+                                                            <td>${idx + 1}</td>
+                                                            <td>${esc(contactDisplayName(c) || 'Contact')}</td>
+                                                            <td>${esc(c?.position || '—')}</td>
+                                                            <td>${esc(c?.phone || '—')}</td>
+                                                            <td>${esc(c?.email || '—')}</td>
+                                                        </tr>
+                                                    `).join('')
+                                                    : `
+                                                        <tr>
+                                                            <td>1</td>
+                                                            <td>Primary Contact</td>
+                                                            <td>—</td>
+                                                            <td>${esc(gisAcc?.phone || '—')}</td>
+                                                            <td>${esc(gisAcc?.email || '—')}</td>
+                                                        </tr>
+                                                    `;
+                                                popup.document.write(`
+                                                    <html><head><title>GIS ${gisReq.confirmationNo || gisReq.id}</title>
+                                                    <style>
+                                                    body{font-family:Arial,sans-serif;padding:24px;color:#111}
+                                                    table{width:100%;border-collapse:collapse;margin-top:8px}
+                                                    th,td{border:1px solid #cfd4dc;padding:6px;font-size:12px}
+                                                    th{background:#f6f7fa;text-align:left}
+                                                    .box{border:1px solid #cfd4dc;border-radius:8px;padding:10px;margin-top:10px;white-space:pre-wrap}
+                                                    .kpis{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px;margin-top:10px}
+                                                    .kpi{border:1px solid #cfd4dc;border-radius:8px;padding:10px;background:#fbfcff}
+                                                    .kpi-label{font-size:10px;font-weight:700;text-transform:uppercase;opacity:0.7;margin-bottom:4px}
+                                                    .kpi-value{font-size:16px;font-weight:700}
+                                                    </style>
+                                                    </head><body>
+                                                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+                                                        <div><h2 style="margin:0;">Group Information Sheet (GIS)</h2><div>${activeProperty?.name || 'Property'}</div></div>
+                                                        ${activeProperty?.logoUrl ? `<img src="${activeProperty.logoUrl}" style="height:56px;max-width:160px;object-fit:contain;" />` : ''}
+                                                    </div>
+                                                    <p><b>Company:</b> ${esc(gisReq.account || gisReq.accountName || '—')}<br/><b>Group:</b> ${esc(gisReq.requestName || gisReq.confirmationNo || gisReq.id || '—')}<br/><b>Type:</b> ${esc(gisReq.requestType || gisType)}<br/><b>Status:</b> ${esc(gisReq.status || '—')}</p>
+                                                    <div class="box">
+                                                        <b>Contacts</b>
+                                                        <table>
+                                                            <thead><tr><th style="width:48px">#</th><th>Name</th><th>Position</th><th>Phone</th><th>Email</th></tr></thead>
+                                                            <tbody>${contactRowsHtml}</tbody>
+                                                        </table>
+                                                    </div>
+                                                    <table>
+                                                        <thead><tr><th>#</th><th>Check-in</th><th>Check-out</th><th>Room Type</th><th>Occupancy</th><th>Rooms</th><th>Nights</th><th>Total RN</th><th>Rate / Night</th><th>Total Revenue</th><th>Meal Plan</th></tr></thead>
+                                                        <tbody>${linesHtml || '<tr><td colspan="11">No room lines</td></tr>'}</tbody>
+                                                    </table>
+                                                    <div class="box"><b>Billing Instructions</b><br/>${esc(gisBillingDraft || '—')}</div>
+                                                    <div class="box"><b>Special Operational Notes</b><br/>${esc(gisOpsNotesDraft || '—')}</div>
+                                                    <div class="kpis">
+                                                        <div class="kpi"><div class="kpi-label">Total Rooms</div><div class="kpi-value">${totalRooms}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total Room Nights</div><div class="kpi-value">${totalRoomNights}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total Revenue</div><div class="kpi-value">${formatMoney(totalRevenueRows, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Payment Status</div><div class="kpi-value">${esc(gisReq.paymentStatus || 'Unpaid')}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Paid Amount</div><div class="kpi-value">${formatMoney(paidAmount, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Remaining Payment</div><div class="kpi-value">${formatMoney(remaining, 0)}</div></div>
+                                                    </div>
+                                                    </body></html>
+                                                `);
+                                                popup.document.close();
+                                                popup.focus();
+                                                popup.print();
+                                            }}
+                                            className="px-4 py-2 rounded-xl bg-primary text-black font-bold text-xs flex items-center gap-2"
+                                        >
+                                            <Printer size={14} /> Print
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                await updateRequest(gisTargetRequestId, {
+                                                    gisBillingInstructions: gisBillingDraft,
+                                                    gisOperationalNotes: gisOpsNotesDraft,
+                                                });
+                                                if (selectedRequest?.id === gisTargetRequestId) {
+                                                    setSelectedRequest((prev: any) => prev ? {
+                                                        ...prev,
+                                                        gisBillingInstructions: gisBillingDraft,
+                                                        gisOperationalNotes: gisOpsNotesDraft,
+                                                    } : null);
+                                                }
+                                                setShowGisModal(false);
+                                                setGisTargetRequestId(null);
+                                            }}
+                                            className="px-4 py-2 rounded-xl border font-bold text-xs"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            Save GIS Notes
+                                        </button>
+                                        <button type="button" onClick={() => { setShowGisModal(false); setGisTargetRequestId(null); }} className="px-4 py-2 rounded-xl border font-bold text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                            Close
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-auto p-6 custom-scrollbar">
+                                    <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+                                        <div>
+                                            <h2 className="text-2xl font-black" style={{ color: colors.textMain }}>GIS — {gisReq.confirmationNo || gisReq.id}</h2>
+                                            <p className="text-sm mt-1 font-bold" style={{ color: colors.textMain }}>{gisReq.account || gisReq.accountName || '—'}</p>
+                                            <p className="text-xs opacity-70 mt-1">Group: <span className="font-bold">{gisReq.requestName || '—'}</span> · Type: <span className="font-bold">{gisReq.requestType || gisType}</span></p>
+                                        </div>
+                                        <div className="text-right">
+                                            {activeProperty?.logoUrl ? (
+                                                <img src={activeProperty.logoUrl} alt="Property logo" className="h-14 ml-auto object-contain max-w-[180px]" />
+                                            ) : null}
+                                            <p className="text-xs font-bold mt-2" style={{ color: colors.textMain }}>{activeProperty?.name || 'Property'}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-4 rounded-xl border mb-4" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <h4 className="text-[11px] font-black uppercase tracking-widest opacity-60 mb-2">Contact Details</h4>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-xs border-collapse">
+                                                <thead>
+                                                    <tr className="border-b opacity-70" style={{ borderColor: colors.border }}>
+                                                        <th className="text-left py-2 pr-2 w-10">#</th>
+                                                        <th className="text-left py-2 pr-2">Name</th>
+                                                        <th className="text-left py-2 pr-2">Position</th>
+                                                        <th className="text-left py-2 pr-2">Phone</th>
+                                                        <th className="text-left py-2">Email</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {contacts.length > 0 ? contacts.map((c: any, i: number) => (
+                                                        <tr key={i} className="border-b" style={{ borderColor: colors.border }}>
+                                                            <td className="py-2 pr-2">{i + 1}</td>
+                                                            <td className="py-2 pr-2 font-bold">{contactDisplayName(c) || `Contact ${i + 1}`}</td>
+                                                            <td className="py-2 pr-2">{c?.position || '—'}</td>
+                                                            <td className="py-2 pr-2">{c?.phone || '—'}</td>
+                                                            <td className="py-2">{c?.email || '—'}</td>
+                                                        </tr>
+                                                    )) : (
+                                                        <tr>
+                                                            <td className="py-2 pr-2">1</td>
+                                                            <td className="py-2 pr-2 font-bold">Primary Contact</td>
+                                                            <td className="py-2 pr-2">—</td>
+                                                            <td className="py-2 pr-2">{gisAcc?.phone || '—'}</td>
+                                                            <td className="py-2">{gisAcc?.email || '—'}</td>
+                                                        </tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div className="overflow-x-auto mb-5">
+                                        <table className="w-full text-xs border-collapse min-w-[980px]">
+                                            <thead>
+                                                <tr className="border-b opacity-70" style={{ borderColor: colors.border }}>
+                                                    <th className="text-left py-2 pr-2">#</th>
+                                                    <th className="text-left py-2 pr-2">Check-in</th>
+                                                    <th className="text-left py-2 pr-2">Check-out</th>
+                                                    <th className="text-left py-2 pr-2">Room Type</th>
+                                                    <th className="text-left py-2 pr-2">Occupancy</th>
+                                                    <th className="text-center py-2">Rooms</th>
+                                                    <th className="text-center py-2">Nights</th>
+                                                    <th className="text-center py-2">Total RN</th>
+                                                    <th className="text-right py-2">Rate/Night</th>
+                                                    <th className="text-right py-2">Revenue</th>
+                                                    <th className="text-left py-2">Meal Plan</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {roomLines.length === 0 ? (
+                                                    <tr><td colSpan={11} className="py-4 italic opacity-50">No room lines</td></tr>
+                                                ) : roomLines.map((line, idx) => (
+                                                    <tr key={`${line.roomType}-${line.occupancy}-${idx}`} className="border-b" style={{ borderColor: colors.border }}>
+                                                        <td className="py-2 pr-2">{idx + 1}</td>
+                                                        <td className="py-2 pr-2">{line.checkIn || '—'}</td>
+                                                        <td className="py-2 pr-2">{line.checkOut || '—'}</td>
+                                                        <td className="py-2 pr-2 font-bold">{line.roomType}</td>
+                                                        <td className="py-2 pr-2">{line.occupancy}</td>
+                                                        <td className="text-center py-2">{line.roomCount}</td>
+                                                        <td className="text-center py-2">{line.nights}</td>
+                                                        <td className="text-center py-2 font-bold">{line.roomNights}</td>
+                                                        <td className="text-right py-2">{formatMoney(line.rate, 0)}</td>
+                                                        <td className="text-right py-2 font-bold">{formatMoney(line.revenue, 0)}</td>
+                                                        <td className="py-2">{line.mealPlan || '—'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3 text-sm mb-5">
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Total rooms</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRooms}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Total room nights</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRoomNights}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Total revenue</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(totalRevenueRows, 0)}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Payment status</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: getStatusColor(gisReq.status) }}>{gisReq.paymentStatus || 'Unpaid'}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Paid amount</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(paidAmount, 0)}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Remaining payment</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(remaining, 0)}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="mb-4">
+                                        <label className="text-[10px] font-black uppercase opacity-50">Billing Instructions</label>
+                                        <textarea
+                                            value={gisBillingDraft}
+                                            onChange={(e) => setGisBillingDraft(e.target.value)}
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[90px] text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                            placeholder="Add billing instructions for operations / finance..."
+                                        />
+                                    </div>
+
+                                    <div className="mb-2">
+                                        <label className="text-[10px] font-black uppercase opacity-50">Special Operational Notes</label>
+                                        <textarea
+                                            value={gisOpsNotesDraft}
+                                            onChange={(e) => setGisOpsNotesDraft(e.target.value)}
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border min-h-[90px] text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                            placeholder="Arrival prep, rooming notes, special handling..."
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     );
                 })()}
 

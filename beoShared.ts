@@ -214,7 +214,7 @@ export function calculateAccFinancialsForRequest(
     };
 }
 
-export function printBeoDocument(req: any, fin: any, notes: string, accounts: any[]) {
+export function printBeoDocument(req: any, fin: any, notes: string, accounts: any[], activeProperty?: any) {
     const w = window.open('', '_blank');
     if (!w) {
         alert('Please allow pop-ups to print or save the BEO as PDF.');
@@ -232,31 +232,25 @@ export function printBeoDocument(req: any, fin: any, notes: string, accounts: an
     const pkg = formatAgendaPackageSummary(req.agenda || []) || req.mealPlan || '—';
     const payLabel = fin.paymentStatus === 'Deposit' ? 'Partial / deposit' : fin.paymentStatus;
 
-    const contactsHtml = (() => {
-        if (!acc) return '<p class="sub">No linked account profile.</p>';
-        const chunks: string[] = [];
+    const contactsRowsHtml = (() => {
+        if (!acc) {
+            return '<tr><td>1</td><td>Primary Contact</td><td>—</td><td>—</td><td>—</td></tr>';
+        }
+        const rows: string[] = [];
         const clist = Array.isArray(acc.contacts) ? acc.contacts : [];
-        for (const c of clist) {
+        clist.forEach((c: any, i: number) => {
             const name = contactDisplayName(c);
-            if (!name && !c?.email && !c?.phone && !c?.position) continue;
-            chunks.push(
-                '<div class="contact">'
-                    + (name ? `<div class="cname">${escapeHtml(name)}</div>` : '')
-                    + (c.position ? `<div class="sub">${escapeHtml(c.position)}</div>` : '')
-                    + (c.email ? `<div>Email: ${escapeHtml(c.email)}</div>` : '')
-                    + (c.phone ? `<div>Phone: ${escapeHtml(c.phone)}</div>` : '')
-                    + '</div>'
+            if (!name && !c?.email && !c?.phone && !c?.position) return;
+            rows.push(
+                `<tr><td>${i + 1}</td><td>${escapeHtml(name || `Contact ${i + 1}`)}</td><td>${escapeHtml(c?.position || '—')}</td><td>${escapeHtml(c?.phone || '—')}</td><td>${escapeHtml(c?.email || '—')}</td></tr>`
+            );
+        });
+        if (!rows.length) {
+            rows.push(
+                `<tr><td>1</td><td>Primary Contact</td><td>—</td><td>${escapeHtml(acc?.phone || '—')}</td><td>${escapeHtml(acc?.email || '—')}</td></tr>`
             );
         }
-        if (chunks.length === 0 && (acc.email || acc.phone)) {
-            chunks.push(
-                '<div class="contact">'
-                    + (acc.email ? `<div>Email: ${escapeHtml(acc.email)}</div>` : '')
-                    + (acc.phone ? `<div>Phone: ${escapeHtml(acc.phone)}</div>` : '')
-                    + '</div>'
-            );
-        }
-        return chunks.length ? chunks.join('') : '<p class="sub">No contacts on file.</p>';
+        return rows.join('');
     })();
 
     const specialRequestsCombined = formatBeoSpecialRequestsCombined(req);
@@ -299,15 +293,21 @@ th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}
 th{background:#f0f0f0;font-size:10px;text-transform:uppercase}
 td.sub,.sub{color:#666;font-style:italic}
 .num{text-align:right}
-.contact{border:1px solid #e5e5e5;border-radius:8px;padding:10px;margin-bottom:8px}
-.cname{font-weight:700}
 .paybox{border:1px solid #ddd;border-radius:8px;padding:12px;margin:16px 0;background:#fafafa}
+.header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.prop-logo{height:56px;max-width:170px;object-fit:contain}
 </style></head><body>
+<div class="header">
+<div>
 <h1>Banquet event order (BEO)</h1>
+<p><strong>Property:</strong> ${escapeHtml(activeProperty?.name || req?.propertyName || 'Property')}</p>
+</div>
+${activeProperty?.logoUrl ? `<img src="${escapeHtml(activeProperty.logoUrl)}" class="prop-logo" />` : ''}
+</div>
 <p><strong>Confirmation:</strong> ${escapeHtml(req.confirmationNo)} &nbsp;|&nbsp; <strong>System ID:</strong> ${escapeHtml(req.id)}</p>
 <p><strong>Account:</strong> ${escapeHtml(req.account || '—')}</p>
 <h2>Contacts</h2>
-${contactsHtml}
+<table><thead><tr><th style="width:48px">#</th><th>Name</th><th>Position</th><th>Phone</th><th>Email</th></tr></thead><tbody>${contactsRowsHtml}</tbody></table>
 <h2>Event summary</h2>
 <p><strong>Status:</strong> ${escapeHtml(req.status || '—')} &nbsp;|&nbsp; <strong>Request type:</strong> ${escapeHtml(req.requestType || beoType)}</p>
 <p><strong>Start:</strong> ${escapeHtml(ev.start || '—')} &nbsp; <strong>End:</strong> ${escapeHtml(ev.end || '—')} &nbsp;|&nbsp; <strong>Package:</strong> ${escapeHtml(pkg)}</p>

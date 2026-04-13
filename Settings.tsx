@@ -86,6 +86,16 @@ const defaultTaxesForProperty = (propertyId: string) => [
     { id: 'service', label: 'Service Fee', rate: 12, scope: { accommodation: true, transport: false, foodAndBeverage: true, events: false }, propertyId },
 ];
 
+const DEFAULT_CXL_REASONS = [
+    'Price too high',
+    'Changed dates',
+    'Destination change',
+    'Budget issues',
+    'Group cancelled',
+    'Competitor offer',
+    'Other',
+];
+
 export default function Settings({
     theme,
     currentUser,
@@ -502,6 +512,47 @@ export default function Settings({
     );
 
     const [activePropTab, setActivePropTab] = useState('rooms');
+    const [cxlReasons, setCxlReasons] = useState<any[]>([]);
+    const [newCxlReason, setNewCxlReason] = useState('');
+    const [editCxlId, setEditCxlId] = useState<string | null>(null);
+    const [editCxlLabel, setEditCxlLabel] = useState('');
+    const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
+    const fallbackCxlReasonId = (propertyId: string, label: string, idx: number) =>
+        `cxl-${String(propertyId || '').trim()}-${String(label || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')}-${idx}`;
+    const normalizeCxlRows = (propertyId: string, rows: any[]) =>
+        (Array.isArray(rows) ? rows : [])
+            .map((row: any, idx: number) => {
+                const label = String(row?.label || row?.reason || '').trim();
+                if (!label) return null;
+                const rawId = String(row?.id || '').trim();
+                return {
+                    id: rawId || fallbackCxlReasonId(propertyId, label, idx),
+                    label,
+                    propertyId: String(propertyId || ''),
+                };
+            })
+            .filter(Boolean) as Array<{ id: string; label: string; propertyId: string }>;
+    const persistCxlLocal = (propertyId: string, rows: any[]) => {
+        try {
+            const payload = normalizeCxlRows(propertyId, rows);
+            localStorage.setItem(cxlStorageKey(propertyId), JSON.stringify(payload));
+        } catch {
+            // Ignore localStorage write failures.
+        }
+    };
+    const loadCxlLocal = (propertyId: string) => {
+        try {
+            const raw = localStorage.getItem(cxlStorageKey(propertyId));
+            const parsed = raw ? JSON.parse(raw) : [];
+            const normalized = normalizeCxlRows(propertyId, parsed);
+            return normalized;
+        } catch {
+            return [];
+        }
+    };
 
     const [taxonomySegments, setTaxonomySegments] = useState<string[]>([]);
     const [taxonomyAccountTypes, setTaxonomyAccountTypes] = useState<string[]>([]);
@@ -550,6 +601,9 @@ export default function Settings({
         setNewPkgName('');
         setNewPkgCode('');
         setNewPkgTimingId('coffee_1');
+        setEditCxlId(null);
+        setEditCxlLabel('');
+        setNewCxlReason('');
     }, [managingProperty?.id]);
 
     useEffect(() => {
@@ -584,6 +638,41 @@ export default function Settings({
                     setFinancialData([{ year: new Date().getFullYear(), months: generateInitialMonths() }]);
                 }
             });
+
+        fetch(apiUrl(`/api/cxl-reasons?propertyId=${propId}`))
+            .then(res => res.json())
+            .then(data => {
+                const localRows = loadCxlLocal(propId);
+                const normalized = normalizeCxlRows(propId, data);
+                if (normalized.length > 0) {
+                    setCxlReasons(normalized);
+                    persistCxlLocal(propId, normalized);
+                } else if (localRows.length > 0) {
+                    setCxlReasons(localRows);
+                } else {
+                    const defaults = DEFAULT_CXL_REASONS.map((label) => ({
+                        id: `default-${label}`.replace(/\s+/g, '-').toLowerCase(),
+                        label,
+                        propertyId: propId,
+                    }));
+                    setCxlReasons(defaults);
+                    persistCxlLocal(propId, defaults);
+                }
+            })
+            .catch(() => {
+                const localRows = loadCxlLocal(propId);
+                if (localRows.length > 0) {
+                    setCxlReasons(localRows);
+                    return;
+                }
+                const defaults = DEFAULT_CXL_REASONS.map((label) => ({
+                    id: `default-${label}`.replace(/\s+/g, '-').toLowerCase(),
+                    label,
+                    propertyId: propId,
+                }));
+                setCxlReasons(defaults);
+                persistCxlLocal(propId, defaults);
+            });
     }, [managingProperty]);
 
     const tabs = appIsAdmin
@@ -602,6 +691,7 @@ export default function Settings({
         { id: 'financial', label: "Financial & KPI's", icon: TrendingUp },
         { id: 'taxes', label: 'Tax Config', icon: DollarSign },
         { id: 'segments_types', label: 'Segments & Account Types', icon: Tags },
+        { id: 'cxl', label: 'CXL', icon: List },
         ...(appIsAdmin ? [{ id: 'users', label: 'User Mgmt', icon: Users }] : []),
     ];
 
@@ -1322,7 +1412,17 @@ export default function Settings({
                         <ChevronLeft size={16} /> Back to Properties List
                     </button>
                     <div>
-                        <h2 className="text-2xl font-bold mb-2" style={{ color: colors.textMain }}>{managingProperty.name}</h2>
+                        <div className="flex items-center gap-3 mb-2">
+                            {managingProperty.logoUrl ? (
+                                <img
+                                    src={managingProperty.logoUrl}
+                                    alt={`${managingProperty.name} logo`}
+                                    className="w-28 h-16 rounded-lg object-contain border p-1 bg-white/80"
+                                    style={{ borderColor: colors.border }}
+                                />
+                            ) : null}
+                            <h2 className="text-2xl font-bold" style={{ color: colors.textMain }}>{managingProperty.name}</h2>
+                        </div>
                         <p className="text-sm opacity-60" style={{ color: colors.textMuted }}>Manage settings and modules specific to this property</p>
                     </div>
                     
@@ -1346,6 +1446,7 @@ export default function Settings({
                         {activePropTab === 'financial' && renderFinancialTab()}
                         {activePropTab === 'taxes' && renderTaxesTab()}
                         {activePropTab === 'segments_types' && renderSegmentsTypesTab()}
+                        {activePropTab === 'cxl' && renderCxlTab()}
                         {activePropTab === 'users' && renderUsersTab()}
                     </div>
                 </div>
@@ -1358,7 +1459,17 @@ export default function Settings({
                 <div key={prop.id} className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                     <div className="flex justify-between items-start mb-4">
                         <div>
-                            <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>{prop.name}</h2>
+                            <div className="flex items-center gap-2">
+                                {prop.logoUrl ? (
+                                    <img
+                                        src={prop.logoUrl}
+                                        alt={`${prop.name} logo`}
+                                        className="w-20 h-12 rounded-md object-contain border p-1 bg-white/80"
+                                        style={{ borderColor: colors.border }}
+                                    />
+                                ) : null}
+                                <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>{prop.name}</h2>
+                            </div>
                             <p className="text-xs flex items-center gap-1.5 mt-0.5" style={{ color: colors.textMuted }}>
                                 <MapPin size={12} /> {prop.city}, {prop.country}
                             </p>
@@ -2150,6 +2261,210 @@ export default function Settings({
         </div>
     );
 
+    const renderCxlTab = () => {
+        const propId = managingProperty?.id;
+        if (!propId) return null;
+
+        const saveReason = async (label: string, id?: string) => {
+            const clean = String(label || '').trim();
+            if (!clean) return null;
+            const payload: any = { label: clean, reason: clean, propertyId: propId };
+            if (id) payload.id = id;
+            const res = await fetch(apiUrl('/api/cxl-reasons'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) throw new Error('Failed to save cancellation reason');
+            return res.json();
+        };
+
+        const handleAddReason = async () => {
+            const clean = String(newCxlReason || '').trim();
+            if (!clean) return;
+            const exists = cxlReasons.some((row: any) => String(row?.label || '').toLowerCase() === clean.toLowerCase());
+            if (exists) return;
+            const tempRow = {
+                id: `local-${Date.now()}`,
+                label: clean,
+                reason: clean,
+                propertyId: propId,
+            };
+            const optimisticRows = [...cxlReasons, tempRow];
+            setCxlReasons(optimisticRows);
+            persistCxlLocal(propId, optimisticRows);
+            setNewCxlReason('');
+            try {
+                const saved = await saveReason(clean);
+                if (!saved || !saved.id) return;
+                setCxlReasons((prev: any[]) => {
+                    const next = prev.map((row: any) => (String(row.id) === String(tempRow.id) ? saved : row));
+                    persistCxlLocal(propId, next);
+                    return next;
+                });
+            } catch (err) {
+                console.error('Error adding cancellation reason:', err);
+            }
+        };
+
+        const handleSaveEditReason = async (id: string) => {
+            const clean = String(editCxlLabel || '').trim();
+            if (!clean) return;
+            setCxlReasons((prev: any[]) => {
+                const next = prev.map((row: any) =>
+                    String(row.id) === String(id)
+                        ? { ...row, label: clean, reason: clean }
+                        : row
+                );
+                persistCxlLocal(propId, next);
+                return next;
+            });
+            setEditCxlId(null);
+            setEditCxlLabel('');
+            try {
+                const saved = await saveReason(clean, id);
+                if (!saved || !saved.id) return;
+                setCxlReasons((prev: any[]) => {
+                    const next = prev.map((row: any) => (String(row.id) === String(id) ? saved : row));
+                    persistCxlLocal(propId, next);
+                    return next;
+                });
+            } catch (err) {
+                console.error('Error editing cancellation reason:', err);
+            }
+        };
+
+        const handleDeleteReason = async (id: string) => {
+            if (!window.confirm('Delete this cancellation reason?')) return;
+            setCxlReasons((prev: any[]) => {
+                const next = prev.filter((row: any) => String(row.id) !== String(id));
+                persistCxlLocal(propId, next);
+                return next;
+            });
+            if (editCxlId === id) {
+                setEditCxlId(null);
+                setEditCxlLabel('');
+            }
+            try {
+                await fetch(apiUrl(`/api/cxl-reasons/${id}?propertyId=${encodeURIComponent(String(propId))}`), { method: 'DELETE' });
+            } catch (err) {
+                console.error('Error deleting cancellation reason:', err);
+            }
+        };
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div>
+                    <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Cancellation Reasons (CXL)</h2>
+                    <p className="text-sm mt-1" style={{ color: colors.textMuted }}>
+                        Manage property-specific reasons shown in the cancellation popup.
+                    </p>
+                </div>
+
+                <div className="p-4 rounded-xl border flex items-center gap-3" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <input
+                        value={newCxlReason}
+                        onChange={(e) => setNewCxlReason(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddReason();
+                            }
+                        }}
+                        placeholder="Add new cancellation reason..."
+                        className="flex-1 px-4 py-3 rounded-xl border bg-black/20 outline-none"
+                        style={{ borderColor: colors.border, color: colors.textMain }}
+                    />
+                    <button
+                        onClick={handleAddReason}
+                        className="px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 hover:brightness-110 transition-all"
+                        style={{ backgroundColor: colors.primary, color: '#000' }}
+                    >
+                        <Plus size={14} /> Add
+                    </button>
+                </div>
+
+                <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <table className="w-full text-left">
+                        <thead style={{ backgroundColor: colors.bg }}>
+                            <tr>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Reason</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider text-right" style={{ color: colors.textMuted }}>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y" style={{ borderColor: colors.border }}>
+                            {cxlReasons.map((row: any) => {
+                                const rowId = String(row.id || '');
+                                const isEditing = editCxlId === rowId;
+                                return (
+                                    <tr key={rowId || row.label} className="hover:bg-white/5 transition-colors">
+                                        <td className="p-4">
+                                            {isEditing ? (
+                                                <input
+                                                    value={editCxlLabel}
+                                                    onChange={(e) => setEditCxlLabel(e.target.value)}
+                                                    className="w-full px-3 py-2 rounded-lg border bg-black/20 outline-none"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            ) : (
+                                                <span className="font-medium" style={{ color: colors.textMain }}>{row.label}</span>
+                                            )}
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            {isEditing ? (
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        onClick={() => handleSaveEditReason(rowId)}
+                                                        className="px-3 py-1.5 rounded-lg text-xs font-bold border"
+                                                        style={{ borderColor: colors.primary, color: colors.primary }}
+                                                    >
+                                                        Save
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            setEditCxlId(null);
+                                                            setEditCxlLabel('');
+                                                        }}
+                                                        className="px-3 py-1.5 rounded-lg text-xs font-bold border"
+                                                        style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            setEditCxlId(rowId);
+                                                            setEditCxlLabel(String(row.label || ''));
+                                                        }}
+                                                        className="p-1.5 rounded hover:bg-white/10"
+                                                        style={{ color: colors.textMuted }}
+                                                        title="Edit reason"
+                                                    >
+                                                        <Edit size={14} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteReason(rowId)}
+                                                        className="p-1.5 rounded hover:bg-red-500/10"
+                                                        style={{ color: colors.red }}
+                                                        title="Delete reason"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+    };
+
     const renderUsersTab = () => {
         if (selectedUserForStats) {
             return (
@@ -2716,6 +3031,55 @@ export default function Settings({
                                             <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50" style={{ color: colors.textMain }}>Country</label>
                                             <input type="text" placeholder="Saudi Arabia" className="w-full p-3 bg-black/10 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.country || ''} onChange={e => setModalFormData({ ...modalFormData, country: e.target.value })} />
+                                        </div>
+                                        <div className="col-span-2">
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50" style={{ color: colors.textMain }}>Property Logo</label>
+                                            <div className="p-3 rounded-xl border bg-black/10 flex items-center gap-3" style={{ borderColor: colors.border }}>
+                                                {modalFormData.logoUrl ? (
+                                                    <img
+                                                        src={modalFormData.logoUrl}
+                                                        alt="Property logo preview"
+                                                        className="w-28 h-16 rounded-lg object-contain border p-1 bg-white/80"
+                                                        style={{ borderColor: colors.border }}
+                                                    />
+                                                ) : (
+                                                    <div className="w-28 h-16 rounded-lg border grid place-items-center text-[9px] font-bold opacity-50" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                        No Logo
+                                                    </div>
+                                                )}
+                                                <label className="px-3 py-2 rounded-lg border text-xs font-bold cursor-pointer hover:bg-white/5 transition-colors" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    Upload Logo
+                                                    <input
+                                                        type="file"
+                                                        accept="image/*"
+                                                        className="hidden"
+                                                        onChange={(e) => {
+                                                            const file = e.target.files?.[0];
+                                                            if (!file) return;
+                                                            if (!file.type.startsWith('image/')) return;
+                                                            const reader = new FileReader();
+                                                            reader.onload = () => {
+                                                                setModalFormData((prev: any) => ({
+                                                                    ...prev,
+                                                                    logoUrl: String(reader.result || ''),
+                                                                }));
+                                                            };
+                                                            reader.readAsDataURL(file);
+                                                            e.target.value = '';
+                                                        }}
+                                                    />
+                                                </label>
+                                                {modalFormData.logoUrl ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setModalFormData((prev: any) => ({ ...prev, logoUrl: '' }))}
+                                                        className="px-3 py-2 rounded-lg border text-xs font-bold hover:bg-red-500/10 transition-colors"
+                                                        style={{ borderColor: 'rgba(239,68,68,0.35)', color: colors.red }}
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                ) : null}
+                                            </div>
                                         </div>
                                     </div>
                                 </>

@@ -117,6 +117,8 @@ import {
     canDeleteContractTemplates,
     canMutateOperational,
     canDeleteRequests,
+    canDeleteRequestPayments,
+    normalizeUserRole,
 } from './userPermissions';
 
 /**
@@ -1789,7 +1791,7 @@ const EventsView = ({
                                 <div className="flex flex-wrap gap-2">
                                     <button
                                         type="button"
-                                        onClick={() => printBeoDocument(beoModalReq, beoFinModal, beoNotesDraft, accounts)}
+                                        onClick={() => printBeoDocument(beoModalReq, beoFinModal, beoNotesDraft, accounts, activeProperty)}
                                         className="px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2"
                                         style={{ backgroundColor: colors.primary, color: '#000' }}
                                     >
@@ -1817,26 +1819,69 @@ const EventsView = ({
                                 </div>
                             </div>
                             <div className="flex-1 overflow-y-auto p-6 text-left" style={{ color: colors.textMain }}>
-                                <div className="border-b pb-4 mb-4" style={{ borderColor: colors.border }}>
-                                    <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoModalReq.confirmationNo}</h1>
-                                    <p className="text-sm mt-1 font-bold">{beoModalReq.account}</p>
-                                    <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoModalReq.status || '—'}</span> · Type: <span className="font-bold">{beoModalReq.requestType || beoTypeKeyModal}</span></p>
+                                <div className="border-b pb-4 mb-4 flex flex-wrap items-start justify-between gap-4" style={{ borderColor: colors.border }}>
+                                    <div>
+                                        <h1 className="text-2xl font-black" style={{ color: colors.textMain }}>BEO — {beoModalReq.confirmationNo}</h1>
+                                        <p className="text-sm mt-1 font-bold">{beoModalReq.account}</p>
+                                        <p className="text-xs opacity-70 mt-2">Request status: <span className="font-bold">{beoModalReq.status || '—'}</span> · Type: <span className="font-bold">{beoModalReq.requestType || beoTypeKeyModal}</span></p>
+                                    </div>
+                                    <div className="text-right">
+                                        {activeProperty?.logoUrl ? (
+                                            <img src={activeProperty.logoUrl} alt="Property logo" className="h-14 ml-auto object-contain max-w-[180px]" />
+                                        ) : null}
+                                        <p className="text-xs font-bold mt-2" style={{ color: colors.textMain }}>{activeProperty?.name || 'Property'}</p>
+                                    </div>
                                 </div>
                                 <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Contacts (from account)</h4>
-                                {!beoAccModal ? (
-                                    <p className="text-sm opacity-50 italic mb-4">No linked account profile.</p>
-                                ) : (
-                                    <div className="space-y-3 mb-6">
-                                        {(Array.isArray(beoAccModal.contacts) ? beoAccModal.contacts : []).filter((c: any) => contactDisplayName(c) || c?.email || c?.phone).map((c: any, i: number) => (
-                                            <div key={i} className="p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                                <p className="font-bold">{contactDisplayName(c) || 'Contact'}</p>
-                                                {c.position ? <p className="text-xs opacity-60">{c.position}</p> : null}
-                                                {c.email ? <p className="text-xs mt-1">Email: {c.email}</p> : null}
-                                                {c.phone ? <p className="text-xs">Phone: {c.phone}</p> : null}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
+                                <div className="overflow-x-auto mb-6">
+                                    <table className="w-full text-xs border-collapse">
+                                        <thead>
+                                            <tr className="border-b opacity-70" style={{ borderColor: colors.border }}>
+                                                <th className="text-left py-2 pr-2 w-10">#</th>
+                                                <th className="text-left py-2 pr-2">Name</th>
+                                                <th className="text-left py-2 pr-2">Position</th>
+                                                <th className="text-left py-2 pr-2">Phone</th>
+                                                <th className="text-left py-2">Email</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {!beoAccModal ? (
+                                                <tr>
+                                                    <td className="py-2 pr-2">1</td>
+                                                    <td className="py-2 pr-2 font-bold">Primary Contact</td>
+                                                    <td className="py-2 pr-2">—</td>
+                                                    <td className="py-2 pr-2">—</td>
+                                                    <td className="py-2">—</td>
+                                                </tr>
+                                            ) : (
+                                                (() => {
+                                                    const list = (Array.isArray(beoAccModal.contacts) ? beoAccModal.contacts : [])
+                                                        .filter((c: any) => contactDisplayName(c) || c?.email || c?.phone || c?.position);
+                                                    if (list.length > 0) {
+                                                        return list.map((c: any, i: number) => (
+                                                            <tr key={i} className="border-b" style={{ borderColor: colors.border }}>
+                                                                <td className="py-2 pr-2">{i + 1}</td>
+                                                                <td className="py-2 pr-2 font-bold">{contactDisplayName(c) || `Contact ${i + 1}`}</td>
+                                                                <td className="py-2 pr-2">{c?.position || '—'}</td>
+                                                                <td className="py-2 pr-2">{c?.phone || '—'}</td>
+                                                                <td className="py-2">{c?.email || '—'}</td>
+                                                            </tr>
+                                                        ));
+                                                    }
+                                                    return (
+                                                        <tr>
+                                                            <td className="py-2 pr-2">1</td>
+                                                            <td className="py-2 pr-2 font-bold">Primary Contact</td>
+                                                            <td className="py-2 pr-2">—</td>
+                                                            <td className="py-2 pr-2">{beoAccModal?.phone || '—'}</td>
+                                                            <td className="py-2">{beoAccModal?.email || '—'}</td>
+                                                        </tr>
+                                                    );
+                                                })()
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
                                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-6">
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">Start</span><br />{beoEvModal.start || '—'}</div>
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">End</span><br />{beoEvModal.end || '—'}</div>
@@ -3159,6 +3204,7 @@ export default function AdvancedSalesDashboard() {
         (amountSar: number) => formatCompactCurrency(amountSar, currentCurrency),
         [currentCurrency]
     );
+    const isReservationsTeam = normalizeUserRole(currentUser) === 'Reservations Team';
 
     // Persistent Storage Effects
     useEffect(() => {
@@ -3192,10 +3238,17 @@ export default function AdvancedSalesDashboard() {
 
     useEffect(() => {
         if (!isAuthenticated || !currentUser) return;
-        if (currentView === 'reports' && !canAccessReports(currentUser)) {
-            setCurrentView('dashboard');
+        if (isReservationsTeam) {
+            const allowedViews = new Set(['todo', 'requests', 'settings']);
+            if (!allowedViews.has(currentView)) {
+                setCurrentView('requests');
+                return;
+            }
         }
-    }, [currentView, currentUser, isAuthenticated]);
+        if (currentView === 'reports' && !canAccessReports(currentUser)) {
+            setCurrentView(isReservationsTeam ? 'requests' : 'dashboard');
+        }
+    }, [currentView, currentUser, isAuthenticated, isReservationsTeam]);
 
     // Events Sub-View State: 'pipeline' (default), 'calendar', 'availability', 'beo'
     const [eventsSubView, setEventsSubView] = useState('pipeline');
@@ -4487,7 +4540,9 @@ export default function AdvancedSalesDashboard() {
                             { icon: Users, label: 'Sales Calls Management', id: 'crm' },
                             { icon: FileText, label: 'Contracts', id: 'contracts' },
                             { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' }
-                        ].map((item, i) => (
+                        ]
+                            .filter((item) => !isReservationsTeam || item.id === 'todo' || item.id === 'requests')
+                            .map((item, i) => (
                             <button
                                 key={i}
                                 onClick={() => {
@@ -4513,7 +4568,10 @@ export default function AdvancedSalesDashboard() {
                         {[
                             { icon: BarChart3, label: 'Reports', id: 'reports' },
                             { icon: Settings, label: 'Settings', id: 'settings' }
-                        ].filter((item) => item.id !== 'reports' || canAccessReports(currentUser)).map((item, i) => (
+                        ]
+                            .filter((item) => item.id !== 'reports' || canAccessReports(currentUser))
+                            .filter((item) => !isReservationsTeam || item.id === 'settings')
+                            .map((item, i) => (
                             <button
                                 key={i}
                                 onClick={() => {
@@ -5314,7 +5372,7 @@ export default function AdvancedSalesDashboard() {
                                 setRequestsSubView(p.subView);
                             }
                             setRequestSearchParams(p);
-                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} />
+                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} />
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">
