@@ -4897,6 +4897,14 @@ export default function AdvancedSalesDashboard() {
                                     <span className="text-[10px] font-bold uppercase" style={{ color: requestsSubView === 'list' ? colors.textMain : colors.textMuted }}>All Requests</span>
                                 </button>
 
+                                <button
+                                    onClick={() => navigateRequestsSubView('grid')}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${requestsSubView === 'grid' ? 'bg-white/10 border-white/20' : 'border-transparent hover:bg-white/5'}`}
+                                >
+                                    <Grid size={14} style={{ color: requestsSubView === 'grid' ? colors.primary : colors.textMuted }} />
+                                    <span className="text-[10px] font-bold uppercase" style={{ color: requestsSubView === 'grid' ? colors.textMain : colors.textMuted }}>Grid</span>
+                                </button>
+
                                 {canMutateOperational(currentUser) && (
                                     <button
                                         onClick={() => navigateRequestsSubView('new_request')}

@@ -70,8 +70,9 @@ interface RequestsManagerProps {
 }
 
 const DEFAULT_ROOM_TYPE_OPTIONS = ['Standard', 'Deluxe', 'Suite', 'Villa', 'Executive'];
+const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
 
-const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft'] as const;
+const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft', 'Cancelled'] as const;
 const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
 type RequestDocId = (typeof REQUEST_DOC_IDS)[number];
 
@@ -228,6 +229,8 @@ export default function RequestsManager({
     const [searchTerm, setSearchTerm] = useState('');
     const [searchFormExpanded, setSearchFormExpanded] = useState(true);
     const [searchResults, setSearchResults] = useState<any[] | null>(null);
+    const [gridYear, setGridYear] = useState(new Date().getFullYear());
+    const [gridMode, setGridMode] = useState<'active' | 'cxl'>('active');
     const [showCancelModal, setShowCancelModal] = useState(false);
     const [showStatusModal, setShowStatusModal] = useState(false);
     const [showDeleteRequestConfirm, setShowDeleteRequestConfirm] = useState(false);
@@ -3877,6 +3880,354 @@ export default function RequestsManager({
         </div>
         );
     };
+
+    const renderGridView = () => {
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        const companyColWidth = 180;
+        const groupColWidth = 220;
+        const parseYmdToDate = (raw: string): Date | null => {
+            const v = String(raw || '').trim().slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+            const dt = new Date(`${v}T12:00:00`);
+            if (Number.isNaN(dt.getTime())) return null;
+            return dt;
+        };
+        const normalizeGridStatus = (raw: string) => {
+            const v = String(raw || '').trim();
+            if (!v) return 'Inquiry';
+            if (v.toLowerCase() === 'lost') return 'Cancelled';
+            return v;
+        };
+        const clipRowToGridMode = (status: string) => {
+            const isCancelled = String(status).toLowerCase() === 'cancelled';
+            return gridMode === 'cxl' ? isCancelled : !isCancelled;
+        };
+
+        type GridRow = {
+            id: string;
+            monthIndex: number;
+            companyName: string;
+            groupName: string;
+            dayCounts: Record<number, number>;
+            totalRoomNights: number;
+            status: string;
+            paymentStatus: string;
+            offerDeadline: string;
+            depositDeadline: string;
+            paymentDeadline: string;
+        };
+
+        const rowsByMonth = new Map<number, GridRow[]>();
+        for (let m = 0; m < 12; m += 1) rowsByMonth.set(m, []);
+
+        const pushMappedRows = (
+            req: any,
+            status: string,
+            roomNightsByMonthDay: Map<number, Map<number, number>>,
+            suffix: string
+        ) => {
+            roomNightsByMonthDay.forEach((dayMap, monthIndex) => {
+                const totalRoomNights = Array.from(dayMap.values()).reduce((s, n) => s + (Number(n) || 0), 0);
+                if (totalRoomNights <= 0) return;
+                const counts: Record<number, number> = {};
+                dayMap.forEach((value, day) => {
+                    counts[day] = Number(value) || 0;
+                });
+                rowsByMonth.get(monthIndex)?.push({
+                    id: `${req.id || 'REQ'}-${monthIndex}-${suffix}`,
+                    monthIndex,
+                    companyName: String(req.account || req.accountName || '—'),
+                    groupName: String(req.requestName || req.confirmationNo || req.id || '—'),
+                    dayCounts: counts,
+                    totalRoomNights,
+                    status,
+                    paymentStatus: String(req.paymentStatus || 'Unpaid'),
+                    offerDeadline: String(req.offerDeadline || '—'),
+                    depositDeadline: String(req.depositDeadline || '—'),
+                    paymentDeadline: String(req.paymentDeadline || '—'),
+                });
+            });
+        };
+
+        (requests || []).forEach((req: any) => {
+            const typeKey = normalizeRequestTypeKey(req.requestType);
+            if (!['accommodation', 'event_rooms', 'series'].includes(typeKey)) return;
+            const status = normalizeGridStatus(String(req.status || 'Inquiry'));
+            if (!clipRowToGridMode(status)) return;
+
+            if (typeKey === 'series') {
+                const groups = Array.isArray(req.rooms) ? req.rooms : [];
+                groups.forEach((group: any, idx: number) => {
+                    const arrival = parseYmdToDate(String(group?.arrival || req?.checkIn || ''));
+                    const departure = parseYmdToDate(String(group?.departure || req?.checkOut || ''));
+                    if (!arrival || !departure || departure <= arrival) return;
+                    const count = Math.max(0, Number(group?.count || 0));
+                    if (count <= 0) return;
+                    const map = new Map<number, Map<number, number>>();
+                    const cursor = new Date(arrival.getTime());
+                    while (cursor < departure) {
+                        const y = cursor.getFullYear();
+                        const m = cursor.getMonth();
+                        const d = cursor.getDate();
+                        if (y === gridYear) {
+                            if (!map.has(m)) map.set(m, new Map<number, number>());
+                            const monthDays = map.get(m)!;
+                            monthDays.set(d, (monthDays.get(d) || 0) + count);
+                        }
+                        cursor.setDate(cursor.getDate() + 1);
+                    }
+                    pushMappedRows(
+                        {
+                            ...req,
+                            requestName: `${String(req.requestName || req.confirmationNo || req.id || '—')} (Group ${idx + 1})`,
+                        },
+                        status,
+                        map,
+                        `series-${idx}`
+                    );
+                });
+                return;
+            }
+
+            const checkIn = parseYmdToDate(String(req.checkIn || ''));
+            const checkOut = parseYmdToDate(String(req.checkOut || ''));
+            if (!checkIn || !checkOut || checkOut <= checkIn) return;
+            const rooms = Array.isArray(req.rooms) ? req.rooms : [];
+            const totalRoomsPerNight = rooms.reduce((s: number, room: any) => s + Math.max(0, Number(room?.count || 0)), 0);
+            if (totalRoomsPerNight <= 0) return;
+            const map = new Map<number, Map<number, number>>();
+            const cursor = new Date(checkIn.getTime());
+            while (cursor < checkOut) {
+                const y = cursor.getFullYear();
+                const m = cursor.getMonth();
+                const d = cursor.getDate();
+                if (y === gridYear) {
+                    if (!map.has(m)) map.set(m, new Map<number, number>());
+                    const monthDays = map.get(m)!;
+                    monthDays.set(d, (monthDays.get(d) || 0) + totalRoomsPerNight);
+                }
+                cursor.setDate(cursor.getDate() + 1);
+            }
+            pushMappedRows(req, status, map, typeKey);
+        });
+
+        return (
+            <div className="h-full flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: colors.bg }}>
+                <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <div>
+                        <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>
+                            {gridMode === 'cxl' ? 'CXL Grid' : 'Grid'}
+                        </h2>
+                        <p className="text-xs opacity-70" style={{ color: colors.textMuted }}>
+                            Rooms-only monthly grid by property and year.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <label className="text-xs font-bold uppercase" style={{ color: colors.textMuted }}>Year</label>
+                        <input
+                            type="number"
+                            min={2026}
+                            value={gridYear}
+                            onChange={(e) => {
+                                const y = Number(e.target.value);
+                                if (!Number.isFinite(y) || y < 2026) return;
+                                setGridYear(Math.floor(y));
+                            }}
+                            className="w-24 px-3 py-1.5 rounded border bg-black/20 text-sm outline-none"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                        />
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-auto p-4 space-y-5">
+                    {monthNames.map((monthName, monthIndex) => {
+                        const daysInMonth = new Date(gridYear, monthIndex + 1, 0).getDate();
+                        const monthRows = rowsByMonth.get(monthIndex) || [];
+                        return (
+                            <div key={`${gridYear}-${monthIndex}`} className="rounded-xl border overflow-auto" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                                <div className="px-3 py-2 border-b font-black text-sm" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                    {monthName} {gridYear}
+                                </div>
+                                <table className="w-full border-collapse text-[11px]">
+                                    <thead>
+                                        <tr style={{ backgroundColor: colors.bg }}>
+                                            <th
+                                                className="border px-2 py-1 text-left sticky left-0 z-30"
+                                                style={{
+                                                    borderColor: colors.border,
+                                                    backgroundColor: colors.bg,
+                                                    color: colors.textMain,
+                                                    minWidth: companyColWidth,
+                                                    width: companyColWidth,
+                                                    maxWidth: companyColWidth,
+                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                }}
+                                            >
+                                                Company Name
+                                            </th>
+                                            <th
+                                                className="border px-2 py-1 text-left sticky z-30"
+                                                style={{
+                                                    left: companyColWidth,
+                                                    borderColor: colors.border,
+                                                    backgroundColor: colors.bg,
+                                                    color: colors.textMain,
+                                                    minWidth: groupColWidth,
+                                                    width: groupColWidth,
+                                                    maxWidth: groupColWidth,
+                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                }}
+                                            >
+                                                Group Name
+                                            </th>
+                                            {Array.from({ length: daysInMonth }, (_, i) => (
+                                                <th key={`dow-${i + 1}`} className="border px-1 py-1 text-center min-w-[34px]" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                    {GRID_WEEKDAY_CODES[new Date(gridYear, monthIndex, i + 1).getDay()]}
+                                                </th>
+                                            ))}
+                                            <th className="border px-2 py-1 text-center min-w-[80px]" style={{ borderColor: colors.border, color: colors.textMain }}>Total RN</th>
+                                            <th className="border px-2 py-1 text-center min-w-[80px]" style={{ borderColor: colors.border, color: colors.textMain }}>Status</th>
+                                            <th className="border px-2 py-1 text-center min-w-[110px]" style={{ borderColor: colors.border, color: colors.textMain }}>Payment</th>
+                                            <th className="border px-2 py-1 text-center min-w-[120px]" style={{ borderColor: colors.border, color: colors.textMain }}>Opt Date</th>
+                                            <th className="border px-2 py-1 text-center min-w-[120px]" style={{ borderColor: colors.border, color: colors.textMain }}>Deposit</th>
+                                            <th className="border px-2 py-1 text-center min-w-[120px]" style={{ borderColor: colors.border, color: colors.textMain }}>Full Payment</th>
+                                        </tr>
+                                        <tr style={{ backgroundColor: colors.bg }}>
+                                            <th
+                                                className="border px-2 py-1 text-left sticky left-0 z-30"
+                                                style={{
+                                                    borderColor: colors.border,
+                                                    backgroundColor: colors.bg,
+                                                    minWidth: companyColWidth,
+                                                    width: companyColWidth,
+                                                    maxWidth: companyColWidth,
+                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                }}
+                                            />
+                                            <th
+                                                className="border px-2 py-1 text-left sticky z-30"
+                                                style={{
+                                                    left: companyColWidth,
+                                                    borderColor: colors.border,
+                                                    backgroundColor: colors.bg,
+                                                    minWidth: groupColWidth,
+                                                    width: groupColWidth,
+                                                    maxWidth: groupColWidth,
+                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                }}
+                                            />
+                                            {Array.from({ length: daysInMonth }, (_, i) => (
+                                                <th key={`day-${i + 1}`} className="border px-1 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    {i + 1}
+                                                </th>
+                                            ))}
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                            <th className="border px-2 py-1 text-center" style={{ borderColor: colors.border }} />
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {monthRows.map((row) => (
+                                            <tr key={row.id} className="hover:brightness-105 transition-all">
+                                                <td
+                                                    className="border px-2 py-1 sticky left-0 z-20 truncate font-semibold"
+                                                    style={{
+                                                        borderColor: colors.border,
+                                                        backgroundColor: `${getStatusColor(row.status)}20`,
+                                                        color: colors.textMain,
+                                                        minWidth: companyColWidth,
+                                                        width: companyColWidth,
+                                                        maxWidth: companyColWidth,
+                                                        borderLeft: `3px solid ${getStatusColor(row.status)}`,
+                                                        boxShadow: `2px 0 0 ${colors.border}`,
+                                                    }}
+                                                >
+                                                    {row.companyName}
+                                                </td>
+                                                <td
+                                                    className="border px-2 py-1 sticky z-20 truncate font-semibold"
+                                                    style={{
+                                                        left: companyColWidth,
+                                                        borderColor: colors.border,
+                                                        backgroundColor: `${getStatusColor(row.status)}20`,
+                                                        color: colors.textMain,
+                                                        minWidth: groupColWidth,
+                                                        width: groupColWidth,
+                                                        maxWidth: groupColWidth,
+                                                        boxShadow: `2px 0 0 ${colors.border}`,
+                                                    }}
+                                                >
+                                                    {row.groupName}
+                                                </td>
+                                                {Array.from({ length: daysInMonth }, (_, i) => {
+                                                    const day = i + 1;
+                                                    const value = row.dayCounts[day] || 0;
+                                                    return (
+                                                        <td
+                                                            key={`${row.id}-d${day}`}
+                                                            className="border px-1 py-1 text-center"
+                                                            style={{
+                                                                borderColor: colors.border,
+                                                                color: colors.textMain,
+                                                                backgroundColor: value > 0 ? `${getStatusColor(row.status)}18` : 'transparent',
+                                                            }}
+                                                        >
+                                                            {value > 0 ? value : ''}
+                                                        </td>
+                                                    );
+                                                })}
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: colors.primary, backgroundColor: `${getStatusColor(row.status)}14` }}>{row.totalRoomNights}</td>
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: getStatusColor(row.status), backgroundColor: `${getStatusColor(row.status)}14` }}>{row.status}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.paymentStatus}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.offerDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.depositDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.paymentDeadline || '—'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    })}
+
+                    <div className="pt-2 flex items-center justify-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setGridMode('active')}
+                            className="px-4 py-2 rounded border text-xs font-bold uppercase tracking-wide"
+                            style={{
+                                borderColor: gridMode === 'active' ? colors.primary : colors.border,
+                                color: gridMode === 'active' ? colors.primary : colors.textMuted,
+                                backgroundColor: gridMode === 'active' ? colors.primary + '15' : 'transparent',
+                            }}
+                        >
+                            Active Grid
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setGridMode('cxl')}
+                            className="px-4 py-2 rounded border text-xs font-bold uppercase tracking-wide"
+                            style={{
+                                borderColor: gridMode === 'cxl' ? colors.red : colors.border,
+                                color: gridMode === 'cxl' ? colors.red : colors.textMuted,
+                                backgroundColor: gridMode === 'cxl' ? colors.red + '15' : 'transparent',
+                            }}
+                        >
+                            CXL Grid
+                        </button>
+                    </div>
+                </div>
+                {renderGlobalModals()}
+            </div>
+        );
+    };
+
+    if (subView === 'grid') {
+        return renderGridView();
+    }
 
     // Show Search Form when subView = 'search' (single page scroll via parent <main>; no nested overflow)
     if (subView === 'search') {
