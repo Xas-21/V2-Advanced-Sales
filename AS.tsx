@@ -103,6 +103,8 @@ import {
     formatBeoSpecialRequestsCombined,
     inclusiveCalendarDays,
     normalizeRequestTypeKey,
+    getBeoScopeGrandTotalInclTax,
+    deriveBeoPaymentView,
 } from './beoShared';
 import {
     loadSegmentsForProperty,
@@ -711,6 +713,7 @@ function isMiceRequest(req: any) {
     const t = String(req?.requestType || '').toLowerCase();
     if (t === 'event') return true;
     if (t === 'event_rooms') return true;
+    if (t === 'series' || t.includes('series')) return true;
     if (t.includes('event with')) return true;
     return false;
 }
@@ -1691,10 +1694,14 @@ const EventsView = ({
         const beoFallbackDaysModal = beoEvModal.start && beoEvModal.end ? inclusiveCalendarDays(beoEvModal.start, beoEvModal.end) : 1;
         const beoDayDenomModal = beoFinModal ? Math.max(1, beoFinModal.totalEventDays || beoFallbackDaysModal) : 1;
         const beoEventCostPerDayModal = beoFinModal ? beoFinModal.eventCostWithTax / beoDayDenomModal : 0;
-        const beoGrandModal = beoFinModal ? Number(beoFinModal.grandTotalWithTax || 0) : 0;
+        const beoScopeGrandModal = beoFinModal
+            ? getBeoScopeGrandTotalInclTax(beoFinModal, beoModalReq?.requestType)
+            : 0;
         const beoPaidModal = beoFinModal ? Number(beoFinModal.paidAmount || 0) : 0;
-        const beoRemainingModal = Math.max(0, beoGrandModal - beoPaidModal);
-        const beoPayLabelModal = beoFinModal?.paymentStatus === 'Deposit' ? 'Partial / deposit' : (beoFinModal?.paymentStatus || '—');
+        const { remaining: beoRemainingModal, payLabel: beoPayLabelModal } = deriveBeoPaymentView(
+            beoPaidModal,
+            beoScopeGrandModal
+        );
 
         const saveBeoNotesFromEvents = async () => {
             if (readOnly || !beoModalRequestId || !beoModalReq) return;
@@ -1929,37 +1936,8 @@ const EventsView = ({
                                         </tbody>
                                     </table>
                                 </div>
-                                {beoTypeKeyModal === 'event_rooms' && !!(beoModalReq.rooms || []).length && (
-                                    <>
-                                        <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Accommodation (rooms)</h4>
-                                        <div className="overflow-x-auto mb-6">
-                                            <table className="w-full text-xs border-collapse min-w-[400px]">
-                                                <thead>
-                                                    <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
-                                                        <th className="text-left py-2 pr-2">Type</th>
-                                                        <th className="text-center py-2">Rooms</th>
-                                                        <th className="text-right py-2">Subtotal</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {(beoModalReq.rooms || []).map((room: any, idx: number) => {
-                                                        const rNights = beoTypeKeyModal === 'series' ? calculateNights(room.arrival, room.departure) : beoFinModal.nights;
-                                                        const subtotal = Number(room.rate || 0) * Number(room.count || 0) * rNights;
-                                                        return (
-                                                            <tr key={idx} className="border-b" style={{ borderColor: colors.border }}>
-                                                                <td className="py-2 pr-2 font-bold">{room.type}</td>
-                                                                <td className="text-center py-2">{room.count}</td>
-                                                                <td className="text-right py-2 font-mono">{formatMoney(subtotal, 0)}</td>
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </>
-                                )}
                                 <div className="text-sm mb-4 space-y-1 p-4 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                    <p><span className="font-bold">Grand total (incl. tax):</span> {formatMoney(beoGrandModal)}</p>
+                                    <p><span className="font-bold">Event total (incl. tax):</span> {formatMoney(beoScopeGrandModal)}</p>
                                 </div>
                                 <div className="p-4 rounded-xl border mb-4 space-y-2" style={{ borderColor: colors.primary + '40', backgroundColor: colors.primary + '08' }}>
                                     <h4 className="text-xs font-black uppercase tracking-widest opacity-70">Payment</h4>

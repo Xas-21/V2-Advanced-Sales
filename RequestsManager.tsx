@@ -36,6 +36,8 @@ import {
     getAccountForRequest,
     printBeoDocument,
     calculateAccFinancialsForRequest,
+    getBeoScopeGrandTotalInclTax,
+    deriveBeoPaymentView,
 } from './beoShared';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
@@ -247,6 +249,8 @@ export default function RequestsManager({
     const [gisTargetRequestId, setGisTargetRequestId] = useState<string | null>(null);
     const [gisBillingDraft, setGisBillingDraft] = useState('');
     const [gisOpsNotesDraft, setGisOpsNotesDraft] = useState('');
+    /** Series only: map `rooms` row index → include in GIS / print (default true when opened). */
+    const [gisSeriesRowInclude, setGisSeriesRowInclude] = useState<Record<number, boolean>>({});
 
     const getSearchOnlyParams = (params: any = {}) => {
         const { subView, ...rest } = params || {};
@@ -2950,11 +2954,13 @@ export default function RequestsManager({
             roomNights: number;
             revenue: number;
             mealPlan: string;
+            /** Index in `request.rooms` for series (checkbox / print scope). */
+            seriesGroupIndex?: number;
         }> = [];
 
         if (type === 'series') {
             const groups = Array.isArray(request?.rooms) ? request.rooms : [];
-            groups.forEach((g: any) => {
+            groups.forEach((g: any, gi: number) => {
                 const checkIn = String(g?.arrival || request?.checkIn || '');
                 const checkOut = String(g?.departure || request?.checkOut || '');
                 const roomCount = Math.max(0, parseNum(g?.count));
@@ -2971,6 +2977,7 @@ export default function RequestsManager({
                     roomNights: roomCount * nights,
                     revenue: roomCount * nights * rate,
                     mealPlan: String(g?.mealPlan || request?.mealPlan || '—'),
+                    seriesGroupIndex: gi,
                 });
             });
             return lines.filter((l) => l.roomCount > 0 && l.nights > 0);
@@ -3059,7 +3066,7 @@ export default function RequestsManager({
                         (() => {
                             const optReq = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
                             const optKind = optReq ? normalizeRequestTypeKey(optReq.requestType) : '';
-                            if (optKind !== 'event' && optKind !== 'event_rooms') return null;
+                            if (optKind !== 'event' && optKind !== 'event_rooms' && optKind !== 'series') return null;
                             return (
                                 <button
                                     type="button"
@@ -3090,6 +3097,19 @@ export default function RequestsManager({
                                         setGisTargetRequestId(req.id);
                                         setGisBillingDraft(String(req.gisBillingInstructions ?? ''));
                                         setGisOpsNotesDraft(String(req.gisOperationalNotes ?? ''));
+                                        if (normalizeRequestTypeKey(req.requestType) === 'series') {
+                                            const inc: Record<number, boolean> = {};
+                                            (Array.isArray(req.rooms) ? req.rooms : []).forEach((g: any, gi: number) => {
+                                                const rc = Math.max(0, Number(String(g?.count ?? 0).replace(/,/g, '')) || 0);
+                                                const ci = String(g?.arrival || req?.checkIn || '');
+                                                const co = String(g?.departure || req?.checkOut || '');
+                                                const n = Math.max(0, calculateNights(ci, co));
+                                                if (rc > 0 && n > 0) inc[gi] = true;
+                                            });
+                                            setGisSeriesRowInclude(inc);
+                                        } else {
+                                            setGisSeriesRowInclude({});
+                                        }
                                         setShowGisModal(true);
                                         setActiveOptionsMenu(null);
                                     }}
@@ -3280,10 +3300,9 @@ export default function RequestsManager({
                     const beoFallbackDays = beoEv.start && beoEv.end ? inclusiveCalendarDays(beoEv.start, beoEv.end) : 1;
                     const beoDayDenom = Math.max(1, beoFin.totalEventDays || beoFallbackDays);
                     const beoEventCostPerDay = beoFin.eventCostWithTax / beoDayDenom;
-                    const beoGrand = Number(beoFin.grandTotalWithTax || 0);
+                    const beoScopeGrand = getBeoScopeGrandTotalInclTax(beoFin, beoReq.requestType);
                     const beoPaid = Number(beoFin.paidAmount || 0);
-                    const beoRemaining = Math.max(0, beoGrand - beoPaid);
-                    const beoPayLabel = beoFin.paymentStatus === 'Deposit' ? 'Partial / deposit' : beoFin.paymentStatus;
+                    const { remaining: beoRemaining, payLabel: beoPayLabel } = deriveBeoPaymentView(beoPaid, beoScopeGrand);
                     const beoTypeKey = normalizeRequestTypeKey(beoReq.requestType);
                     return (
                         <>
@@ -3444,53 +3463,6 @@ export default function RequestsManager({
                                             </table>
                                         </div>
 
-                                        {beoTypeKey === 'event_rooms' && (
-                                            <>
-                                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Accommodation (rooms)</h4>
-                                                <div className="overflow-x-auto mb-6">
-                                                    <table className="w-full text-xs border-collapse min-w-[480px]">
-                                                        <thead>
-                                                            <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
-                                                                <th className="text-left py-2 pr-2">Room type</th>
-                                                                <th className="text-left py-2 pr-2">Occupancy</th>
-                                                                <th className="text-center py-2">Rooms</th>
-                                                                <th className="text-right py-2">Rate</th>
-                                                                <th className="text-right py-2">Subtotal</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {(!(beoReq.rooms || []).length) ? (
-                                                                <tr><td colSpan={5} className="py-4 italic opacity-50">No rooms</td></tr>
-                                                            ) : (beoReq.rooms || []).map((r: any, idx: number) => {
-                                                                const rNights = beoTypeKey === 'series' ? calculateNights(r.arrival, r.departure) : beoFin.nights;
-                                                                const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
-                                                                return (
-                                                                    <tr key={idx} className="border-b" style={{ borderColor: colors.border }}>
-                                                                        <td className="py-2 pr-2 font-bold">{r.type}</td>
-                                                                        <td className="py-2 pr-2">{r.occupancy}</td>
-                                                                        <td className="text-center py-2">{r.count}</td>
-                                                                        <td className="text-right py-2 font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
-                                                                        <td className="text-right py-2 font-mono font-bold text-primary">{formatMoney(subtotal, 0)}</td>
-                                                                    </tr>
-                                                                );
-                                                            })}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </>
-                                        )}
-
-                                        {!!(beoReq.transportation || []).length && (
-                                            <>
-                                                <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Transportation</h4>
-                                                <ul className="text-sm space-y-1 mb-6 opacity-90">
-                                                    {(beoReq.transportation || []).map((t: any, i: number) => (
-                                                        <li key={t.id ?? i}>{t.type || 'Trip'} — {t.timing || t.notes || '—'} · {formatMoney(Number(t.costPerWay || 0), 0)}</li>
-                                                    ))}
-                                                </ul>
-                                            </>
-                                        )}
-
                                         {beoReq.note ? (
                                             <div className="mb-6 p-3 rounded-xl border text-sm" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                                 <span className="font-bold uppercase text-[10px] opacity-50">Special requests</span>
@@ -3499,12 +3471,7 @@ export default function RequestsManager({
                                         ) : null}
 
                                         <div className="text-sm mb-4 space-y-1 p-4 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                            <p><span className="font-bold">Transport total (incl. tax):</span> {formatMoney(beoFin.transCostWithTax)}</p>
-                                            <p><span className="font-bold">Event total (incl. tax):</span> {formatMoney(beoFin.eventCostWithTax)}</p>
-                                            {beoTypeKey === 'event_rooms' && (
-                                                <p><span className="font-bold">Rooms total (incl. tax):</span> {formatMoney(beoFin.roomsCostWithTax)}</p>
-                                            )}
-                                            <p><span className="font-bold">Grand total (incl. tax):</span> {formatMoney(beoGrand)}</p>
+                                            <p><span className="font-bold">Event total (incl. tax):</span> {formatMoney(beoScopeGrand)}</p>
                                         </div>
 
                                         <div className="p-4 rounded-xl border mb-4 space-y-2" style={{ borderColor: colors.primary + '40', backgroundColor: colors.primary + '08' }}>
@@ -3547,12 +3514,37 @@ export default function RequestsManager({
                     if (!isGisEligibleType(gisReq)) return null;
                     const gisAcc = getAccountForRequest(gisReq, accounts);
                     const roomLines = buildGisRoomLines(gisReq);
-                    const totalRooms = roomLines.reduce((s, l) => s + l.roomCount, 0);
-                    const totalRoomNights = roomLines.reduce((s, l) => s + l.roomNights, 0);
-                    const totalRevenueRows = roomLines.reduce((s, l) => s + l.revenue, 0);
-                    const totalCost = Math.max(totalRevenueRows, parseNum(gisReq.totalCost));
-                    const paidAmount = parseNum(gisReq.paidAmount);
-                    const remaining = Math.max(0, totalCost - paidAmount);
+                    const gisSeriesType = gisType === 'series';
+                    const lineIncludedInGis = (l: (typeof roomLines)[0]) =>
+                        !gisSeriesType || gisSeriesRowInclude[l.seriesGroupIndex ?? -1] !== false;
+                    const selectedGisLines = roomLines.filter(lineIncludedInGis);
+                    const gisRoomFin = calculateAccFinancialsForRequest(gisReq, taxesList, gisReq.requestType);
+                    const totalRoomsGis = selectedGisLines.reduce((s, l) => s + l.roomCount, 0);
+                    const totalRoomNightsGis = selectedGisLines.reduce((s, l) => s + l.roomNights, 0);
+                    const totalRevenueExTaxGis = selectedGisLines.reduce((s, l) => s + l.revenue, 0);
+                    const baseRoomsNoTax = gisRoomFin.roomsCostNoTax;
+                    const totalRevenueInclTaxGis =
+                        baseRoomsNoTax > 0
+                            ? gisRoomFin.roomsCostWithTax * (totalRevenueExTaxGis / baseRoomsNoTax)
+                            : totalRevenueExTaxGis;
+                    const paidAmountGis = parseNum(gisReq.paidAmount);
+                    const { remaining: gisRemaining, payLabel: gisPayLabel } = deriveBeoPaymentView(
+                        paidAmountGis,
+                        totalRevenueInclTaxGis
+                    );
+                    const gisPayColor =
+                        gisPayLabel === 'Paid'
+                            ? colors.green
+                            : gisPayLabel === 'Partial / deposit'
+                              ? colors.yellow
+                              : colors.textMuted;
+                    const seriesGroupIndices = gisSeriesType
+                        ? [...new Set(roomLines.map((l) => l.seriesGroupIndex).filter((x): x is number => x !== undefined))]
+                        : [];
+                    const allSeriesPrintChecked =
+                        !gisSeriesType ||
+                        seriesGroupIndices.length === 0 ||
+                        seriesGroupIndices.every((i) => gisSeriesRowInclude[i] !== false);
                     const contacts = (Array.isArray(gisAcc?.contacts) ? gisAcc.contacts : [])
                         .filter((c: any) => contactDisplayName(c) || c?.email || c?.phone);
 
@@ -3567,6 +3559,10 @@ export default function RequestsManager({
                                         <button
                                             type="button"
                                             onClick={() => {
+                                                if (selectedGisLines.length === 0) {
+                                                    alert('Select at least one check-in block (series) or ensure room lines exist before printing.');
+                                                    return;
+                                                }
                                                 const popup = window.open('', '_blank', 'width=1200,height=900');
                                                 if (!popup) return;
                                                 const esc = (v: any) =>
@@ -3574,7 +3570,7 @@ export default function RequestsManager({
                                                         .replace(/&/g, '&amp;')
                                                         .replace(/</g, '&lt;')
                                                         .replace(/>/g, '&gt;');
-                                                const linesHtml = roomLines.map((l, idx) => `
+                                                const linesHtml = selectedGisLines.map((l, idx) => `
                                                     <tr>
                                                         <td>${idx + 1}</td>
                                                         <td>${esc(l.checkIn || '—')}</td>
@@ -3616,7 +3612,7 @@ export default function RequestsManager({
                                                     th,td{border:1px solid #cfd4dc;padding:6px;font-size:12px}
                                                     th{background:#f6f7fa;text-align:left}
                                                     .box{border:1px solid #cfd4dc;border-radius:8px;padding:10px;margin-top:10px;white-space:pre-wrap}
-                                                    .kpis{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px;margin-top:10px}
+                                                    .kpis{display:grid;grid-template-columns:repeat(2,minmax(200px,1fr));gap:8px;margin-top:10px}
                                                     .kpi{border:1px solid #cfd4dc;border-radius:8px;padding:10px;background:#fbfcff}
                                                     .kpi-label{font-size:10px;font-weight:700;text-transform:uppercase;opacity:0.7;margin-bottom:4px}
                                                     .kpi-value{font-size:16px;font-weight:700}
@@ -3641,12 +3637,13 @@ export default function RequestsManager({
                                                     <div class="box"><b>Billing Instructions</b><br/>${esc(gisBillingDraft || '—')}</div>
                                                     <div class="box"><b>Special Operational Notes</b><br/>${esc(gisOpsNotesDraft || '—')}</div>
                                                     <div class="kpis">
-                                                        <div class="kpi"><div class="kpi-label">Total Rooms</div><div class="kpi-value">${totalRooms}</div></div>
-                                                        <div class="kpi"><div class="kpi-label">Total Room Nights</div><div class="kpi-value">${totalRoomNights}</div></div>
-                                                        <div class="kpi"><div class="kpi-label">Total Revenue</div><div class="kpi-value">${formatMoney(totalRevenueRows, 0)}</div></div>
-                                                        <div class="kpi"><div class="kpi-label">Payment Status</div><div class="kpi-value">${esc(gisReq.paymentStatus || 'Unpaid')}</div></div>
-                                                        <div class="kpi"><div class="kpi-label">Paid Amount</div><div class="kpi-value">${formatMoney(paidAmount, 0)}</div></div>
-                                                        <div class="kpi"><div class="kpi-label">Remaining Payment</div><div class="kpi-value">${formatMoney(remaining, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total rooms</div><div class="kpi-value">${totalRoomsGis}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total room nights</div><div class="kpi-value">${totalRoomNightsGis}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total revenue (excl. tax)</div><div class="kpi-value">${formatMoney(totalRevenueExTaxGis, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Total revenue (incl. tax)</div><div class="kpi-value">${formatMoney(totalRevenueInclTaxGis, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Payment status (for selection)</div><div class="kpi-value">${esc(gisPayLabel)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Paid amount</div><div class="kpi-value">${formatMoney(paidAmountGis, 0)}</div></div>
+                                                        <div class="kpi"><div class="kpi-label">Remaining payment</div><div class="kpi-value">${formatMoney(gisRemaining, 0)}</div></div>
                                                     </div>
                                                     </body></html>
                                                 `);
@@ -3674,13 +3671,23 @@ export default function RequestsManager({
                                                 }
                                                 setShowGisModal(false);
                                                 setGisTargetRequestId(null);
+                                                setGisSeriesRowInclude({});
                                             }}
                                             className="px-4 py-2 rounded-xl border font-bold text-xs"
                                             style={{ borderColor: colors.border, color: colors.textMain }}
                                         >
                                             Save GIS Notes
                                         </button>
-                                        <button type="button" onClick={() => { setShowGisModal(false); setGisTargetRequestId(null); }} className="px-4 py-2 rounded-xl border font-bold text-xs" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setShowGisModal(false);
+                                                setGisTargetRequestId(null);
+                                                setGisSeriesRowInclude({});
+                                            }}
+                                            className="px-4 py-2 rounded-xl border font-bold text-xs"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
                                             Close
                                         </button>
                                     </div>
@@ -3737,9 +3744,34 @@ export default function RequestsManager({
                                     </div>
 
                                     <div className="overflow-x-auto mb-5">
+                                        {gisSeriesType ? (
+                                            <p className="text-[10px] font-bold uppercase opacity-50 mb-2">
+                                                Include in print — uncheck rows to exclude them from the printed GIS and from totals below.
+                                            </p>
+                                        ) : null}
                                         <table className="w-full text-xs border-collapse min-w-[980px]">
                                             <thead>
                                                 <tr className="border-b opacity-70" style={{ borderColor: colors.border }}>
+                                                    {gisSeriesType ? (
+                                                        <th className="text-center py-2 pr-2 w-10" title="Include in print">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="rounded border cursor-pointer"
+                                                                style={{ borderColor: colors.border }}
+                                                                checked={allSeriesPrintChecked}
+                                                                onChange={() => {
+                                                                    setGisSeriesRowInclude((prev) => {
+                                                                        const next = { ...prev };
+                                                                        const on = seriesGroupIndices.every((i) => prev[i] !== false);
+                                                                        seriesGroupIndices.forEach((i) => {
+                                                                            next[i] = !on;
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                }}
+                                                            />
+                                                        </th>
+                                                    ) : null}
                                                     <th className="text-left py-2 pr-2">#</th>
                                                     <th className="text-left py-2 pr-2">Check-in</th>
                                                     <th className="text-left py-2 pr-2">Check-out</th>
@@ -3755,50 +3787,92 @@ export default function RequestsManager({
                                             </thead>
                                             <tbody>
                                                 {roomLines.length === 0 ? (
-                                                    <tr><td colSpan={11} className="py-4 italic opacity-50">No room lines</td></tr>
-                                                ) : roomLines.map((line, idx) => (
-                                                    <tr key={`${line.roomType}-${line.occupancy}-${idx}`} className="border-b" style={{ borderColor: colors.border }}>
-                                                        <td className="py-2 pr-2">{idx + 1}</td>
-                                                        <td className="py-2 pr-2">{line.checkIn || '—'}</td>
-                                                        <td className="py-2 pr-2">{line.checkOut || '—'}</td>
-                                                        <td className="py-2 pr-2 font-bold">{line.roomType}</td>
-                                                        <td className="py-2 pr-2">{line.occupancy}</td>
-                                                        <td className="text-center py-2">{line.roomCount}</td>
-                                                        <td className="text-center py-2">{line.nights}</td>
-                                                        <td className="text-center py-2 font-bold">{line.roomNights}</td>
-                                                        <td className="text-right py-2">{formatMoney(line.rate, 0)}</td>
-                                                        <td className="text-right py-2 font-bold">{formatMoney(line.revenue, 0)}</td>
-                                                        <td className="py-2">{line.mealPlan || '—'}</td>
+                                                    <tr>
+                                                        <td colSpan={gisSeriesType ? 12 : 11} className="py-4 italic opacity-50">
+                                                            No room lines
+                                                        </td>
                                                     </tr>
-                                                ))}
+                                                ) : (
+                                                    roomLines.map((line, idx) => {
+                                                        const gi = line.seriesGroupIndex;
+                                                        const checked = !gisSeriesType || gisSeriesRowInclude[gi ?? -1] !== false;
+                                                        return (
+                                                            <tr
+                                                                key={`${line.roomType}-${line.occupancy}-${gi ?? idx}`}
+                                                                className="border-b"
+                                                                style={{ borderColor: colors.border, opacity: gisSeriesType && !checked ? 0.45 : 1 }}
+                                                            >
+                                                                {gisSeriesType ? (
+                                                                    <td className="text-center py-2 pr-2">
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            className="rounded border cursor-pointer"
+                                                                            style={{ borderColor: colors.border }}
+                                                                            checked={checked}
+                                                                            onChange={() => {
+                                                                                if (gi === undefined) return;
+                                                                                setGisSeriesRowInclude((prev) => ({
+                                                                                    ...prev,
+                                                                                    [gi]: prev[gi] === false,
+                                                                                }));
+                                                                            }}
+                                                                        />
+                                                                    </td>
+                                                                ) : null}
+                                                                <td className="py-2 pr-2">{idx + 1}</td>
+                                                                <td className="py-2 pr-2">{line.checkIn || '—'}</td>
+                                                                <td className="py-2 pr-2">{line.checkOut || '—'}</td>
+                                                                <td className="py-2 pr-2 font-bold">{line.roomType}</td>
+                                                                <td className="py-2 pr-2">{line.occupancy}</td>
+                                                                <td className="text-center py-2">{line.roomCount}</td>
+                                                                <td className="text-center py-2">{line.nights}</td>
+                                                                <td className="text-center py-2 font-bold">{line.roomNights}</td>
+                                                                <td className="text-right py-2">{formatMoney(line.rate, 0)}</td>
+                                                                <td className="text-right py-2 font-bold">{formatMoney(line.revenue, 0)}</td>
+                                                                <td className="py-2">{line.mealPlan || '—'}</td>
+                                                            </tr>
+                                                        );
+                                                    })
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>
 
-                                    <div className="grid grid-cols-2 gap-3 text-sm mb-5">
+                                    {gisSeriesType && selectedGisLines.length === 0 && roomLines.length > 0 ? (
+                                        <p className="text-xs font-bold text-amber-600 mb-3">Select at least one check-in block to show totals and print.</p>
+                                    ) : null}
+
+                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-5">
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                             <span className="font-bold uppercase text-[10px] opacity-50">Total rooms</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRooms}</p>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRoomsGis}</p>
                                         </div>
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                             <span className="font-bold uppercase text-[10px] opacity-50">Total room nights</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRoomNights}</p>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{totalRoomNightsGis}</p>
                                         </div>
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                            <span className="font-bold uppercase text-[10px] opacity-50">Total revenue</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(totalRevenueRows, 0)}</p>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Total revenue (excl. tax)</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(totalRevenueExTaxGis, 0)}</p>
+                                        </div>
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <span className="font-bold uppercase text-[10px] opacity-50">Total revenue (incl. tax)</span>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(totalRevenueInclTaxGis, 0)}</p>
                                         </div>
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                             <span className="font-bold uppercase text-[10px] opacity-50">Payment status</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: getStatusColor(gisReq.status) }}>{gisReq.paymentStatus || 'Unpaid'}</p>
+                                            <p className="font-black text-lg mt-1" style={{ color: gisPayColor }}>{gisPayLabel}</p>
+                                            {gisSeriesType ? (
+                                                <p className="text-[9px] opacity-50 mt-1 font-bold uppercase">Vs. selected rooms (incl. tax)</p>
+                                            ) : null}
                                         </div>
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                             <span className="font-bold uppercase text-[10px] opacity-50">Paid amount</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(paidAmount, 0)}</p>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(paidAmountGis, 0)}</p>
                                         </div>
                                         <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                             <span className="font-bold uppercase text-[10px] opacity-50">Remaining payment</span>
-                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(remaining, 0)}</p>
+                                            <p className="font-black text-lg mt-1" style={{ color: colors.textMain }}>{formatMoney(gisRemaining, 0)}</p>
                                         </div>
                                     </div>
 

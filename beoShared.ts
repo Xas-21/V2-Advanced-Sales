@@ -214,6 +214,26 @@ export function calculateAccFinancialsForRequest(
     };
 }
 
+/** BEO total (incl. tax): event portion only — no transport on the BEO. */
+export function getBeoScopeGrandTotalInclTax(fin: any, _requestTypeRaw?: string | null) {
+    return Number(fin?.eventCostWithTax || 0);
+}
+
+export function deriveBeoPaymentView(paidRaw: number, scopeTotalInclTax: number) {
+    const paid = Number(paidRaw || 0);
+    const total = Math.max(0, Number(scopeTotalInclTax || 0));
+    const remaining = Math.max(0, total - paid);
+    let paymentStatus = 'Unpaid';
+    if (total > 0) {
+        if (paid >= total) paymentStatus = 'Paid';
+        else if (paid > 0) paymentStatus = 'Deposit';
+    } else if (paid > 0) {
+        paymentStatus = 'Paid';
+    }
+    const payLabel = paymentStatus === 'Deposit' ? 'Partial / deposit' : paymentStatus;
+    return { remaining, paymentStatus, payLabel };
+}
+
 export function printBeoDocument(req: any, fin: any, notes: string, accounts: any[], activeProperty?: any) {
     const w = window.open('', '_blank');
     if (!w) {
@@ -226,11 +246,10 @@ export function printBeoDocument(req: any, fin: any, notes: string, accounts: an
     const fallbackDays = ev.start && ev.end ? inclusiveCalendarDays(ev.start, ev.end) : 1;
     const dayDenom = Math.max(1, fin.totalEventDays || fallbackDays);
     const eventCostPerDay = fin.eventCostWithTax / dayDenom;
-    const grand = Number(fin.grandTotalWithTax || fin.totalCostWithTax || 0);
+    const scopeGrand = getBeoScopeGrandTotalInclTax(fin, req.requestType);
     const paid = Number(fin.paidAmount || 0);
-    const remaining = Math.max(0, grand - paid);
+    const { remaining, payLabel } = deriveBeoPaymentView(paid, scopeGrand);
     const pkg = formatAgendaPackageSummary(req.agenda || []) || req.mealPlan || '—';
-    const payLabel = fin.paymentStatus === 'Deposit' ? 'Partial / deposit' : fin.paymentStatus;
 
     const contactsRowsHtml = (() => {
         if (!acc) {
@@ -264,20 +283,6 @@ export function printBeoDocument(req: any, fin: any, notes: string, accounts: an
             const dinner = formatAgendaRowDinner(row);
             return `<tr><td>${escapeHtml(row.startDate || '—')}</td><td>${escapeHtml(row.endDate || row.startDate || '—')}</td><td>${escapeHtml([row.startTime, row.endTime].filter(Boolean).join(' – ') || '—')}</td><td>${escapeHtml(coffee || '—')}</td><td>${escapeHtml(lunch || '—')}</td><td>${escapeHtml(dinner || '—')}</td><td>${escapeHtml(row.venue || '—')}</td><td>${escapeHtml(row.shape || '—')}</td><td>${escapeHtml(row.package || '—')}</td><td style="text-align:center">${escapeHtml(String(row.pax ?? '—'))}</td><td style="text-align:right">${Number(row.rate || 0).toLocaleString()}</td><td style="text-align:right">${Number(row.rental || 0).toLocaleString()}</td><td style="text-align:right">${line.toLocaleString()}</td></tr>`;
         }).join('');
-
-    const roomsRows = !(req.rooms || []).length
-        ? '<tr><td colspan="5" class="sub">No rooms</td></tr>'
-        : (req.rooms || []).map((r: any) => {
-            const rNights = beoType === 'series' ? calculateNights(r.arrival, r.departure) : fin.nights;
-            const sub = Number(r.rate || 0) * Number(r.count || 0) * rNights;
-            return `<tr><td>${escapeHtml(r.type || '—')}</td><td>${escapeHtml(r.occupancy || '—')}</td><td style="text-align:center">${escapeHtml(String(r.count ?? '—'))}</td><td style="text-align:right">${Number(r.rate || 0).toLocaleString()}</td><td style="text-align:right">${sub.toLocaleString()}</td></tr>`;
-        }).join('');
-
-    const transRows = !(req.transportation || []).length
-        ? '<tr><td colspan="3" class="sub">None</td></tr>'
-        : (req.transportation || []).map((t: any) =>
-            `<tr><td>${escapeHtml(t.type || '—')}</td><td>${escapeHtml(t.timing || t.notes || '—')}</td><td style="text-align:right">${Number(t.costPerWay || 0).toLocaleString()}</td></tr>`
-        ).join('');
 
     const remainingBlock = remaining > 0
         ? `<p><strong>Remaining balance:</strong> ${remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>`
@@ -315,14 +320,8 @@ ${activeProperty?.logoUrl ? `<img src="${escapeHtml(activeProperty.logoUrl)}" cl
 <p><strong>DDR (per person, excl. tax basis):</strong> ${fin.ddr.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR &nbsp;|&nbsp; <strong>Event cost per day (incl. tax):</strong> ${eventCostPerDay.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
 <h2>Agenda</h2>
 <table><thead><tr><th>Start</th><th>End</th><th>Session time</th><th>Coffee break</th><th>Lunch</th><th>Dinner</th><th>Venue</th><th>Shape</th><th>Package</th><th>Pax</th><th class="num">Rate</th><th class="num">Rental</th><th class="num">Line</th></tr></thead><tbody>${agendaRows}</tbody></table>
-${beoType === 'event_rooms' ? `<h2>Accommodation (rooms)</h2><table><thead><tr><th>Room type</th><th>Occupancy</th><th>Rooms</th><th class="num">Rate</th><th class="num">Subtotal</th></tr></thead><tbody>${roomsRows}</tbody></table>` : ''}
-<h2>Transportation</h2>
-<table><thead><tr><th>Type</th><th>Timing / notes</th><th class="num">Cost / way</th></tr></thead><tbody>${transRows}</tbody></table>
 <h2>Pricing</h2>
-<p><strong>Event total (incl. tax):</strong> ${fin.eventCostWithTax.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
-${beoType === 'event_rooms' ? `<p><strong>Rooms total (incl. tax):</strong> ${fin.roomsCostWithTax.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>` : ''}
-<p><strong>Transport total (incl. tax):</strong> ${fin.transCostWithTax.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
-<p><strong>Grand total (incl. tax):</strong> ${grand.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
+<p><strong>Event total (incl. tax):</strong> ${scopeGrand.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
 <div class="paybox">
 <h2>Payment</h2>
 <p><strong>Payment status:</strong> ${escapeHtml(payLabel)}</p>
