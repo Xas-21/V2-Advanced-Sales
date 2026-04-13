@@ -17,6 +17,19 @@ export interface CloudinaryUploadResult {
     resource_type?: string;
 }
 
+function parseErrorText(raw: string): string {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return '';
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed?.error?.message) return String(parsed.error.message);
+        if (parsed?.detail) return String(parsed.detail);
+    } catch {
+        /* keep original text */
+    }
+    return trimmed;
+}
+
 async function getCloudinarySignature(folder?: string): Promise<CloudinarySignResponse> {
     const res = await fetch(apiUrl('/api/uploads/cloudinary/sign'), {
         method: 'POST',
@@ -24,7 +37,7 @@ async function getCloudinarySignature(folder?: string): Promise<CloudinarySignRe
         body: JSON.stringify(folder ? { folder } : {}),
     });
     if (!res.ok) {
-        const text = await res.text();
+        const text = parseErrorText(await res.text());
         throw new Error(text || 'Failed to prepare Cloudinary upload.');
     }
     return res.json();
@@ -38,13 +51,14 @@ export async function uploadFileToCloudinary(file: File, options?: { folder?: st
     form.append('timestamp', String(signed.timestamp));
     form.append('signature', signed.signature);
     if (signed.folder) form.append('folder', signed.folder);
+    const normalizedCloudName = String(signed.cloudName || '').trim().toLowerCase();
 
-    const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${signed.cloudName}/auto/upload`, {
+    const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${normalizedCloudName}/auto/upload`, {
         method: 'POST',
         body: form,
     });
     if (!uploadRes.ok) {
-        const text = await uploadRes.text();
+        const text = parseErrorText(await uploadRes.text());
         throw new Error(text || 'Cloudinary upload failed.');
     }
     return uploadRes.json();

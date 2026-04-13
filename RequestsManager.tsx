@@ -1672,26 +1672,31 @@ export default function RequestsManager({
                                         </label>
                                     </div>
                                     {docMeta ? (
-                                        <div className="flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-[10px]" style={{ borderColor: colors.border }}>
-                                            <a
-                                                href={docMeta.url || '#'}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="truncate underline"
-                                                style={{ color: colors.primary }}
-                                            >
+                                        <div className="rounded-lg border px-2 py-1 text-[10px] space-y-1.5" style={{ borderColor: colors.border }}>
+                                            <p className="truncate" style={{ color: colors.textMain }}>
                                                 {docMeta.name}
-                                            </a>
-                                            {!readOnlyOperational && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => clearRequestDoc(docId)}
+                                            </p>
+                                            <div className="flex items-center gap-2">
+                                                <a
+                                                    href={docMeta.url || '#'}
+                                                    target="_blank"
+                                                    rel="noreferrer"
                                                     className="px-2 py-0.5 rounded border"
-                                                    style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    style={{ borderColor: colors.primary, color: colors.primary }}
                                                 >
-                                                    Remove
-                                                </button>
-                                            )}
+                                                    Open
+                                                </a>
+                                                {!readOnlyOperational && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => clearRequestDoc(docId)}
+                                                        className="px-2 py-0.5 rounded border"
+                                                        style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
                                     ) : null}
                                 </div>
