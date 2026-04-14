@@ -17,6 +17,7 @@ export type UserRoleId = (typeof USER_ROLE_OPTIONS)[number];
 
 export const ALL_PERMISSION_IDS = [
     'reports.access',
+    'accounts.viewOnly',
     'tasks.deleteAny',
     'accounts.delete',
     'contracts.delete',
@@ -34,6 +35,7 @@ export type PermissionId = (typeof ALL_PERMISSION_IDS)[number];
 
 export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'reports.access': 'Access Reports page',
+    'accounts.viewOnly': 'Accounts: view only (read-only Accounts page; enables Accounts for Reservations Team)',
     'tasks.deleteAny': 'Delete any task (To-Do)',
     'accounts.delete': 'Delete accounts',
     'contracts.delete': 'Delete contracts',
@@ -69,7 +71,7 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
     'Sales Manager': permSet('mutate.operational'),
     'Sales Executive': permSet('mutate.operational'),
     'Sales Coordinator': permSet('mutate.operational'),
-    'Reservations Team': permSet('mutate.operational'),
+    'Reservations Team': permSet('mutate.operational', 'accounts.viewOnly'),
 };
 
 export function normalizeUserRole(user: any): UserRoleId {
@@ -162,6 +164,21 @@ export function canManageManualTimeline(user: any): boolean {
 
 export function canMutateOperational(user: any): boolean {
     return can(user, 'mutate.operational');
+}
+
+/** Reservations Team: show Accounts in nav when this is granted (also assignable to any role). */
+export function canAccessAccountsNav(user: any): boolean {
+    if (normalizeUserRole(user) !== 'Reservations Team') return true;
+    return can(user, 'accounts.viewOnly');
+}
+
+/**
+ * Accounts workspace is read-only when user cannot mutate operationally, or when Reservations Team
+ * has Accounts view-only (they may still mutate requests elsewhere).
+ */
+export function isAccountsPageReadOnly(user: any): boolean {
+    if (!canMutateOperational(user)) return true;
+    return normalizeUserRole(user) === 'Reservations Team' && can(user, 'accounts.viewOnly');
 }
 
 export function canAccessSettingsAdmin(user: any): boolean {

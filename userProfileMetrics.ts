@@ -223,16 +223,19 @@ function taskAssigneeEntries(task: any): { id: string; name: string }[] {
 }
 
 export function taskAssignedToUser(task: any, user: any): boolean {
+    if (!user) return false;
     const uid = resolveUserAttributionId(user);
     const n = String(user?.name || '').trim().toLowerCase();
     const u = String(user?.username || '').trim().toLowerCase();
+    const em = String(user?.email || '').trim().toLowerCase();
     const legacyId = String(task?.assignedToUserId ?? '').trim();
-    if (uid && legacyId && legacyId === uid) return true;
+    if (uid && legacyId && String(legacyId) === String(uid)) return true;
     for (const a of taskAssigneeEntries(task)) {
-        if (uid && a.id && a.id === uid) return true;
+        if (uid && a.id && String(a.id) === String(uid)) return true;
         const an = a.name.toLowerCase();
         if (n && an && (an === n || n.includes(an) || an.includes(n.split(/\s+/)[0] || ''))) return true;
-        if (u && an === u) return true;
+        if (u && an && (an === u || an.includes(u) || u.includes(an))) return true;
+        if (em && an === em) return true;
     }
     return false;
 }

@@ -3,6 +3,11 @@ import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Users, Music
 } from 'lucide-react';
+import {
+    requestSectionAddButtonStyle,
+    REQUEST_SECTION_ADD_BTN_CLASS,
+    REQUEST_SECTION_ICON_ADD_BTN_CLASS,
+} from './beoShared';
 
 interface EventWithRoomsRequestModalProps {
     isOpen: boolean;
@@ -132,7 +137,11 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
                                         />
                                         {/* Dropdown omitted for brevity but should be here */}
                                     </div>
-                                    <button className="p-2 rounded-lg bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg">
+                                    <button
+                                        type="button"
+                                        className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                        style={requestSectionAddButtonStyle(colors)}
+                                    >
                                         <Plus size={20} />
                                     </button>
                                 </div>
@@ -179,7 +188,12 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <BedDouble size={16} /> Section 3: Accommodation Details
                             </h3>
-                            <button onClick={addRoom} className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                            <button
+                                type="button"
+                                onClick={addRoom}
+                                className={REQUEST_SECTION_ADD_BTN_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={14} /> Add Room
                             </button>
                         </div>
@@ -226,7 +240,12 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <Music size={16} /> Section 4: Event Agenda
                             </h3>
-                            <button onClick={addAgendaRow} className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                            <button
+                                type="button"
+                                onClick={addAgendaRow}
+                                className={REQUEST_SECTION_ADD_BTN_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={14} /> Add Event
                             </button>
                         </div>
@@ -271,7 +290,12 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <Car size={16} /> Section 5: Transportation
                             </h3>
-                            <button onClick={addTrip} className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                            <button
+                                type="button"
+                                onClick={addTrip}
+                                className={REQUEST_SECTION_ADD_BTN_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={14} /> Add Trip
                             </button>
                         </div>

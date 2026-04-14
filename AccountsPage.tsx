@@ -22,7 +22,7 @@ import {
     filterOpenOpportunityLeads
 } from './accountProfileData';
 import {
-    canMutateOperational,
+    isAccountsPageReadOnly,
     canDeleteAccounts,
     canDeleteContracts,
     canManageManualTimeline,
@@ -68,7 +68,7 @@ export default function AccountsPage({
     activeProperty,
 }: AccountsPageProps) {
     const colors = theme.colors;
-    const profileReadOnly = !canMutateOperational(currentUser);
+    const profileReadOnly = isAccountsPageReadOnly(currentUser);
     const allowDeleteAccount = canDeleteAccounts(currentUser);
     const allowDeleteContracts = canDeleteContracts(currentUser);
     const allowManualTimeline = canManageManualTimeline(currentUser);

@@ -107,7 +107,7 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
 } from './beoShared';
-import { resolveUserAttributionId } from './userProfileMetrics';
+import { resolveUserAttributionId, taskAssignedToUser } from './userProfileMetrics';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
@@ -120,6 +120,7 @@ import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
     canAccessReports,
+    canAccessAccountsNav,
     canDeleteTasks,
     canDeleteContracts,
     canDeleteContractTemplates,
@@ -2904,13 +2905,6 @@ function taskAssigneesAvatarLetters(task: any): string {
     return `${a}${b}`.toUpperCase() || '••';
 }
 
-function taskAssigneesShortLabel(task: any): string {
-    const names = taskAssigneeNamesList(task);
-    if (!names.length) return '';
-    if (names.length === 1) return names[0].split(/\s+/)[0] || names[0];
-    return `${names[0].split(/\s+/)[0] || names[0]} +${names.length - 1}`;
-}
-
 const ToDoView = ({
     tasks,
     setTasks,
@@ -2937,22 +2931,7 @@ const ToDoView = ({
         { id: 'Progress', icon: Activity, label: 'Progress Insights', color: colors.cyan }
     ];
 
-    const currentUserId = String(currentUser?.id ?? '').trim();
-    const currentUserName = String(currentUser?.name ?? '').trim().toLowerCase();
-    const currentUsername = String((currentUser as any)?.username ?? '').trim().toLowerCase();
-    const isAssignedToCurrentUser = (t: any) => {
-        const assignedUserId = String(t?.assignedToUserId ?? '').trim();
-        if (assignedUserId && currentUserId && assignedUserId === currentUserId) return true;
-        for (const a of normalizeTaskAssignees(t)) {
-            if (currentUserId && a.id && String(a.id) === currentUserId) return true;
-            const an = a.name.toLowerCase();
-            if (currentUserName && an && (an === currentUserName || currentUserName.includes(an.split(/\s+/)[0] || '')))
-                return true;
-            if (currentUsername && an === currentUsername) return true;
-        }
-        const assignedToName = String(t?.assignedTo ?? '').trim().toLowerCase();
-        return !!assignedToName && !!currentUserName && assignedToName === currentUserName;
-    };
+    const isAssignedToCurrentUser = (t: any) => !!currentUser && taskAssignedToUser(t, currentUser);
 
     const filteredTasks = scopedTasks.filter((t: any) => {
         if (activeList === 'Important') return t.star && !t.completed;
@@ -3112,7 +3091,9 @@ const ToDoView = ({
                                 <p className="text-lg font-light tracking-widest">Everything is caught up</p>
                             </div>
                         ) : (
-                            filteredTasks.map((task: any) => (
+                            filteredTasks.map((task: any) => {
+                                const assigneeNames = taskAssigneeNamesList(task);
+                                return (
                                 <div
                                     key={task.id}
                                     onClick={() => handleOpenTaskModal(task)}
@@ -3151,14 +3132,26 @@ const ToDoView = ({
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center gap-5">
-                                        <div className="flex items-center gap-2 bg-black/20 px-3 py-1.5 rounded-full border border-white/5">
-                                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black text-black"
+                                    <div className="flex items-center gap-5 shrink-0">
+                                        <div className="flex items-center gap-2 bg-black/20 px-3 py-1.5 rounded-full border border-white/5 max-w-[min(100%,22rem)]">
+                                            <div className="w-6 h-6 rounded-full flex shrink-0 items-center justify-center text-[10px] font-black text-black"
                                                 style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
                                                 {taskAssigneesAvatarLetters(task)}
                                             </div>
-                                            <span className="text-[10px] font-bold opacity-70 hidden lg:block max-w-[120px] truncate" style={{ color: colors.textMain }}>
-                                                {taskAssigneesShortLabel(task) || '—'}
+                                            <span
+                                                className="text-[10px] font-bold opacity-70 hidden lg:flex flex-wrap items-center gap-x-1 gap-y-0.5 justify-end text-right leading-snug"
+                                                style={{ color: colors.textMain }}
+                                            >
+                                                {assigneeNames.length === 0 ? (
+                                                    '—'
+                                                ) : (
+                                                    assigneeNames.map((nm, i) => (
+                                                        <React.Fragment key={`${nm}-${i}`}>
+                                                            {i > 0 && <span className="opacity-40 shrink-0">·</span>}
+                                                            <span className="whitespace-nowrap">{nm}</span>
+                                                        </React.Fragment>
+                                                    ))
+                                                )}
                                             </span>
                                         </div>
                                         <button
@@ -3172,7 +3165,8 @@ const ToDoView = ({
                                         </button>
                                     </div>
                                 </div>
-                            ))
+                            );
+                            })
                         )}
                     </div>
                 )}
@@ -3487,7 +3481,10 @@ export default function AdvancedSalesDashboard() {
     useEffect(() => {
         if (!isAuthenticated || !currentUser) return;
         if (isReservationsTeam) {
-            const allowedViews = new Set(['todo', 'requests', 'settings']);
+            const allowedViews = new Set<string>(['todo', 'requests', 'settings']);
+            if (canAccessAccountsNav(currentUser)) {
+                allowedViews.add('accounts');
+            }
             if (!allowedViews.has(currentView)) {
                 setCurrentView('requests');
                 return;
@@ -4996,7 +4993,12 @@ export default function AdvancedSalesDashboard() {
                             { icon: FileText, label: 'Contracts', id: 'contracts' },
                             { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' }
                         ]
-                            .filter((item) => !isReservationsTeam || item.id === 'todo' || item.id === 'requests')
+                            .filter((item) => {
+                                if (!isReservationsTeam) return true;
+                                if (item.id === 'todo' || item.id === 'requests') return true;
+                                if (item.id === 'accounts') return canAccessAccountsNav(currentUser);
+                                return false;
+                            })
                             .map((item, i) => (
                             <button
                                 key={i}

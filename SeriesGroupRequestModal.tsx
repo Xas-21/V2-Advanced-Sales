@@ -3,6 +3,11 @@ import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Users, Box
 } from 'lucide-react';
+import {
+    requestSectionAddButtonStyle,
+    REQUEST_SECTION_ADD_BTN_LG_CLASS,
+    REQUEST_SECTION_ICON_ADD_BTN_CLASS,
+} from './beoShared';
 
 interface SeriesGroupRequestModalProps {
     isOpen: boolean;
@@ -191,7 +196,11 @@ export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initia
                                             </div>
                                         )}
                                     </div>
-                                    <button className="p-2 rounded-lg bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg">
+                                    <button
+                                        type="button"
+                                        className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                        style={requestSectionAddButtonStyle(colors)}
+                                    >
                                         <Plus size={20} />
                                     </button>
                                 </div>
@@ -246,8 +255,12 @@ export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initia
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <Users size={16} /> Section 3: Group Details
                             </h3>
-                            <button onClick={addRoom}
-                                className="px-4 py-2 rounded-lg bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                            <button
+                                type="button"
+                                onClick={addRoom}
+                                className={REQUEST_SECTION_ADD_BTN_LG_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={16} /> Add Group
                             </button>
                         </div>

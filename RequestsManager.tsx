@@ -44,6 +44,10 @@ import {
     deriveBeoPaymentView,
     paymentsMeetOrExceedTotal,
     shouldPromoteDefiniteToActual,
+    requestSectionAddButtonStyle,
+    REQUEST_SECTION_ADD_BTN_CLASS,
+    REQUEST_SECTION_ADD_BTN_LG_CLASS,
+    REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
 import { resolveUserAttributionId } from './userProfileMetrics';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
@@ -1639,7 +1643,8 @@ export default function RequestsManager({
                                 <button
                                     type="button"
                                     onClick={() => setShowAddAccountModal(true)}
-                                    className="p-2 rounded bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg"
+                                    className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                    style={requestSectionAddButtonStyle(colors)}
                                     title="Create New Account"
                                 >
                                     <Plus size={20} />
@@ -1767,8 +1772,12 @@ export default function RequestsManager({
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <BedDouble size={16} /> Section 3: {requestType === 'series' ? 'Group Details' : 'Room Request Details'}
                             </h3>
-                            <button onClick={addRoom}
-                                className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 shrink-0">
+                            <button
+                                type="button"
+                                onClick={addRoom}
+                                className={REQUEST_SECTION_ADD_BTN_LG_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={16} /> {requestType === 'series' ? 'Add Group' : 'Add Room'}
                             </button>
                         </div>
@@ -1924,8 +1933,12 @@ export default function RequestsManager({
                         <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                             <Car size={16} /> Section 4: Transportation
                         </h3>
-                        <button onClick={addTrip}
-                            className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                        <button
+                            type="button"
+                            onClick={addTrip}
+                            className={REQUEST_SECTION_ADD_BTN_CLASS}
+                            style={requestSectionAddButtonStyle(colors)}
+                        >
                             <Plus size={14} /> Add Trip
                         </button>
                     </div>
@@ -1986,8 +1999,12 @@ export default function RequestsManager({
                                         <Moon size={14} className="opacity-50" /> {eventAgendaSpanDays || 0} Day(s)
                                     </div>
                                 )}
-                                <button onClick={addAgendaRow}
-                                    className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                                <button
+                                    type="button"
+                                    onClick={addAgendaRow}
+                                    className={REQUEST_SECTION_ADD_BTN_LG_CLASS}
+                                    style={requestSectionAddButtonStyle(colors)}
+                                >
                                     <Plus size={16} /> Add Agenda Row
                                 </button>
                             </div>
@@ -2565,7 +2582,8 @@ export default function RequestsManager({
                                 <button
                                     type="button"
                                     onClick={() => setShowAddAccountModal(true)}
-                                    className="p-2 rounded bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg"
+                                    className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                    style={requestSectionAddButtonStyle(colors)}
                                     title="Create New Account"
                                 >
                                     <Plus size={20} />
@@ -5285,7 +5303,7 @@ export default function RequestsManager({
                             </div>
 
                             <div className={compactSearchForm ? 'space-y-4' : 'space-y-6'}>
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto md:max-w-none">
                                     <div className="col-span-1">
                                         <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Type</label>
                                         <select
@@ -5317,8 +5335,11 @@ export default function RequestsManager({
                                             <option value="Cancelled">Cancelled</option>
                                         </select>
                                     </div>
-                                    <div className="col-span-1">
-                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Arrival / Start Date</label>
+                                </div>
+
+                                <div className="flex flex-col sm:flex-row flex-wrap justify-center items-stretch sm:items-end gap-4 w-full max-w-xl sm:max-w-2xl mx-auto">
+                                    <div className="w-full sm:flex-1 sm:min-w-[11rem] sm:max-w-[14rem]">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block text-center sm:text-left" style={{ color: colors.textMuted }}>Arrival / Start Date</label>
                                         <input
                                             type="date"
                                             value={searchParams?.arrival || ''}
@@ -5326,8 +5347,8 @@ export default function RequestsManager({
                                             className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
                                             style={{ borderColor: colors.border, color: colors.textMain }} placeholder="mm/dd/yyyy" />
                                     </div>
-                                    <div className="col-span-1">
-                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Departure / End Date</label>
+                                    <div className="w-full sm:flex-1 sm:min-w-[11rem] sm:max-w-[14rem]">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block text-center sm:text-left" style={{ color: colors.textMuted }}>Departure / End Date</label>
                                         <input
                                             type="date"
                                             value={searchParams?.departure || ''}

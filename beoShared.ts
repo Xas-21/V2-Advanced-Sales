@@ -479,3 +479,25 @@ ${remainingBlock}
         }
     }, 200);
 }
+
+/**
+ * Request wizards use `bg-primary` / `text-primary` in class names, but `primary` is not defined in
+ * tailwind.config — those utilities are stripped, leaving e.g. only `text-black` (invisible on dark cards).
+ * Use theme colors here so "Add room / trip / agenda" match and stay readable in all themes.
+ */
+export function requestSectionAddButtonStyle(colors: { textMain: string; border: string; primary: string }) {
+    return {
+        color: colors.textMain,
+        borderColor: colors.border,
+        backgroundColor: `${String(colors.primary)}1a`,
+    };
+}
+
+export const REQUEST_SECTION_ADD_BTN_CLASS =
+    'px-3 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 shrink-0 transition-colors hover:bg-white/5';
+
+export const REQUEST_SECTION_ADD_BTN_LG_CLASS =
+    'px-4 py-2 rounded-xl border text-xs font-black uppercase tracking-wider flex items-center gap-2 shrink-0 transition-colors hover:bg-white/5';
+
+export const REQUEST_SECTION_ICON_ADD_BTN_CLASS =
+    'p-2 rounded-lg border transition-colors hover:bg-white/5 flex items-center justify-center shrink-0';

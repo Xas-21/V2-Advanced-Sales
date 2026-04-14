@@ -3,6 +3,12 @@ import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Bed, Check, FileText
 } from 'lucide-react';
+import {
+    requestSectionAddButtonStyle,
+    REQUEST_SECTION_ADD_BTN_CLASS,
+    REQUEST_SECTION_ADD_BTN_LG_CLASS,
+    REQUEST_SECTION_ICON_ADD_BTN_CLASS,
+} from './beoShared';
 
 interface AccommodationRequestModalProps {
     isOpen: boolean;
@@ -178,7 +184,12 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
                                             </div>
                                         )}
                                     </div>
-                                    <button className="p-2 rounded-lg bg-primary text-black hover:scale-105 active:scale-95 transition-all shadow-lg" title="Create New Account">
+                                    <button
+                                        type="button"
+                                        className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                        style={requestSectionAddButtonStyle(colors)}
+                                        title="Create New Account"
+                                    >
                                         <Plus size={20} />
                                     </button>
                                 </div>
@@ -243,8 +254,12 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <BedDouble size={16} /> Section 3: Room Request Details
                             </h3>
-                            <button onClick={addRoom}
-                                className="px-4 py-2 rounded-lg bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                            <button
+                                type="button"
+                                onClick={addRoom}
+                                className={REQUEST_SECTION_ADD_BTN_LG_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={16} /> Add Room
                             </button>
                         </div>
@@ -300,8 +315,12 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <Car size={16} /> Section 4: Transportation
                             </h3>
-                            <button onClick={addTrip}
-                                className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-bold flex items-center gap-1 hover:bg-primary/20 transition-all">
+                            <button
+                                type="button"
+                                onClick={addTrip}
+                                className={REQUEST_SECTION_ADD_BTN_CLASS}
+                                style={requestSectionAddButtonStyle(colors)}
+                            >
                                 <Plus size={14} /> Add Trip
                             </button>
                         </div>
