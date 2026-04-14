@@ -386,6 +386,7 @@ export default function CRM({
         const newAccount = {
             id: `A${Date.now()}`,
             ...newAccountData,
+            propertyId: newAccountData.propertyId || activeProperty?.id || 'P-GLOBAL',
             createdByUserId: resolveUserAttributionId(currentUser) || undefined,
             activities: [...(newAccountData.activities || []), act],
         };

@@ -1,4 +1,5 @@
 import { flattenCrmLeads } from './accountProfileData';
+import { calculateNights, inclusiveCalendarDays, normalizeRequestTypeKey } from './beoShared';
 
 export const PROFILE_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
@@ -25,7 +26,9 @@ const asNumber = (v: any) => parseFloat(String(v ?? 0).replace(/,/g, '')) || 0;
 
 const normStatus = (s: any) => String(s || '').trim().toLowerCase();
 
-/** Pre-tax value aligned with dashboard request breakdown (no circular import from AS). */
+/**
+ * Pre-tax total: same rules as `calculateAccFinancialsForRequest` (rooms + transport + event rows × inclusive days).
+ */
 export function computeProfileRequestPreTax(req: any): number {
     if (normStatus(req?.status) === 'cancelled') return 0;
     const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
@@ -33,33 +36,52 @@ export function computeProfileRequestPreTax(req: any): number {
     const transport = Array.isArray(req?.transportation) ? req.transportation : [];
     const inD = parseYmd(req?.checkIn);
     const outD = parseYmd(req?.checkOut);
-    let nights = 0;
-    if (inD && outD) {
-        const ms = new Date(`${outD}T00:00:00`).getTime() - new Date(`${inD}T00:00:00`).getTime();
-        if (!Number.isNaN(ms)) nights = Math.max(0, Math.ceil(ms / 86400000));
-    }
+    const globalNights = inD && outD ? calculateNights(inD, outD) : 0;
+    const rt = normalizeRequestTypeKey(req?.requestType || '');
+    const usePerRoomStayNights = rt === 'event_rooms' || rt === 'series';
+
+    const perRoomNights = (row: any): number => {
+        if (!usePerRoomStayNights) return globalNights;
+        const a = parseYmd(row?.arrival || req?.checkIn);
+        const b = parseYmd(row?.departure || req?.checkOut);
+        if (a && b) return calculateNights(a, b);
+        const manual = Number(row?.nights);
+        if (a && Number.isFinite(manual) && manual > 0) return manual;
+        return globalNights;
+    };
+
     let roomsRevenue = 0;
     for (const row of rooms) {
         const count = Number(row?.count || 0);
         const rate = Number(row?.rate || 0);
-        let n = nights;
-        const a = parseYmd(row?.arrival || req?.checkIn);
-        const b = parseYmd(row?.departure || req?.checkOut);
-        if (a && b) {
-            const m2 = new Date(`${b}T00:00:00`).getTime() - new Date(`${a}T00:00:00`).getTime();
-            if (!Number.isNaN(m2)) n = Math.max(0, Math.ceil(m2 / 86400000));
-        }
+        const n = perRoomNights(row);
         roomsRevenue += count * rate * n;
     }
-    const eventRevenue = agenda.reduce(
-        (s: number, item: any) => s + Number(item?.rate || 0) * Number(item?.pax || 0) + Number(item?.rental || 0),
-        0
-    );
+
+    const eventRevenue = agenda.reduce((s: number, item: any) => {
+        const start = parseYmd(item?.startDate);
+        const end = parseYmd(item?.endDate || item?.startDate);
+        const rowDays = start && end ? inclusiveCalendarDays(start, end) : 1;
+        const safeDays = Math.max(1, rowDays || 1);
+        const line = (Number(item?.rate || 0) * Number(item?.pax || 0) + Number(item?.rental || 0)) * safeDays;
+        return s + line;
+    }, 0);
+
     const transportRevenue = transport.reduce((s: number, t: any) => s + Number(t?.costPerWay || 0), 0);
     let lineSum = roomsRevenue + eventRevenue + transportRevenue;
     const storedNoTax = asNumber(req?.grandTotalNoTax ?? req?.totalCostNoTax);
     if (lineSum <= 0 && storedNoTax > 0) lineSum = storedNoTax;
     return lineSum;
+}
+
+/** Activity / log `user` may be a string or a nested object from APIs. */
+export function normalizeActivityUser(raw: any): string {
+    if (raw == null) return '';
+    if (typeof raw === 'object') {
+        return String((raw as any).name || (raw as any).username || (raw as any).userName || (raw as any).email || '')
+            .trim();
+    }
+    return String(raw).trim();
 }
 
 export function logUserMatchesLog(logUser: string | undefined, user: any): boolean {
@@ -119,13 +141,29 @@ export function requestAttributedToUser(req: any, user: any): boolean {
     return false;
 }
 
+/** Match legacy / API-only username fields on account rows (e.g. seed or backend payloads). */
+function accountUsernameFieldsMatch(acc: any, user: any): boolean {
+    for (const key of ['createdByUsername', 'ownerUsername'] as const) {
+        const v = String(acc?.[key] ?? '').trim();
+        if (!v) continue;
+        const vl = v.toLowerCase();
+        const unm = String(user?.username || '').trim().toLowerCase();
+        const uname = String(user?.name || '').trim().toLowerCase();
+        const uem = String(user?.email || '').trim().toLowerCase();
+        if (unm && vl === unm) return true;
+        if (uem && vl === uem) return true;
+        if (uname && vl === uname) return true;
+        const first = uname.split(/\s+/)[0] || '';
+        if (first && (vl.includes(first) || uname.includes(vl))) return true;
+    }
+    return false;
+}
+
 export function accountAttributedToUser(acc: any, user: any): boolean {
     if (!user || !userHasProfileIdentity(user)) return false;
     if (createdByMatchesUser(acc?.createdByUserId, user)) return true;
     if (createdByMatchesUser(acc?.ownerUserId, user)) return true;
-
-    // Legacy fallback only when owner/creator ids are missing.
-    if (acc?.createdByUserId != null || acc?.ownerUserId != null) return false;
+    if (accountUsernameFieldsMatch(acc, user)) return true;
 
     const acts = Array.isArray(acc?.activities) ? acc.activities : [];
     for (const a of acts) {
@@ -135,7 +173,8 @@ export function accountAttributedToUser(acc: any, user: any): boolean {
             t.includes('new account') ||
             t.includes('account created')
         ) {
-            if (logUserMatchesLog(a.user, user)) return true;
+            const who = normalizeActivityUser(a.user);
+            if (logUserMatchesLog(who, user)) return true;
         }
     }
     return false;
@@ -154,9 +193,16 @@ export function crmLeadAttributedToUser(lead: any, user: any): boolean {
     return false;
 }
 
-export function requestInProperty(req: any, propertyId: string | undefined): boolean {
+/** Include on a property-scoped profile when row has no property, global marker, or same id. */
+export function recordVisibleOnProperty(propertyId: string | undefined, recordPropertyId: any): boolean {
     if (!propertyId) return true;
-    return !req?.propertyId || String(req.propertyId) === String(propertyId);
+    const rp = String(recordPropertyId ?? '').trim();
+    if (!rp || rp === 'P-GLOBAL') return true;
+    return rp === String(propertyId);
+}
+
+export function requestInProperty(req: any, propertyId: string | undefined): boolean {
+    return recordVisibleOnProperty(propertyId, req?.propertyId);
 }
 
 function taskAssigneeEntries(task: any): { id: string; name: string }[] {
@@ -211,8 +257,7 @@ export function filterUserAccounts(accounts: any[], user: any) {
 export function filterUserCrmLeads(crmLeads: Record<string, any[]>, propertyId: string | undefined, user: any) {
     const flat = flattenCrmLeads(crmLeads || {});
     return flat.filter((lead) => {
-        if (propertyId && lead.propertyId && String(lead.propertyId) !== String(propertyId)) return false;
-        if (!propertyId && lead.propertyId) return false;
+        if (!recordVisibleOnProperty(propertyId, lead.propertyId)) return false;
         return crmLeadAttributedToUser(lead, user);
     });
 }
@@ -344,7 +389,7 @@ export function buildProfileActivityLog(
         if (!requestInProperty(req, propertyId)) continue;
         const logs = Array.isArray(req?.logs) ? req.logs : [];
         for (const log of logs) {
-            if (!logUserMatchesLog(log.user, user)) continue;
+            if (!logUserMatchesLog(normalizeActivityUser(log.user), user)) continue;
             const at = Date.parse(log.date || '') || 0;
             if (at < minAt) continue;
             rows.push({
@@ -361,7 +406,7 @@ export function buildProfileActivityLog(
     for (const acc of accounts) {
         const acts = Array.isArray(acc?.activities) ? acc.activities : [];
         for (const act of acts) {
-            if (!logUserMatchesLog(act.user, user)) continue;
+            if (!logUserMatchesLog(normalizeActivityUser(act.user), user)) continue;
             const at = Date.parse(act.at || '') || 0;
             if (at < minAt) continue;
             rows.push({

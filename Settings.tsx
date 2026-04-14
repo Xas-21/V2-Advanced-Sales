@@ -48,6 +48,7 @@ import {
     countRequestsInYmdRange,
     filterUserAccounts,
     filterUserCrmLeads,
+    recordVisibleOnProperty,
     monthlySalesCallTarget,
     monthRangeRevenueSeries,
     sumRevenueInYmdRange,
@@ -850,8 +851,8 @@ export default function Settings({
         const callsKpi = viewMode === 'year' ? yearCalls : monthCalls;
 
         const userAccountsCount = useMemo(() => {
-            return filterUserAccounts(accounts || [], mergedUser).filter(
-                (a: any) => !scopePropId || !a?.propertyId || String(a.propertyId) === String(scopePropId)
+            return filterUserAccounts(accounts || [], mergedUser).filter((a: any) =>
+                recordVisibleOnProperty(scopePropId, a?.propertyId)
             ).length;
         }, [accounts, mergedUser, scopePropId]);
 

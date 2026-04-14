@@ -49,6 +49,7 @@ interface AccountsPageProps {
     setCrmLeads: React.Dispatch<React.SetStateAction<Record<string, any[]>>>;
     accountTypeOptions?: string[];
     currency?: CurrencyCode;
+    activeProperty?: any;
 }
 
 export default function AccountsPage({
@@ -64,6 +65,7 @@ export default function AccountsPage({
     setCrmLeads,
     accountTypeOptions,
     currency = 'SAR',
+    activeProperty,
 }: AccountsPageProps) {
     const colors = theme.colors;
     const profileReadOnly = !canMutateOperational(currentUser);
@@ -153,6 +155,7 @@ export default function AccountsPage({
             {
                 id: `A${Date.now()}`,
                 ...accountData,
+                propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
                 createdByUserId: resolveUserAttributionId(currentUser) || undefined,
                 activities: [...(accountData.activities || []), act],
             },

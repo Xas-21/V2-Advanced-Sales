@@ -3629,6 +3629,7 @@ export default function AdvancedSalesDashboard() {
             {
                 id: `A${Date.now()}`,
                 ...accountData,
+                propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
                 createdByUserId: resolveUserAttributionId(currentUser) || undefined,
                 activities: [...(accountData.activities || []), act],
             },
@@ -5759,6 +5760,7 @@ export default function AdvancedSalesDashboard() {
                             sharedRequests={sharedRequests}
                             crmLeads={crmLeads}
                             currentUser={currentUser}
+                            activeProperty={activeProperty}
                             currency={currentCurrency}
                             accountTypeOptions={propertyAccountTypeLabels}
                             onOpenRequest={(id) => {

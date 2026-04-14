@@ -585,14 +585,24 @@ def list_accounts_rows(property_id: str | None = None) -> list[dict]:
     with pool.connection() as conn:
         with conn.cursor() as cur:
             if property_id:
+                pid = str(property_id)
                 cur.execute(
                     """
                     SELECT payload
                     FROM accounts_rows
                     WHERE property_id = %s
+                       OR (payload->>'propertyId') = %s
+                       OR (
+                            (property_id = '' OR property_id = 'P-GLOBAL')
+                            AND (
+                                (payload->>'propertyId') IS NULL
+                                OR TRIM(BOTH FROM (payload->>'propertyId')) = ''
+                                OR (payload->>'propertyId') = 'P-GLOBAL'
+                            )
+                        )
                     ORDER BY updated_at DESC, id ASC;
                     """,
-                    (str(property_id),),
+                    (pid, pid),
                 )
             else:
                 cur.execute(
