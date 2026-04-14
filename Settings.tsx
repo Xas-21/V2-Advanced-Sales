@@ -31,8 +31,8 @@ import {
 } from './propertyMealsPackages';
 import {
     USER_ROLE_OPTIONS,
-    ALL_PERMISSION_IDS,
     PERMISSION_LABELS,
+    USER_MODAL_SECTIONS,
     normalizeUserRole,
     getEffectivePermissionSet,
     isSystemAdmin,
@@ -58,10 +58,6 @@ import {
 } from './userProfileMetrics';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 
-const USER_MODAL_PERMISSIONS = ALL_PERMISSION_IDS.filter(
-    (p) => p !== 'settings.admin' && p !== 'settings.globalStaff'
-);
-
 interface SettingsProps {
     theme: any;
     currentUser: any;
@@ -72,6 +68,8 @@ interface SettingsProps {
     tasks?: any[];
     onOpenTasks?: () => void;
     currency?: CurrencyCode;
+    /** Refetch `/api/users` so other sessions (and sidebar permissions) stay in sync. */
+    onUsersDirectoryChange?: () => void;
 }
 
 // Mock Data
@@ -109,6 +107,7 @@ export default function Settings({
     tasks = [],
     onOpenTasks,
     currency = 'SAR',
+    onUsersDirectoryChange,
 }: SettingsProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -210,11 +209,13 @@ export default function Settings({
     const [modalType, setModalType] = useState<any>(null); // 'property', 'room', 'venue', 'user', 'field'
     const [editingItem, setEditingItem] = useState<any>(null);
     const [modalFormData, setModalFormData] = useState<any>({});
+    const [userModalPermSection, setUserModalPermSection] = useState<string>(USER_MODAL_SECTIONS[0].id);
 
     const openModal = (type: string, item: any = null) => {
         setModalType(type);
         setEditingItem(item);
         if (type === 'user') {
+            setUserModalPermSection(USER_MODAL_SECTIONS[0].id);
             const userDefaults = {
                 name: '',
                 username: '',
@@ -319,9 +320,40 @@ export default function Settings({
             });
         } else if (modalType === 'user') {
             const isEditing = !!editingItem;
-            const userData = isEditing 
-                ? { ...editingItem, ...modalFormData } 
+            const userData: any = isEditing
+                ? { ...editingItem, ...modalFormData }
                 : { ...modalFormData, id: 'U' + Math.random().toString(36).substr(2, 9), status: 'Active' };
+
+            for (const k of ['currentPass', 'newPass', 'confirmPass', 'showReset']) {
+                delete userData[k];
+            }
+
+            if (isEditing) {
+                if (appIsAdmin && modalFormData.showReset) {
+                    const np = String(modalFormData.newPass || '').trim();
+                    const cp = String(modalFormData.confirmPass || '').trim();
+                    if (np || cp) {
+                        if (np !== cp) {
+                            alert('New password and confirmation do not match.');
+                            return;
+                        }
+                        if (np.length < 4) {
+                            alert('Please enter a new password of at least 4 characters.');
+                            return;
+                        }
+                        userData.password = np;
+                    } else {
+                        delete userData.password;
+                    }
+                } else {
+                    delete userData.password;
+                }
+            } else {
+                const pw = String(modalFormData.password || '').trim();
+                if (pw) userData.password = pw;
+                else delete userData.password;
+            }
+
             const roleNorm = normalizeUserRole({ role: userData.role });
             if (roleNorm === 'Admin') {
                 userData.permissionGrants = [];
@@ -330,20 +362,25 @@ export default function Settings({
                 userData.permissionGrants = Array.isArray(userData.permissionGrants) ? userData.permissionGrants : [];
                 userData.permissionRevokes = Array.isArray(userData.permissionRevokes) ? userData.permissionRevokes : [];
             }
-            
-            // Optimistic update locally
+
+            const userForState = { ...userData };
+            delete userForState.password;
+
             if (isEditing) {
-                setUsers(users.map(u => u.id === editingItem.id ? userData : u));
+                setUsers(users.map((u) => (u.id === editingItem.id ? userForState : u)));
             } else {
-                setUsers([...users, userData]);
+                setUsers([...users, userForState]);
             }
-            
-            // Persist to backend
+
             fetch(apiUrl('/api/users'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(userData)
-            }).catch(err => console.error("Error saving user:", err));
+                body: JSON.stringify(userData),
+            })
+                .then(() => {
+                    onUsersDirectoryChange?.();
+                })
+                .catch((err) => console.error('Error saving user:', err));
         } else if (modalType === 'assignUser') {
             const { propertyId, selectedUserIds } = modalFormData;
             const targetProperty = properties.find(p => p.id === propertyId);
@@ -3035,8 +3072,10 @@ export default function Settings({
             {/* Admin Action Modal */}
             {showModal && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
-                    <div className="w-full max-w-2xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300"
-                        style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div
+                        className={`w-full rounded-3xl border shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300 ${modalType === 'user' ? 'max-w-3xl' : 'max-w-2xl'}`}
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
                         <div className="p-6 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
                             <h3 className="text-xl font-bold font-mono tracking-tighter" style={{ color: colors.primary }}>
                                 {editingItem ? 'EDIT' : 'ADD'} {modalType?.toUpperCase()}
@@ -3319,33 +3358,74 @@ export default function Settings({
                                         </p>
                                     ) : (
                                         <div className="space-y-2 rounded-xl border p-4" style={{ borderColor: colors.border }}>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest block opacity-60" style={{ color: colors.textMain }}>
-                                                Permissions (defaults for this role; toggle to add or remove)
+                                            <label
+                                                className="text-[10px] uppercase font-bold tracking-widest block opacity-60"
+                                                style={{ color: colors.textMain }}
+                                            >
+                                                Permissions (defaults for this role; pick a section, then toggle)
                                             </label>
-                                            <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
-                                                {USER_MODAL_PERMISSIONS.map((perm) => {
-                                                    const checked = getEffectivePermissionSet({
-                                                        role: modalFormData.role,
-                                                        permissionGrants: modalFormData.permissionGrants,
-                                                        permissionRevokes: modalFormData.permissionRevokes,
-                                                    }).has(perm);
-                                                    return (
-                                                        <label
-                                                            key={perm}
-                                                            className="flex items-start gap-3 cursor-pointer text-xs py-1"
-                                                            style={{ color: colors.textMain }}
-                                                        >
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={checked}
-                                                                onChange={() => toggleUserPermission(perm)}
-                                                                className="mt-0.5 rounded border"
-                                                                style={{ borderColor: colors.border }}
-                                                            />
-                                                            <span>{PERMISSION_LABELS[perm]}</span>
-                                                        </label>
-                                                    );
-                                                })}
+                                            <div
+                                                className="flex flex-wrap gap-1.5 pb-2 border-b max-h-24 overflow-y-auto custom-scrollbar"
+                                                style={{ borderColor: colors.border }}
+                                            >
+                                                {USER_MODAL_SECTIONS.map((sec) => (
+                                                    <button
+                                                        key={sec.id}
+                                                        type="button"
+                                                        onClick={() => setUserModalPermSection(sec.id)}
+                                                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-all ${
+                                                            userModalPermSection === sec.id ? 'border-2' : 'opacity-75 hover:opacity-100'
+                                                        }`}
+                                                        style={{
+                                                            borderColor:
+                                                                userModalPermSection === sec.id ? colors.primary : colors.border,
+                                                            backgroundColor:
+                                                                userModalPermSection === sec.id ? colors.primary + '18' : 'transparent',
+                                                            color: colors.textMain,
+                                                        }}
+                                                    >
+                                                        {sec.title}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div className="space-y-2 max-h-52 overflow-y-auto custom-scrollbar pr-1 pt-2 min-h-[4.5rem]">
+                                                {USER_MODAL_SECTIONS.filter((s) => s.id === userModalPermSection).map((sec) => (
+                                                    <div key={sec.id}>
+                                                        {sec.description ? (
+                                                            <p className="text-xs mb-3 leading-relaxed" style={{ color: colors.textMuted }}>
+                                                                {sec.description}
+                                                            </p>
+                                                        ) : null}
+                                                        {sec.permissions.length === 0 && !sec.description ? (
+                                                            <p className="text-xs" style={{ color: colors.textMuted }}>
+                                                                No toggles in this section yet.
+                                                            </p>
+                                                        ) : null}
+                                                        {sec.permissions.map((perm) => {
+                                                            const checked = getEffectivePermissionSet({
+                                                                role: modalFormData.role,
+                                                                permissionGrants: modalFormData.permissionGrants,
+                                                                permissionRevokes: modalFormData.permissionRevokes,
+                                                            }).has(perm);
+                                                            return (
+                                                                <label
+                                                                    key={perm}
+                                                                    className="flex items-start gap-3 cursor-pointer text-xs py-1"
+                                                                    style={{ color: colors.textMain }}
+                                                                >
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={() => toggleUserPermission(perm)}
+                                                                        className="mt-0.5 rounded border"
+                                                                        style={{ borderColor: colors.border }}
+                                                                    />
+                                                                    <span>{PERMISSION_LABELS[perm]}</span>
+                                                                </label>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                ))}
                                             </div>
                                         </div>
                                     )}
@@ -3417,16 +3497,49 @@ export default function Settings({
                                             ) : (
                                                 <div className="space-y-3">
                                                     <div className="flex justify-between items-center">
-                                                        <h4 className="text-[10px] uppercase font-bold tracking-widest text-primary">Reset Password</h4>
-                                                        <button onClick={() => setModalFormData({ ...modalFormData, showReset: false })} className="text-[10px] text-muted-foreground hover:text-white">Cancel</button>
+                                                        <h4 className="text-[10px] uppercase font-bold tracking-widest text-primary">Set new password</h4>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setModalFormData({
+                                                                    ...modalFormData,
+                                                                    showReset: false,
+                                                                    newPass: '',
+                                                                    confirmPass: '',
+                                                                    currentPass: '',
+                                                                })
+                                                            }
+                                                            className="text-[10px] text-muted-foreground hover:text-white"
+                                                        >
+                                                            Cancel
+                                                        </button>
                                                     </div>
+                                                    {appIsAdmin ? (
+                                                        <p className="text-[11px] leading-relaxed" style={{ color: colors.textMuted }}>
+                                                            Enter the new password twice. It is applied as soon as you click Update user (no current password required).
+                                                        </p>
+                                                    ) : null}
                                                     <div className="grid grid-cols-1 gap-3">
-                                                        <input type="password" placeholder="Current Password" className="w-full p-2.5 bg-black/40 border rounded-lg text-xs outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                                            value={modalFormData.currentPass || ''} onChange={e => setModalFormData({ ...modalFormData, currentPass: e.target.value })} />
-                                                        <input type="password" placeholder="New Password" className="w-full p-2.5 bg-black/40 border rounded-lg text-xs outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                                            value={modalFormData.newPass || ''} onChange={e => setModalFormData({ ...modalFormData, newPass: e.target.value })} />
-                                                        <input type="password" placeholder="Confirm New Password" className="w-full p-2.5 bg-black/40 border rounded-lg text-xs outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                                            value={modalFormData.confirmPass || ''} onChange={e => setModalFormData({ ...modalFormData, confirmPass: e.target.value })} />
+                                                        <input
+                                                            type="password"
+                                                            placeholder="New password"
+                                                            autoComplete="new-password"
+                                                            className="w-full p-2.5 bg-black/40 border rounded-lg text-xs outline-none"
+                                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                                            value={modalFormData.newPass || ''}
+                                                            onChange={(e) => setModalFormData({ ...modalFormData, newPass: e.target.value })}
+                                                        />
+                                                        <input
+                                                            type="password"
+                                                            placeholder="Confirm new password"
+                                                            autoComplete="new-password"
+                                                            className="w-full p-2.5 bg-black/40 border rounded-lg text-xs outline-none"
+                                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                                            value={modalFormData.confirmPass || ''}
+                                                            onChange={(e) =>
+                                                                setModalFormData({ ...modalFormData, confirmPass: e.target.value })
+                                                            }
+                                                        />
                                                     </div>
                                                 </div>
                                             )}

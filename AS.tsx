@@ -119,15 +119,17 @@ import {
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
+    can,
     canAccessReports,
-    canAccessAccountsNav,
+    canShowAccountsNavItem,
+    getAllowedAppViewsForUser,
+    MAIN_NAV_ITEM_PERMISSIONS,
     canDeleteTasks,
     canDeleteContracts,
     canDeleteContractTemplates,
     canMutateOperational,
     canDeleteRequests,
     canDeleteRequestPayments,
-    normalizeUserRole,
 } from './userPermissions';
 
 /**
@@ -3446,8 +3448,6 @@ export default function AdvancedSalesDashboard() {
         (amountSar: number) => formatCompactCurrency(amountSar, currentCurrency),
         [currentCurrency]
     );
-    const isReservationsTeam = normalizeUserRole(currentUser) === 'Reservations Team';
-
     // Persistent Storage Effects
     useEffect(() => {
         localStorage.setItem('as_themeId', currentThemeId);
@@ -3480,20 +3480,17 @@ export default function AdvancedSalesDashboard() {
 
     useEffect(() => {
         if (!isAuthenticated || !currentUser) return;
-        if (isReservationsTeam) {
-            const allowedViews = new Set<string>(['todo', 'requests', 'settings']);
-            if (canAccessAccountsNav(currentUser)) {
-                allowedViews.add('accounts');
-            }
-            if (!allowedViews.has(currentView)) {
-                setCurrentView('requests');
-                return;
-            }
+        const allowedViews = getAllowedAppViewsForUser(currentUser);
+        if (!allowedViews.has(currentView)) {
+            const fallback =
+                (allowedViews.has('requests') ? 'requests' : null) ||
+                (allowedViews.has('dashboard') ? 'dashboard' : null) ||
+                (allowedViews.has('todo') ? 'todo' : null) ||
+                [...allowedViews][0] ||
+                'settings';
+            setCurrentView(fallback);
         }
-        if (currentView === 'reports' && !canAccessReports(currentUser)) {
-            setCurrentView(isReservationsTeam ? 'requests' : 'dashboard');
-        }
-    }, [currentView, currentUser, isAuthenticated, isReservationsTeam]);
+    }, [currentView, currentUser, isAuthenticated]);
 
     // Events Sub-View State: 'pipeline' (default), 'calendar', 'availability', 'beo'
     const [eventsSubView, setEventsSubView] = useState('pipeline');
@@ -3674,19 +3671,35 @@ export default function AdvancedSalesDashboard() {
 
     const [systemUsers, setSystemUsers] = useState<any[]>([]);
 
-    useEffect(() => {
-        let cancelled = false;
+    const refreshSystemUsers = useCallback(() => {
         fetch(apiUrl('/api/users'))
             .then((res) => (res.ok ? res.json() : []))
             .then((data) => {
-                if (cancelled) return;
                 if (Array.isArray(data)) setSystemUsers(data);
             })
             .catch(() => {});
-        return () => {
-            cancelled = true;
-        };
     }, []);
+
+    useEffect(() => {
+        refreshSystemUsers();
+    }, [refreshSystemUsers]);
+
+    /** Keep session user aligned with server (permissions, role) after login or staff directory refresh. */
+    useEffect(() => {
+        if (!currentUser?.id || !Array.isArray(systemUsers) || systemUsers.length === 0) return;
+        const fresh = systemUsers.find((u: any) => String(u?.id) === String(currentUser.id));
+        if (!fresh) return;
+        const keys = ['role', 'permissionGrants', 'permissionRevokes', 'propertyId', 'name', 'email', 'username', 'status'] as const;
+        const patch: Record<string, unknown> = {};
+        for (const k of keys) {
+            const a = JSON.stringify((currentUser as any)[k] ?? null);
+            const b = JSON.stringify((fresh as any)[k] ?? null);
+            if (a !== b) patch[k] = (fresh as any)[k];
+        }
+        if (Object.keys(patch).length > 0) {
+            setCurrentUser((prev: any) => (prev ? { ...prev, ...patch } : prev));
+        }
+    }, [systemUsers, currentUser?.id]);
 
     const taskAssignableUsers = useMemo(() => {
         const ap = activeProperty;
@@ -4994,10 +5007,9 @@ export default function AdvancedSalesDashboard() {
                             { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' }
                         ]
                             .filter((item) => {
-                                if (!isReservationsTeam) return true;
-                                if (item.id === 'todo' || item.id === 'requests') return true;
-                                if (item.id === 'accounts') return canAccessAccountsNav(currentUser);
-                                return false;
+                                if (item.id === 'accounts') return canShowAccountsNavItem(currentUser);
+                                const perm = MAIN_NAV_ITEM_PERMISSIONS[item.id];
+                                return perm ? can(currentUser, perm) : false;
                             })
                             .map((item, i) => (
                             <button
@@ -5027,7 +5039,6 @@ export default function AdvancedSalesDashboard() {
                             { icon: Settings, label: 'Settings', id: 'settings' }
                         ]
                             .filter((item) => item.id !== 'reports' || canAccessReports(currentUser))
-                            .filter((item) => !isReservationsTeam || item.id === 'settings')
                             .map((item, i) => (
                             <button
                                 key={i}
@@ -5829,6 +5840,7 @@ export default function AdvancedSalesDashboard() {
                             crmLeads={crmLeads}
                             tasks={tasks}
                             currency={currentCurrency}
+                            currentUser={currentUser}
                         />
                     ) : currentView === 'settings' ? (
                         <SettingsPage
@@ -5841,6 +5853,7 @@ export default function AdvancedSalesDashboard() {
                             tasks={tasks}
                             onOpenTasks={() => setCurrentView('todo')}
                             currency={currentCurrency}
+                            onUsersDirectoryChange={refreshSystemUsers}
                         />
                     ) : currentView === 'todo' ? (
                         <ToDoView tasks={tasks} setTasks={setTasks} handleOpenTaskModal={handleOpenTaskModal} handleToggleTaskComplete={handleToggleTaskComplete} colors={colors} theme={theme} activePropertyId={activeProperty?.id} canMutateOperational={canMutateOperational(currentUser)} currentUser={currentUser} />

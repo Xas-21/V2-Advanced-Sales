@@ -17,6 +17,14 @@ export type UserRoleId = (typeof USER_ROLE_OPTIONS)[number];
 
 export const ALL_PERMISSION_IDS = [
     'reports.access',
+    /** Row-level preview table in Report Builder (source data one-by-one). */
+    'reports.sourceRows',
+    /** Per–data-source: select source, filters, columns, export (and preview when sourceRows is on). */
+    'reports.dataRequests',
+    'reports.dataAccounts',
+    'reports.dataMice',
+    'reports.dataTasks',
+    'reports.dataSalesCalls',
     'accounts.viewOnly',
     'tasks.deleteAny',
     'accounts.delete',
@@ -27,6 +35,15 @@ export const ALL_PERMISSION_IDS = [
     'crm.deleteCalls',
     'accounts.timelineManual',
     'mutate.operational',
+    /** Sidebar: show each main app page (Settings / Sign out stay visible for all users). */
+    'nav.dashboard',
+    'nav.calendar',
+    'nav.todo',
+    'nav.events',
+    'nav.requests',
+    'nav.crm',
+    'nav.contracts',
+    'nav.accounts',
     'settings.admin',
     'settings.globalStaff',
 ] as const;
@@ -34,7 +51,14 @@ export const ALL_PERMISSION_IDS = [
 export type PermissionId = (typeof ALL_PERMISSION_IDS)[number];
 
 export const PERMISSION_LABELS: Record<PermissionId, string> = {
-    'reports.access': 'Access Reports page',
+    'reports.access': 'Reports: access Report Builder page',
+    'reports.sourceRows':
+        'Reports: generate preview & view source rows (row-by-row table)',
+    'reports.dataRequests': 'Reports: Requests — configure, preview & export',
+    'reports.dataAccounts': 'Reports: Accounts — configure, preview & export',
+    'reports.dataMice': 'Reports: MICE — configure, preview & export',
+    'reports.dataTasks': 'Reports: Tasks — configure, preview & export',
+    'reports.dataSalesCalls': 'Reports: Sales Calls — configure, preview & export',
     'accounts.viewOnly': 'Accounts: view only (read-only Accounts page; enables Accounts for Reservations Team)',
     'tasks.deleteAny': 'Delete any task (To-Do)',
     'accounts.delete': 'Delete accounts',
@@ -45,21 +69,135 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'crm.deleteCalls': 'Delete sales calls',
     'accounts.timelineManual': 'Edit / delete manual timeline activities',
     'mutate.operational': 'Create & edit operational data (not view-only)',
+    'nav.dashboard': 'Main menu: Dashboard',
+    'nav.calendar': 'Main menu: Calendar',
+    'nav.todo': 'Main menu: To Do',
+    'nav.events': 'Main menu: Events & Catering',
+    'nav.requests': 'Main menu: Requests Management',
+    'nav.crm': 'Main menu: Sales Calls (CRM)',
+    'nav.contracts': 'Main menu: Contracts',
+    'nav.accounts': 'Main menu: Accounts',
     'settings.admin': 'Settings: Properties, Configurations, property tools',
     'settings.globalStaff': 'Global Staff Management (all users)',
 };
+
+/** Grouped areas in the user create/edit permission UI (Settings → User Mgmt). */
+export type UserModalPermissionSection = {
+    id: string;
+    title: string;
+    /** Shown when `permissions` is empty or as extra context above checkboxes. */
+    description?: string;
+    permissions: readonly PermissionId[];
+};
+
+/** Default main-menu visibility for full-access sales / management roles. */
+const DEFAULT_NAV_PERMISSIONS: readonly PermissionId[] = [
+    'nav.dashboard',
+    'nav.calendar',
+    'nav.todo',
+    'nav.events',
+    'nav.requests',
+    'nav.crm',
+    'nav.contracts',
+    'nav.accounts',
+] as const;
+
+export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
+    {
+        id: 'main_menu',
+        title: 'Main menu (pages)',
+        description:
+            'Controls which items appear in the primary sidebar. Grant Reports separately below. Settings and Sign out remain available.',
+        permissions: [...DEFAULT_NAV_PERMISSIONS],
+    },
+    {
+        id: 'general',
+        title: 'General',
+        description: 'Core editing rights across the app.',
+        permissions: ['mutate.operational'],
+    },
+    {
+        id: 'accounts',
+        title: 'Accounts',
+        permissions: ['accounts.viewOnly', 'accounts.delete', 'accounts.timelineManual'],
+    },
+    {
+        id: 'requests',
+        title: 'Requests & payments',
+        permissions: ['requests.delete', 'requests.deletePayments'],
+    },
+    {
+        id: 'contracts',
+        title: 'Contracts',
+        permissions: ['contracts.delete', 'contracts.templates.delete'],
+    },
+    {
+        id: 'crm',
+        title: 'CRM & sales calls',
+        permissions: ['crm.deleteCalls'],
+    },
+    {
+        id: 'todo',
+        title: 'To-Do',
+        permissions: ['tasks.deleteAny'],
+    },
+    {
+        id: 'reports',
+        title: 'Reports',
+        description:
+            'Turn on “Reports: access Report Builder page” so the Reports item appears in the sidebar (or grant any detailed Reports row below — that also enables the menu).',
+        permissions: [
+            'reports.access',
+            'reports.sourceRows',
+            'reports.dataRequests',
+            'reports.dataAccounts',
+            'reports.dataMice',
+            'reports.dataTasks',
+            'reports.dataSalesCalls',
+        ],
+    },
+    {
+        id: 'settings_access',
+        title: 'Settings (admin tools)',
+        description:
+            'Administrators already have full settings access. For other roles, grant these only when this user should manage properties or all staff.',
+        permissions: ['settings.admin', 'settings.globalStaff'],
+    },
+] as const;
+
+/** Every permission shown in the user modal (excludes settings.admin / settings.globalStaff). */
+export const USER_MODAL_PERMISSION_IDS: PermissionId[] = USER_MODAL_SECTIONS.flatMap((s) => [
+    ...s.permissions,
+]);
 
 function permSet(...ids: PermissionId[]): Set<PermissionId> {
     return new Set(ids);
 }
 
+/** Granular Reports data-source permissions (for legacy detection). */
+export const REPORTS_DATA_SOURCE_PERMISSIONS: PermissionId[] = [
+    'reports.dataRequests',
+    'reports.dataAccounts',
+    'reports.dataMice',
+    'reports.dataTasks',
+    'reports.dataSalesCalls',
+];
+
 /** Defaults before grants/revokes. Admin uses a shortcut in getEffectivePermissionSet. */
 export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
     Admin: permSet(...ALL_PERMISSION_IDS),
-    'General Manager': permSet('reports.access'),
+    'General Manager': permSet(
+        ...DEFAULT_NAV_PERMISSIONS,
+        'reports.access',
+        'reports.sourceRows',
+        ...REPORTS_DATA_SOURCE_PERMISSIONS
+    ),
     'Head of Sales': permSet(
         'mutate.operational',
+        ...DEFAULT_NAV_PERMISSIONS,
         'reports.access',
+        'reports.sourceRows',
+        ...REPORTS_DATA_SOURCE_PERMISSIONS,
         'tasks.deleteAny',
         'accounts.delete',
         'contracts.delete',
@@ -68,10 +206,15 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
         'crm.deleteCalls',
         'accounts.timelineManual'
     ),
-    'Sales Manager': permSet('mutate.operational'),
-    'Sales Executive': permSet('mutate.operational'),
-    'Sales Coordinator': permSet('mutate.operational'),
-    'Reservations Team': permSet('mutate.operational', 'accounts.viewOnly'),
+    'Sales Manager': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Executive': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Coordinator': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
+    'Reservations Team': permSet(
+        'mutate.operational',
+        'accounts.viewOnly',
+        'nav.todo',
+        'nav.requests'
+    ),
 };
 
 export function normalizeUserRole(user: any): UserRoleId {
@@ -126,8 +269,78 @@ export function isAdminUser(user: any): boolean {
     return isSystemAdmin(user);
 }
 
+/** Sidebar + Report Builder entry: full access flag or any granular Reports capability. */
 export function canAccessReports(user: any): boolean {
-    return can(user, 'reports.access');
+    if (!user) return false;
+    if (can(user, 'reports.access')) return true;
+    return (
+        can(user, 'reports.sourceRows') ||
+        REPORTS_DATA_SOURCE_PERMISSIONS.some((p) => can(user, p))
+    );
+}
+
+/** Primary sidebar items (excluding Accounts — see canShowAccountsNavItem). */
+export const MAIN_NAV_ITEM_PERMISSIONS: Record<string, PermissionId> = {
+    dashboard: 'nav.dashboard',
+    calendar: 'nav.calendar',
+    todo: 'nav.todo',
+    events: 'nav.events',
+    requests: 'nav.requests',
+    crm: 'nav.crm',
+    contracts: 'nav.contracts',
+};
+
+/** Reservations Team uses Accounts only with view-only grant; other roles use nav.accounts. */
+export function canShowAccountsNavItem(user: any): boolean {
+    if (!user) return false;
+    if (normalizeUserRole(user) === 'Reservations Team') return canAccessAccountsNav(user);
+    return can(user, 'nav.accounts');
+}
+
+/** Views the user is allowed to open (for route guard). Always includes `settings`. */
+export function getAllowedAppViewsForUser(user: any): Set<string> {
+    const allowed = new Set<string>(['settings']);
+    if (!user) return allowed;
+    for (const [viewId, perm] of Object.entries(MAIN_NAV_ITEM_PERMISSIONS)) {
+        if (can(user, perm)) allowed.add(viewId);
+    }
+    if (canShowAccountsNavItem(user)) allowed.add('accounts');
+    if (canAccessReports(user)) allowed.add('reports');
+    return allowed;
+}
+
+const REPORT_ENTITY_TO_PERM: Record<string, PermissionId | undefined> = {
+    Requests: 'reports.dataRequests',
+    Accounts: 'reports.dataAccounts',
+    MICE: 'reports.dataMice',
+    Tasks: 'reports.dataTasks',
+    'Sales Calls': 'reports.dataSalesCalls',
+};
+
+/** True if user has any per–data-source Reports permission (restricts which sources appear). */
+export function hasGranularReportsDataPermission(user: any): boolean {
+    return REPORTS_DATA_SOURCE_PERMISSIONS.some((p) => can(user, p));
+}
+
+/**
+ * Use this data source in Report Builder (picker, filters, export).
+ * Legacy: if user has reports.access but none of reports.data*, allow all sources (unchanged behaviour).
+ */
+export function canReportsUseDataSource(user: any, entityLabel: string): boolean {
+    if (!canAccessReports(user)) return false;
+    if (!hasGranularReportsDataPermission(user)) return true;
+    const p = REPORT_ENTITY_TO_PERM[entityLabel];
+    return p ? can(user, p) : false;
+}
+
+/**
+ * Generate preview and show the row-by-row source table.
+ * Requires reports.sourceRows, or legacy full builder when no reports.data* is assigned.
+ */
+export function canReportsPreviewSourceRows(user: any): boolean {
+    if (!canAccessReports(user)) return false;
+    if (can(user, 'reports.sourceRows')) return true;
+    return !hasGranularReportsDataPermission(user);
 }
 
 export function canDeleteTasks(user: any): boolean {

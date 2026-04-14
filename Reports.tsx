@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     BarChart3,
     Download,
@@ -18,6 +18,7 @@ import {
 import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+import { canReportsPreviewSourceRows, canReportsUseDataSource } from './userPermissions';
 
 interface ReportsProps {
     theme: any;
@@ -27,6 +28,7 @@ interface ReportsProps {
     crmLeads?: Record<string, any[]>;
     tasks?: any[];
     currency?: CurrencyCode;
+    currentUser?: any;
 }
 
 const initialSavedReports: any[] = [];
@@ -121,6 +123,7 @@ export default function Reports({
     crmLeads = {},
     tasks = [],
     currency = 'SAR',
+    currentUser,
 }: ReportsProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -173,6 +176,9 @@ export default function Reports({
         { id: 'Sales Calls' as ReportEntity, icon: PhoneCall, label: 'Sales Calls' },
     ];
 
+    const canUseSelectedSource = canReportsUseDataSource(currentUser, selectedEntity);
+    const canPreviewRows = canReportsPreviewSourceRows(currentUser);
+
     const availableColumns: Record<ReportEntity, string[]> = {
         Requests: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Nights', 'Room Nights', 'PAX', 'DDR', 'AVG ADR', 'Paid Amount', 'Unpaid Amount', 'Amount'],
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
@@ -180,6 +186,16 @@ export default function Reports({
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
         'Sales Calls': ['ID', 'Date', 'Location', 'Address', 'Name', 'Position', 'Subject', 'Company', 'Stage', 'Outcome', 'Follow-up', 'Next Step', 'Expected Revenue', 'Owner'],
     };
+
+    useEffect(() => {
+        const firstAllowed = entities.find((e) => canReportsUseDataSource(currentUser, e.id));
+        if (!firstAllowed) return;
+        if (!canReportsUseDataSource(currentUser, selectedEntity)) {
+            setSelectedEntity(firstAllowed.id);
+            setSelectedColumns([...(availableColumns[firstAllowed.id] || [])]);
+            setShowPreview(false);
+        }
+    }, [currentUser, selectedEntity]);
 
     const statusOptions = selectedEntity === 'Sales Calls'
         ? ['Upcoming Sales Calls', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
@@ -476,7 +492,7 @@ export default function Reports({
     const showValueFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE';
 
     const handleExport = () => {
-        if (!showPreview || !reportPack.rows.length) return;
+        if (!canReportsUseDataSource(currentUser, selectedEntity) || !reportPack.rows.length) return;
         const stamp = new Date().toISOString().slice(0, 10);
         const base = `${String(selectedEntity).toLowerCase()}-report-${stamp}`;
         const cols = (selectedColumns && selectedColumns.length ? selectedColumns : reportPack.exportColumns)
@@ -604,6 +620,8 @@ export default function Reports({
         );
     }
 
+    const anyDataSourceAllowed = entities.some((e) => canReportsUseDataSource(currentUser, e.id));
+
     return (
         <div className="h-full flex flex-col overflow-hidden">
             <div className="shrink-0 p-4 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -629,6 +647,18 @@ export default function Reports({
             </div>
 
             <div className="flex-1 overflow-auto p-4">
+                {!anyDataSourceAllowed ? (
+                    <div
+                        className="max-w-xl mx-auto mt-8 p-6 rounded-xl border text-center"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <p className="font-semibold" style={{ color: colors.textMain }}>No report data sources enabled</p>
+                        <p className="text-sm mt-2" style={{ color: colors.textMuted }}>
+                            Your account can open Reports but has no permission to use Requests, Accounts, MICE, Tasks, or Sales Calls.
+                            Ask an administrator to assign the matching checkboxes under Reports in user permissions.
+                        </p>
+                    </div>
+                ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 max-w-7xl mx-auto">
                     <div className="lg:col-span-1 space-y-4">
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -636,12 +666,14 @@ export default function Reports({
                             <div className="space-y-2">
                                 {entities.map((entity) => {
                                     const Icon = entity.icon;
+                                    const allowed = canReportsUseDataSource(currentUser, entity.id);
                                     return (
                                         <button
                                             key={entity.id}
                                             type="button"
-                                            onClick={() => handleEntityChange(entity.id)}
-                                            className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${selectedEntity === entity.id ? 'border-2' : ''}`}
+                                            disabled={!allowed}
+                                            onClick={() => allowed && handleEntityChange(entity.id)}
+                                            className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${selectedEntity === entity.id ? 'border-2' : ''} disabled:opacity-40 disabled:cursor-not-allowed`}
                                             style={{
                                                 borderColor: selectedEntity === entity.id ? colors.primary : colors.border,
                                                 backgroundColor: selectedEntity === entity.id ? colors.primary + '10' : colors.bg,
@@ -747,20 +779,28 @@ export default function Reports({
 
                     <div className="lg:col-span-2 space-y-4">
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                            <div className="flex justify-between items-center">
+                            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                                 <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Data preview</h3>
-                                <button
-                                    type="button"
-                                    onClick={handleGeneratePreview}
-                                    className="px-4 py-2 rounded flex items-center gap-2 hover:brightness-110 transition-all text-sm"
-                                    style={{ backgroundColor: colors.primary, color: '#000' }}
-                                >
-                                    <RefreshCw size={16} /> Generate preview
-                                </button>
+                                {canPreviewRows && canUseSelectedSource ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleGeneratePreview}
+                                        className="px-4 py-2 rounded flex items-center gap-2 hover:brightness-110 transition-all text-sm shrink-0"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}
+                                    >
+                                        <RefreshCw size={16} /> Generate preview
+                                    </button>
+                                ) : (
+                                    <p className="text-xs sm:text-right max-w-md" style={{ color: colors.textMuted }}>
+                                        {canUseSelectedSource
+                                            ? 'Row-by-row preview is off for your account. You can still configure filters and export.'
+                                            : 'Select an allowed data source to continue.'}
+                                    </p>
+                                )}
                             </div>
                         </div>
 
-                        {showPreview && (
+                        {showPreview && canPreviewRows && canUseSelectedSource && (
                             <div className="p-4 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                                     {Object.entries(reportPack.summary).map(([label, value]) => (
@@ -828,7 +868,7 @@ export default function Reports({
 
                             <button
                                 type="button"
-                                disabled={!showPreview}
+                                disabled={!canUseSelectedSource || !reportPack.rows.length}
                                 onClick={handleExport}
                                 className="w-full py-3 rounded flex items-center justify-center gap-2 hover:brightness-110 transition-all disabled:opacity-50"
                                 style={{ backgroundColor: colors.green, color: '#000' }}
@@ -839,6 +879,7 @@ export default function Reports({
                         </div>
                     </div>
                 </div>
+                )}
             </div>
         </div>
     );
