@@ -26,6 +26,7 @@ interface AddAccountModalProps {
 const defaultFormState = () => ({
     name: '',
     type: 'Corporate',
+    clientTaxId: '',
     city: '',
     country: 'Saudi Arabia',
     street: '',
@@ -66,6 +67,7 @@ function accountToFormState(acc: any) {
     return {
         name: acc?.name || '',
         type: acc?.type || 'Corporate',
+        clientTaxId: acc?.clientTaxId ?? acc?.taxId ?? '',
         city: acc?.city || '',
         country: acc?.country || 'Saudi Arabia',
         street: acc?.street || '',
@@ -156,6 +158,23 @@ export default function AddAccountModal({ isOpen, onClose, onSave, theme, editin
                                 ))}
                             </select>
                         </div>
+                    </div>
+
+                    <div>
+                        <label className="text-[10px] uppercase font-black mb-2 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Client TAX ID</label>
+                        <input
+                            type="text"
+                            placeholder="e.g. VAT / tax registration number"
+                            value={newAccountData.clientTaxId}
+                            onChange={(e) => setNewAccountData({ ...newAccountData, clientTaxId: e.target.value })}
+                            className="w-full px-4 py-3 rounded-2xl border text-sm outline-none focus:ring-4 transition-all"
+                            style={{
+                                backgroundColor: colors.bg,
+                                borderColor: colors.border,
+                                color: colors.textMain,
+                                '--tw-ring-color': colors.primary + '20',
+                            } as any}
+                        />
                     </div>
 
                     <div className="p-6 rounded-3xl border bg-white/5 space-y-4" style={{ borderColor: colors.border }}>

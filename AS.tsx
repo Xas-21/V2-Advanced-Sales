@@ -5064,7 +5064,7 @@ export default function AdvancedSalesDashboard() {
 
 
                 {/* 1. Header */}
-                <header className="flex-none h-auto md:h-14 border-b flex flex-col md:flex-row items-center justify-between px-4 md:px-5 py-2 md:py-0 z-20 transition-colors duration-300 relative gap-3 md:gap-0"
+                <header className="flex-none h-auto md:min-h-12 border-b flex flex-col md:flex-row items-center justify-between px-4 md:px-5 py-2 md:py-1.5 z-20 transition-colors duration-300 relative gap-3 md:gap-0"
                     style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
 
                     {/* Left: Logo & Menu Trigger */}
@@ -5073,13 +5073,13 @@ export default function AdvancedSalesDashboard() {
                             <button onClick={() => setIsSideNavOpen(!isSideNavOpen)} className="p-1 hover:bg-white/10 rounded transition-colors" style={{ color: colors.textMuted }}>
                                 <Menu size={24} />
                             </button>
-                            <div className="flex flex-col ml-2">
+                            <div className="flex flex-col ml-2 -mt-0.5 md:-mt-1 leading-none gap-0">
                                 <img
                                     src="https://res.cloudinary.com/dmydt1xa9/image/upload/v1769032168/Gemini_Generated_Image_4hqpsz4hqpsz4hqp_ukfn6c.png"
                                     alt="Advanced Sales Logo"
-                                    className="h-12 w-auto object-contain"
+                                    className="h-10 w-auto object-contain shrink-0 md:h-9"
                                 />
-                                <span className="text-[8px] uppercase tracking-wider pl-1" style={{ color: colors.textMuted }}>Advanced Sales</span>
+                                <span className="text-[8px] uppercase tracking-wider pl-1 leading-none mt-0.5 pb-px" style={{ color: colors.textMuted }}>Advanced Sales</span>
                             </div>
                         </div>
                         {/* Mobile Only Tools */}
