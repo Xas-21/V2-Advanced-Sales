@@ -1764,26 +1764,6 @@ export default function RequestsManager({
                             </button>
                         </div>
 
-                        <div
-                            className="flex flex-col sm:flex-row sm:items-center gap-2 py-2 px-3 rounded-lg border w-full"
-                            style={{ borderColor: colors.border, backgroundColor: colors.bg + '40' }}
-                        >
-                            <label className="text-[10px] font-black uppercase shrink-0 opacity-60 whitespace-nowrap" style={{ color: colors.textMuted }}>Meal plan</label>
-                            <select
-                                value={accForm.mealPlan}
-                                onChange={(e) => setAccForm({ ...accForm, mealPlan: e.target.value })}
-                                className="w-full sm:flex-1 min-w-0 py-1.5 px-2 text-xs rounded border bg-black/20 outline-none focus:border-primary"
-                                style={{ borderColor: colors.border, color: colors.textMain }}
-                            >
-                                {mealPlansForProperty.map((m) => (
-                                    <option key={m.id} value={m.code}>{m.name} ({m.code})</option>
-                                ))}
-                                {accForm.mealPlan && !mealPlansForProperty.some((mm) => mm.code === accForm.mealPlan) ? (
-                                    <option value={accForm.mealPlan}>{accForm.mealPlan} (saved)</option>
-                                ) : null}
-                            </select>
-                        </div>
-
                         <div className="space-y-2">
                             {roomGridLikeSeries ? (
                                 <div className="grid grid-cols-12 gap-2 sm:gap-3 px-2 sm:px-4 py-1.5 opacity-40 text-[10px] font-bold uppercase items-end">
@@ -1794,19 +1774,21 @@ export default function RequestsManager({
                                         {requestType === 'event_rooms' ? 'End Date' : 'Departure'}
                                     </div>
                                     <div className="col-span-1 text-center">Nts</div>
-                                    <div className="col-span-2 min-w-0">Room Type</div>
-                                    <div className="col-span-1 min-w-0">Occupancy</div>
+                                    <div className="col-span-1 min-w-0">Room</div>
+                                    <div className="col-span-1 text-center min-w-0">Meal</div>
+                                    <div className="col-span-1 min-w-0">Occ</div>
                                     <div className="col-span-1 text-center">Qty</div>
                                     <div className="col-span-2 min-w-0 text-right">Rate</div>
                                     <div className="col-span-1 shrink-0" />
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
-                                    <div className="col-span-3">Room Type</div>
-                                    <div className="col-span-3">Occupancy</div>
+                                <div className="grid grid-cols-12 gap-3 px-3 py-1.5 opacity-40 text-[10px] font-bold uppercase">
+                                    <div className="col-span-2 min-w-0">Room Type</div>
+                                    <div className="col-span-1 text-center min-w-0">Meal</div>
+                                    <div className="col-span-2 min-w-0">Occupancy</div>
                                     <div className="col-span-2 text-center">Qty</div>
-                                    <div className="col-span-3 text-right">Rate / Night</div>
-                                    <div className="col-span-1"></div>
+                                    <div className="col-span-4 text-right">Rate / Night</div>
+                                    <div className="col-span-1" />
                                 </div>
                             )}
 
@@ -1872,8 +1854,8 @@ export default function RequestsManager({
                                             </div>
                                         </>
                                     )}
-                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 py-1.5 px-2 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
+                                        <select className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all truncate"
                                             title={room.type}
                                             value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
                                             {roomTypeSelectOptions.map((name) => (
@@ -1881,18 +1863,37 @@ export default function RequestsManager({
                                             ))}
                                         </select>
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 py-1.5 px-1.5 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                    <div className="col-span-1 min-w-0">
+                                        <select
+                                            value={accForm.mealPlan}
+                                            onChange={(e) => setAccForm({ ...accForm, mealPlan: e.target.value })}
+                                            className="w-full min-w-0 py-1.5 px-0.5 text-[11px] font-mono font-bold text-center rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                            title={
+                                                mealPlansForProperty.find((m) => m.code === accForm.mealPlan)?.name ||
+                                                accForm.mealPlan ||
+                                                'Meal plan'
+                                            }
+                                        >
+                                            {mealPlansForProperty.map((m) => (
+                                                <option key={m.id} value={m.code}>{m.code}</option>
+                                            ))}
+                                            {accForm.mealPlan && !mealPlansForProperty.some((mm) => mm.code === accForm.mealPlan) ? (
+                                                <option value={accForm.mealPlan}>{accForm.mealPlan}</option>
+                                            ) : null}
+                                        </select>
+                                    </div>
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
+                                        <select className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
                                             <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
                                         </select>
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2"}>
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
                                         <input type="number" className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
                                             value={room.count} onChange={e => updateRoom(room.id, 'count', Number(e.target.value))} />
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <div className={`relative min-w-0 w-full max-w-[11rem] ${roomGridLikeSeries ? 'mx-auto' : ''}`}>
+                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-4 min-w-0"}>
+                                        <div className={`relative min-w-0 w-full max-w-[11rem] ${roomGridLikeSeries ? 'mx-auto' : 'mx-auto sm:ml-auto sm:mr-0'}`}>
                                             <input type="number" className="w-full min-w-0 py-1.5 px-2 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center font-mono tabular-nums"
                                                 value={room.rate} onChange={e => updateRoom(room.id, 'rate', Number(e.target.value))} />
                                         </div>
