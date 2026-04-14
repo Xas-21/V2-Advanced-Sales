@@ -107,6 +107,7 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
 } from './beoShared';
+import { resolveUserAttributionId } from './userProfileMetrics';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
@@ -3628,7 +3629,7 @@ export default function AdvancedSalesDashboard() {
             {
                 id: `A${Date.now()}`,
                 ...accountData,
-                createdByUserId: currentUser?.id,
+                createdByUserId: resolveUserAttributionId(currentUser) || undefined,
                 activities: [...(accountData.activities || []), act],
             },
             ...prev,

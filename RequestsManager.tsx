@@ -45,6 +45,7 @@ import {
     paymentsMeetOrExceedTotal,
     shouldPromoteDefiniteToActual,
 } from './beoShared';
+import { resolveUserAttributionId } from './userProfileMetrics';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
@@ -824,6 +825,14 @@ export default function RequestsManager({
                     ...updatedLogs,
                 ];
             }
+            let createdByUserIdOut: string | undefined;
+            if (!isUpdate) {
+                createdByUserIdOut = resolveUserAttributionId(currentUser) || undefined;
+            } else {
+                const p = formData.createdByUserId;
+                if (p != null && String(p).trim() !== '') createdByUserIdOut = String(p).trim();
+            }
+
             const payload = {
                 ...formData,
                 id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
@@ -857,7 +866,7 @@ export default function RequestsManager({
                 logs: updatedLogs,
                 paymentStatus: fin.paymentStatus, // Unpaid, Deposit, Paid
                 segment: resolvedSegment,
-                ...(isUpdate ? {} : { createdByUserId: currentUser?.id }),
+                ...(createdByUserIdOut != null ? { createdByUserId: createdByUserIdOut } : {}),
             };
 
             const url = apiUrl('/api/requests');

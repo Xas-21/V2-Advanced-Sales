@@ -76,20 +76,53 @@ export function logUserMatchesLog(logUser: string | undefined, user: any): boole
     });
 }
 
+/** Prefer real user id; fall back to username/email so new logins still attribute correctly. */
+export function resolveUserAttributionId(user: any): string {
+    if (!user) return '';
+    const id = user.id;
+    if (id != null && String(id).trim() !== '') return String(id).trim();
+    const u = String(user.username || '').trim();
+    if (u) return u;
+    const e = String(user.email || '').trim();
+    if (e) return e;
+    return '';
+}
+
+function userHasProfileIdentity(user: any): boolean {
+    return !!(resolveUserAttributionId(user) || String(user?.name || '').trim());
+}
+
+/** True if stored creator id matches the user's id, username, or email (string-safe). */
+export function createdByMatchesUser(createdByRaw: any, user: any): boolean {
+    if (createdByRaw == null || createdByRaw === '') return false;
+    const c = String(createdByRaw).trim();
+    if (!c) return false;
+    const attrId = resolveUserAttributionId(user);
+    if (attrId && c === attrId) return true;
+    if (attrId && !Number.isNaN(Number(c)) && !Number.isNaN(Number(attrId)) && Number(c) === Number(attrId)) return true;
+    const unm = String(user?.name || '').trim().toLowerCase();
+    const unu = String(user?.username || '').trim().toLowerCase();
+    const uem = String(user?.email || '').trim().toLowerCase();
+    const cl = c.toLowerCase();
+    if (unu && cl === unu) return true;
+    if (uem && cl === uem) return true;
+    if (unm && cl === unm) return true;
+    return false;
+}
+
 export function requestAttributedToUser(req: any, user: any): boolean {
-    if (!user?.id) return false;
-    if (req?.createdByUserId != null && String(req.createdByUserId) === String(user.id)) return true;
+    if (!user || !userHasProfileIdentity(user)) return false;
+    if (createdByMatchesUser(req?.createdByUserId, user)) return true;
     const logs = Array.isArray(req?.logs) ? req.logs : [];
     const created = logs.find((l: any) => String(l?.action || '').toLowerCase().includes('request created'));
     if (created && logUserMatchesLog(created.user, user)) return true;
-    if (logs.length && logUserMatchesLog(logs[0]?.user, user)) return true;
     return false;
 }
 
 export function accountAttributedToUser(acc: any, user: any): boolean {
-    if (!user?.id) return false;
-    if (acc?.createdByUserId != null && String(acc.createdByUserId) === String(user.id)) return true;
-    if (acc?.ownerUserId != null && String(acc.ownerUserId) === String(user.id)) return true;
+    if (!user || !userHasProfileIdentity(user)) return false;
+    if (createdByMatchesUser(acc?.createdByUserId, user)) return true;
+    if (createdByMatchesUser(acc?.ownerUserId, user)) return true;
 
     // Legacy fallback only when owner/creator ids are missing.
     if (acc?.createdByUserId != null || acc?.ownerUserId != null) return false;
@@ -109,13 +142,15 @@ export function accountAttributedToUser(acc: any, user: any): boolean {
 }
 
 export function crmLeadAttributedToUser(lead: any, user: any): boolean {
-    if (!user?.id) return false;
-    if (lead?.ownerUserId != null && String(lead.ownerUserId) === String(user.id)) return true;
+    if (!user || !userHasProfileIdentity(user)) return false;
+    if (createdByMatchesUser(lead?.ownerUserId, user)) return true;
     const am = String(lead?.accountManager || '').trim().toLowerCase();
     const unm = String(user?.name || '').trim().toLowerCase();
     const unu = String(user?.username || '').trim().toLowerCase();
+    const uem = String(user?.email || '').trim().toLowerCase();
     if (am && unm && (am === unm || unm.startsWith(am) || am.startsWith(unm.split(/\s+/)[0] || ''))) return true;
     if (am && unu && am === unu) return true;
+    if (am && uem && am === uem) return true;
     return false;
 }
 
@@ -142,7 +177,7 @@ function taskAssigneeEntries(task: any): { id: string; name: string }[] {
 }
 
 export function taskAssignedToUser(task: any, user: any): boolean {
-    const uid = String(user?.id ?? '').trim();
+    const uid = resolveUserAttributionId(user);
     const n = String(user?.name || '').trim().toLowerCase();
     const u = String(user?.username || '').trim().toLowerCase();
     const legacyId = String(task?.assignedToUserId ?? '').trim();

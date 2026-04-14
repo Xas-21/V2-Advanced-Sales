@@ -31,6 +31,7 @@ import {
 import type { CurrencyCode } from './currency';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
+import { resolveUserAttributionId } from './userProfileMetrics';
 
 const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v1';
 const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email'];
@@ -152,7 +153,7 @@ export default function AccountsPage({
             {
                 id: `A${Date.now()}`,
                 ...accountData,
-                createdByUserId: currentUser?.id,
+                createdByUserId: resolveUserAttributionId(currentUser) || undefined,
                 activities: [...(accountData.activities || []), act],
             },
             ...prev,

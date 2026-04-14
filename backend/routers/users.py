@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter
 from utils import USERS_FILE, read_json_file, write_json_file
 
@@ -29,6 +31,8 @@ def create_or_update_user(user_data: dict):
             user_data["password"] = users[existing_idx].get("password", "password123")
         users[existing_idx] = {**users[existing_idx], **user_data}
     else:
+        if not user_data.get("id"):
+            user_data["id"] = f"U-{uuid.uuid4().hex[:10]}"
         users.append(user_data)
         
     write_json_file(USERS_FILE, users)

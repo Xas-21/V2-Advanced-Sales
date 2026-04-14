@@ -542,19 +542,25 @@ def upsert_request_row(data: dict) -> dict:
     item_id = str(item.get("id") or f"R{uuid.uuid4().hex[:8]}")
     item["id"] = item_id
     property_id = str(item.get("propertyId") or "")
-    created_by_user_id = (
-        str(item.get("createdByUserId")) if item.get("createdByUserId") is not None else None
-    )
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT payload FROM requests_rows WHERE id = %s;", (item_id,))
+            row = cur.fetchone()
+            if row and isinstance(row.get("payload"), dict):
+                prev = row["payload"]
+                if item.get("createdByUserId") is None and prev.get("createdByUserId") is not None:
+                    item["createdByUserId"] = prev["createdByUserId"]
+            created_by_user_id = (
+                str(item.get("createdByUserId")) if item.get("createdByUserId") is not None else None
+            )
             cur.execute(
                 """
                 INSERT INTO requests_rows (id, property_id, created_by_user_id, payload, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (id) DO UPDATE
                 SET property_id = EXCLUDED.property_id,
-                    created_by_user_id = EXCLUDED.created_by_user_id,
+                    created_by_user_id = COALESCE(EXCLUDED.created_by_user_id, requests_rows.created_by_user_id),
                     payload = EXCLUDED.payload,
                     updated_at = NOW();
                 """,
@@ -606,21 +612,29 @@ def upsert_account_row(data: dict) -> dict:
     item_id = str(item.get("id") or f"A{uuid.uuid4().hex[:8]}")
     item["id"] = item_id
     property_id = str(item.get("propertyId") or "")
-    created_by_user_id = (
-        str(item.get("createdByUserId")) if item.get("createdByUserId") is not None else None
-    )
-    owner_user_id = str(item.get("ownerUserId")) if item.get("ownerUserId") is not None else None
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT payload FROM accounts_rows WHERE id = %s;", (item_id,))
+            row = cur.fetchone()
+            if row and isinstance(row.get("payload"), dict):
+                prev = row["payload"]
+                if item.get("createdByUserId") is None and prev.get("createdByUserId") is not None:
+                    item["createdByUserId"] = prev["createdByUserId"]
+                if item.get("ownerUserId") is None and prev.get("ownerUserId") is not None:
+                    item["ownerUserId"] = prev["ownerUserId"]
+            created_by_user_id = (
+                str(item.get("createdByUserId")) if item.get("createdByUserId") is not None else None
+            )
+            owner_user_id = str(item.get("ownerUserId")) if item.get("ownerUserId") is not None else None
             cur.execute(
                 """
                 INSERT INTO accounts_rows (id, property_id, created_by_user_id, owner_user_id, payload, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (id) DO UPDATE
                 SET property_id = EXCLUDED.property_id,
-                    created_by_user_id = EXCLUDED.created_by_user_id,
-                    owner_user_id = EXCLUDED.owner_user_id,
+                    created_by_user_id = COALESCE(EXCLUDED.created_by_user_id, accounts_rows.created_by_user_id),
+                    owner_user_id = COALESCE(EXCLUDED.owner_user_id, accounts_rows.owner_user_id),
                     payload = EXCLUDED.payload,
                     updated_at = NOW();
                 """,

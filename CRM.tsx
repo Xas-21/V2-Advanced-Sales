@@ -28,6 +28,7 @@ import {
 } from './accountProfileData';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
+import { resolveUserAttributionId } from './userProfileMetrics';
 
 interface CRMProps {
     theme: any;
@@ -325,7 +326,7 @@ export default function CRM({
         const newLead = {
             id: `L${Date.now()}`,
             propertyId: activeProperty?.id || undefined,
-            ownerUserId: currentUser?.id,
+            ownerUserId: resolveUserAttributionId(currentUser) || undefined,
             accountId: account.id,
             company: newCallData.accountName,
             subject: newCallData.subject,
@@ -385,7 +386,7 @@ export default function CRM({
         const newAccount = {
             id: `A${Date.now()}`,
             ...newAccountData,
-            createdByUserId: currentUser?.id,
+            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
             activities: [...(newAccountData.activities || []), act],
         };
         setAccounts((prev: any[]) => [newAccount, ...prev]);
