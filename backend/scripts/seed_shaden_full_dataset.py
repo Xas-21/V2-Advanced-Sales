@@ -143,7 +143,11 @@ def main():
         )
     ]
     all_accounts = [*abd_accounts, *sultan_accounts]
-    jput(client, "/api/accounts/sync", {"propertyId": shaden_id, "accounts": all_accounts})
+    jput(
+        client,
+        "/api/accounts/sync",
+        {"propertyId": shaden_id, "accounts": all_accounts, "allowClear": True},
+    )
 
     # Clear Shaden requests, then create 15 (10 Sultan + 5 Abdullah)
     existing_requests = jget(client, f"/api/requests?propertyId={shaden_id}")

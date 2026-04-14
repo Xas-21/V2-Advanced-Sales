@@ -3783,6 +3783,8 @@ export default function AdvancedSalesDashboard() {
             setAccounts([]);
             return;
         }
+        // Avoid keeping another property's accounts in memory while the new list loads (reduces bad sync payloads).
+        setAccounts([]);
         let cancelled = false;
         fetchAccountsForProperty(String(pid)).then((list) => {
             if (cancelled) return;

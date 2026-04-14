@@ -673,7 +673,10 @@ def sync_accounts_rows(property_id: str, incoming: list[dict], allow_clear: bool
                     "protected": True,
                 }
 
-            cur.execute("DELETE FROM accounts_rows WHERE property_id = %s;", (pid,))
+            # Full replace only when explicitly requested (seed scripts, tests). The SPA syncs
+            # often with client state that can be stale; merge avoids wiping the DB.
+            if allow_clear:
+                cur.execute("DELETE FROM accounts_rows WHERE property_id = %s;", (pid,))
             for row in incoming:
                 if not isinstance(row, dict):
                     continue
@@ -701,7 +704,13 @@ def sync_accounts_rows(property_id: str, incoming: list[dict], allow_clear: bool
                     (item_id, pid, created_by_user_id, owner_user_id, Json(item)),
                 )
             conn.commit()
-    return {"message": "Synced", "saved": len([x for x in incoming if isinstance(x, dict)]), "propertyId": pid}
+    mode = "replaced" if allow_clear else "merged"
+    return {
+        "message": "Synced",
+        "mode": mode,
+        "saved": len([x for x in incoming if isinstance(x, dict)]),
+        "propertyId": pid,
+    }
 
 
 def list_collection_rows(collection_name: str, property_id: str | None = None) -> list[dict]:

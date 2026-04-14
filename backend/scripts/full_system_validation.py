@@ -134,7 +134,11 @@ def main():
             "contacts": [],
         },
     ]
-    put_json(anon, "/api/accounts/sync", {"propertyId": shaden_id, "accounts": test_accounts})
+    put_json(
+        anon,
+        "/api/accounts/sync",
+        {"propertyId": shaden_id, "accounts": test_accounts, "allowClear": True},
+    )
 
     # Clear existing requests on Shaden first
     existing_requests = get_json(anon, f"/api/requests?propertyId={shaden_id}")
@@ -324,6 +328,7 @@ def main():
         "/api/accounts/sync",
         {
             "propertyId": qa_prop_id,
+            "allowClear": True,
             "accounts": [
                 {
                     "id": rid("AQ"),

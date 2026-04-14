@@ -173,6 +173,6 @@ def test_accounts_sync_roundtrip():
 
     restore = client.put(
         "/api/accounts/sync",
-        json={"propertyId": PROP_ID, "accounts": prev},
+        json={"propertyId": PROP_ID, "accounts": prev, "allowClear": True},
     )
     assert restore.status_code == 200
