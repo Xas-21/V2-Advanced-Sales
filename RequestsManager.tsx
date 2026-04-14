@@ -1691,8 +1691,8 @@ export default function RequestsManager({
                                         {requestType === 'event_rooms' ? 'End Date' : 'Departure'}
                                     </div>
                                     <div className="col-span-1 text-center">Nts</div>
-                                    <div className="col-span-1 min-w-0">Room Type</div>
-                                    <div className="col-span-2 min-w-0">Occupancy</div>
+                                    <div className="col-span-2 min-w-0">Room Type</div>
+                                    <div className="col-span-1 min-w-0">Occupancy</div>
                                     <div className="col-span-1 text-center">Qty</div>
                                     <div className="col-span-2 min-w-0 text-right">Rate</div>
                                     <div className="col-span-1 shrink-0" />
@@ -1732,8 +1732,8 @@ export default function RequestsManager({
                                             </div>
                                         </>
                                     )}
-                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all truncate"
+                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
+                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             title={room.type}
                                             value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
                                             {roomTypeSelectOptions.map((name) => (
@@ -1741,8 +1741,8 @@ export default function RequestsManager({
                                             ))}
                                         </select>
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-3"}>
+                                        <select className="w-full min-w-0 py-2 px-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
                                             <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
                                         </select>
