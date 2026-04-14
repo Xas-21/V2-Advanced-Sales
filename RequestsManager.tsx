@@ -1120,10 +1120,10 @@ export default function RequestsManager({
         </div>
     );
 
-    const renderFormLayout = ({ title, icon: Icon, children, onBack, onSave }: any) => (
+    const renderFormLayout = ({ title, icon: Icon, children, onBack, onSave, maxWidthClass }: any) => (
         <div className="h-full flex flex-col relative" style={{ backgroundColor: colors.bg }}>
             <div className="flex-1 overflow-y-auto p-6">
-                <div className="max-w-4xl mx-auto space-y-6 pb-12">
+                <div className={`${maxWidthClass || 'max-w-4xl'} mx-auto w-full space-y-6 pb-12`}>
                     {/* Header */}
                     <div className="flex items-center justify-between p-4 rounded-lg border bg-current/5" style={{ borderColor: colors.border }}>
                         <h2 className="text-xl font-bold flex items-center gap-2" style={{ color: colors.textMain }}>
@@ -1471,8 +1471,17 @@ export default function RequestsManager({
             return BedDouble;
         };
 
-        return renderFormLayout({ title: getFormTitle(), icon: getFormIcon(),
-            onBack: () => { setStep(1); setRequestType(null); },
+        const formMaxWidth =
+            requestType === 'event_rooms' || requestType === 'series' ? 'max-w-6xl' : 'max-w-4xl';
+
+        return renderFormLayout({
+            title: getFormTitle(),
+            icon: getFormIcon(),
+            maxWidthClass: formMaxWidth,
+            onBack: () => {
+                setStep(1);
+                setRequestType(null);
+            },
             onSave: () => {
                 handleSaveRequest(accForm, requestType || 'accommodation');
             },
@@ -1674,19 +1683,19 @@ export default function RequestsManager({
 
                         <div className="space-y-3">
                             {roomGridLikeSeries ? (
-                                <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
-                                    <div className="col-span-2">
+                                <div className="grid grid-cols-12 gap-2 sm:gap-3 px-2 sm:px-4 py-2 opacity-40 text-[10px] font-bold uppercase items-end">
+                                    <div className="col-span-2 min-w-0">
                                         {requestType === 'event_rooms' ? 'Start Date' : 'Arrival'}
                                     </div>
-                                    <div className="col-span-2">
+                                    <div className="col-span-2 min-w-0">
                                         {requestType === 'event_rooms' ? 'End Date' : 'Departure'}
                                     </div>
                                     <div className="col-span-1 text-center">Nts</div>
-                                    <div className="col-span-2">Room Type</div>
-                                    <div className="col-span-1">Occupancy</div>
+                                    <div className="col-span-1 min-w-0">Room Type</div>
+                                    <div className="col-span-2 min-w-0">Occupancy</div>
                                     <div className="col-span-1 text-center">Qty</div>
-                                    <div className="col-span-2 text-right">Rate</div>
-                                    <div className="col-span-1"></div>
+                                    <div className="col-span-2 min-w-0 text-right">Rate</div>
+                                    <div className="col-span-1 shrink-0" />
                                 </div>
                             ) : (
                                 <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
@@ -1699,47 +1708,56 @@ export default function RequestsManager({
                             )}
 
                             {accForm.rooms.map((room) => (
-                                <div key={room.id} className="grid grid-cols-12 gap-3 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
+                                <div key={room.id} className="grid grid-cols-12 gap-2 sm:gap-3 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
                                     {roomGridLikeSeries && (
                                         <>
-                                            <div className="col-span-2">
-                                                <input type="date" className="w-full px-2 py-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none"
-                                                    value={(room as any).arrival} onChange={e => updateRoom(room.id, 'arrival', e.target.value)} />
+                                            <div className="col-span-2 min-w-0">
+                                                <input
+                                                    type="date"
+                                                    className="w-full min-w-[9.25rem] max-w-full box-border px-2 py-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    value={(room as any).arrival}
+                                                    onChange={(e) => updateRoom(room.id, 'arrival', e.target.value)}
+                                                />
                                             </div>
-                                            <div className="col-span-2">
-                                                <input type="date" className="w-full px-2 py-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none"
-                                                    value={(room as any).departure} onChange={e => updateRoom(room.id, 'departure', e.target.value)} />
+                                            <div className="col-span-2 min-w-0">
+                                                <input
+                                                    type="date"
+                                                    className="w-full min-w-[9.25rem] max-w-full box-border px-2 py-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    value={(room as any).departure}
+                                                    onChange={(e) => updateRoom(room.id, 'departure', e.target.value)}
+                                                />
                                             </div>
                                             <div className="col-span-1 text-center font-bold text-xs">
                                                 {calculateNights((room as any).arrival, (room as any).departure)}
                                             </div>
                                         </>
                                     )}
-                                    <div className={roomGridLikeSeries ? "col-span-2" : "col-span-3"}>
-                                        <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-3"}>
+                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all truncate"
+                                            title={room.type}
                                             value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
                                             {roomTypeSelectOptions.map((name) => (
                                                 <option key={name} value={name}>{name}</option>
                                             ))}
                                         </select>
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-1" : "col-span-3"}>
-                                        <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
+                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
                                             <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
                                         </select>
                                     </div>
-                                    <div className={roomGridLikeSeries ? "col-span-1" : "col-span-2"}>
-                                        <input type="number" className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
+                                    <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2"}>
+                                        <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
                                             value={room.count} onChange={e => updateRoom(room.id, 'count', Number(e.target.value))} />
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <div className="relative min-w-0">
-                                            <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono"
+                                        <div className="relative min-w-0 w-full max-w-[11rem] ml-auto">
+                                            <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono tabular-nums"
                                                 value={room.rate} onChange={e => updateRoom(room.id, 'rate', Number(e.target.value))} />
                                         </div>
                                     </div>
-                                    <div className="col-span-1 flex justify-center">
+                                    <div className="col-span-1 flex justify-center shrink-0">
                                         <button onClick={() => deleteRoom(room.id)} className="p-2 text-red-500 hover:bg-red-500/10 rounded-full transition-colors opacity-0 group-hover:opacity-100">
                                             <Trash2 size={16} />
                                         </button>
@@ -2044,58 +2062,58 @@ export default function RequestsManager({
 
                     {requestType === 'event_rooms' ? (
                         <>
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                <div className="space-y-4 p-5 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
+                            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 xl:gap-8">
+                                <div className="space-y-4 p-5 sm:p-6 rounded-xl border bg-black/5 min-w-0" style={{ borderColor: colors.border }}>
                                     <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Accommodation</h4>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">ADR (Avg Daily Rate)</p>
-                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(fin.adr)}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(fin.adr)}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Room Nights</p>
-                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalRoomNights}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalRoomNights}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Rooms</p>
-                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalRooms}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalRooms}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Rooms (Incl. Tax)</p>
-                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</p>
                                         </div>
                                     </div>
                                 </div>
-                                <div className="space-y-4 p-5 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
+                                <div className="space-y-4 p-5 sm:p-6 rounded-xl border bg-black/5 min-w-0" style={{ borderColor: colors.border }}>
                                     <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Event</h4>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">DDR (Per Person)</p>
-                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(fin.ddr)}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(fin.ddr)}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Cost Per Day (Incl. Tax)</p>
-                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>{formatMoney(eventCostPerDayForm)}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(eventCostPerDayForm)}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Days</p>
-                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalEventDays || eventDayDenomForm}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventDays || eventDayDenomForm}</p>
                                         </div>
-                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                        <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Attendees</p>
-                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{fin.totalEventPax}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventPax}</p>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                                <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                     <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Paid Amount</p>
-                                    <p className="text-2xl font-mono font-bold" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
+                                    <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
                                 </div>
-                                <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                     <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Remaining Balance</p>
-                                    <p className="text-2xl font-mono font-bold" style={{ color: remainingBalanceForm > 0 ? '#f87171' : colors.green }}>
+                                    <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: remainingBalanceForm > 0 ? '#f87171' : colors.green }}>
                                         {formatMoney(remainingBalanceForm)}
                                     </p>
                                 </div>
@@ -2567,9 +2585,12 @@ export default function RequestsManager({
         );
 
         const statCard = (label: string, value: React.ReactNode, borderClass: string = 'border-primary', valueClass?: string) => (
-            <div>
+            <div className="min-w-0">
                 <label className={`text-[10px] font-black uppercase tracking-widest opacity-40 mb-2 block ${valueClass || ''}`}>{label}</label>
-                <div className={`text-xl sm:text-2xl font-mono font-black border-l-4 pl-4 ${borderClass}`} style={{ color: colors.textMain }}>
+                <div
+                    className={`text-lg sm:text-xl md:text-2xl font-mono font-black border-l-4 pl-4 min-w-0 break-words leading-snug ${borderClass}`}
+                    style={{ color: colors.textMain }}
+                >
                     {value}
                 </div>
             </div>
@@ -2619,7 +2640,7 @@ export default function RequestsManager({
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-8 bg-black/5">
-                    <div className="max-w-5xl mx-auto space-y-8">
+                    <div className={`${isEventRooms ? 'max-w-6xl' : 'max-w-5xl'} mx-auto w-full min-w-0 space-y-8`}>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="p-6 rounded-2xl border bg-current/5 space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                 <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Section 1: Basic</h3>
