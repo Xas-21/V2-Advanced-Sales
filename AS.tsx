@@ -1253,6 +1253,8 @@ const EventsView = ({
     const [appliedTo, setAppliedTo] = useState(defaultTo);
     /** Grid columns follow this only (not `draftGridStart`) until user clicks Align or Search applies range. */
     const [appliedGridStart, setAppliedGridStart] = useState(todayIso);
+    /** How many day columns the availability grid shows (independent of summary range). */
+    const [availabilityGridDays, setAvailabilityGridDays] = useState(7);
     const [beoSearch, setBeoSearch] = useState('');
     const [beoModalRequestId, setBeoModalRequestId] = useState<string | null>(null);
     const [beoNotesDraft, setBeoNotesDraft] = useState('');
@@ -1534,22 +1536,40 @@ const EventsView = ({
     if (subView === 'availability') {
         const list = venuesList.length ? venuesList : [];
         const summaryDays = expandAvailabilityDays(appliedFrom, appliedTo, 14);
+        const gridDayCount = Math.min(31, Math.max(1, Number(availabilityGridDays) || 7));
         const gridDayColumns = (() => {
             if (!appliedGridStart) return [];
             const cur = new Date(`${appliedGridStart.slice(0, 10)}T12:00:00`);
             const out: string[] = [];
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < gridDayCount; i++) {
                 out.push(toYmd(cur));
                 cur.setDate(cur.getDate() + 1);
             }
             return out;
         })();
 
+        const shiftAvailabilityGridStart = (deltaDays: number) => {
+            const base = (appliedGridStart || draftGridStart || todayIso).slice(0, 10);
+            const d = new Date(`${base}T12:00:00`);
+            d.setDate(d.getDate() + deltaDays);
+            const y = toYmd(d);
+            setAppliedGridStart(y);
+            setDraftGridStart(y);
+        };
+
         const runAvailabilitySearch = () => {
             setAppliedFrom(draftFrom);
             setAppliedTo(draftTo);
             setAppliedGridStart(draftGridStart);
         };
+
+        const gridEndIso = gridDayColumns.length ? gridDayColumns[gridDayColumns.length - 1] : appliedGridStart;
+        const gridRangeSubtitle =
+            gridDayCount === 7
+                ? `week starting ${appliedGridStart}`
+                : gridDayCount === 1
+                  ? `1 day — ${appliedGridStart}`
+                  : `${gridDayCount} days — ${appliedGridStart} through ${gridEndIso}`;
 
         return (
             <div className="h-full rounded-xl border p-6 flex flex-col gap-6 overflow-y-auto" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -1615,6 +1635,12 @@ const EventsView = ({
 
                 <div>
                     <p className="text-[10px] uppercase font-bold mb-2" style={{ color: colors.textMuted }}>Summary ({summaryDays.length} day{summaryDays.length === 1 ? '' : 's'}) — last search</p>
+                    <p className="text-[11px] mb-3 leading-relaxed" style={{ color: colors.textMuted }}>
+                        Range used for venue summary:{' '}
+                        <span className="font-mono text-[10px] whitespace-nowrap" style={{ color: colors.textMain }}>{appliedFrom}</span>
+                        <span className="mx-1 opacity-60">→</span>
+                        <span className="font-mono text-[10px] whitespace-nowrap" style={{ color: colors.textMain }}>{appliedTo}</span>
+                    </p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 w-full">
                         {(list.length ? list : [{ id: 'none', name: 'No venues configured' }]).map((v: any) => {
                             const nm = v.name || 'Venue';
@@ -1637,8 +1663,37 @@ const EventsView = ({
                 </div>
 
                 <div className="w-full min-w-0 border rounded-xl overflow-hidden" style={{ borderColor: colors.border }}>
+                    <div
+                        className="flex flex-wrap items-end justify-between gap-3 px-3 py-2 border-b"
+                        style={{ borderColor: colors.border, backgroundColor: colors.bg + '66' }}
+                    >
+                        <div>
+                            <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>Days to show</label>
+                            <select
+                                value={gridDayCount}
+                                onChange={(e) => setAvailabilityGridDays(Number(e.target.value))}
+                                className="px-3 py-2 rounded-lg border text-xs font-bold min-w-[6.5rem]"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
+                            >
+                                {[3, 5, 7, 10, 14, 21, 28, 31].map((n) => (
+                                    <option key={n} value={n}>
+                                        {n} {n === 1 ? 'day' : 'days'}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => shiftAvailabilityGridStart(7)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border text-xs font-black uppercase tracking-wide shrink-0 h-[42px]"
+                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                        >
+                            Next week
+                            <ChevronRight size={16} strokeWidth={2.5} />
+                        </button>
+                    </div>
                     <div className="px-3 py-2 border-b text-[10px] font-black uppercase tracking-wider" style={{ borderColor: colors.border, color: colors.textMuted }}>
-                        Availability grid — week starting {appliedGridStart} (after Search or Align grid)
+                        Availability grid — {gridRangeSubtitle} (after Search or Align grid)
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left text-[11px] border-collapse min-w-[520px]">
