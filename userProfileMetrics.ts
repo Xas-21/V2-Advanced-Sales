@@ -124,13 +124,35 @@ export function requestInProperty(req: any, propertyId: string | undefined): boo
     return !req?.propertyId || String(req.propertyId) === String(propertyId);
 }
 
+function taskAssigneeEntries(task: any): { id: string; name: string }[] {
+    if (Array.isArray(task?.assignees) && task.assignees.length) {
+        return task.assignees
+            .map((x: any) => ({
+                id: String(x?.id ?? x?.userId ?? '').trim(),
+                name: String(x?.name ?? '').trim(),
+            }))
+            .filter((x) => x.name);
+    }
+    const raw = String(task?.assignedTo || '').trim();
+    if (!raw) return [];
+    return raw
+        .split(/\s*,\s*/)
+        .map((name) => ({ id: '', name: name.trim() }))
+        .filter((x) => x.name);
+}
+
 export function taskAssignedToUser(task: any, user: any): boolean {
-    const a = String(task?.assignedTo || '').trim().toLowerCase();
-    if (!a) return false;
+    const uid = String(user?.id ?? '').trim();
     const n = String(user?.name || '').trim().toLowerCase();
     const u = String(user?.username || '').trim().toLowerCase();
-    if (n && (a === n || n.includes(a) || a.includes(n.split(/\s+/)[0] || ''))) return true;
-    if (u && a === u) return true;
+    const legacyId = String(task?.assignedToUserId ?? '').trim();
+    if (uid && legacyId && legacyId === uid) return true;
+    for (const a of taskAssigneeEntries(task)) {
+        if (uid && a.id && a.id === uid) return true;
+        const an = a.name.toLowerCase();
+        if (n && an && (an === n || n.includes(an) || an.includes(n.split(/\s+/)[0] || ''))) return true;
+        if (u && an === u) return true;
+    }
     return false;
 }
 

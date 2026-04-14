@@ -53,7 +53,8 @@ import {
     Grid,
     LayoutList,
     Download,
-    Trash2
+    Trash2,
+    UserPlus,
 } from 'lucide-react';
 import { apiUrl } from './backendApi';
 import {
@@ -110,10 +111,11 @@ import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
 import {
-    loadSegmentsForProperty,
-    loadAccountTypesForProperty,
+    resolveSegmentsForProperty,
+    resolveAccountTypesForProperty,
     TAXONOMY_CHANGED_EVENT,
 } from './propertyTaxonomy';
+import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
     canAccessReports,
@@ -819,9 +821,21 @@ function calendarRequestStatusColor(status: string, c: any): string {
     }
 }
 
+/** Humanize CRM stage keys like `notInterested` → "Not Interested". */
+function humanizeCrmStageKey(raw: string): string {
+    const s = String(raw || '').trim();
+    if (!s) return '—';
+    const spaced = s
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/[\s_-]+/g, ' ')
+        .trim();
+    if (!spaced) return '—';
+    return spaced.replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
 /** Match CRM.tsx pipeline stage colors/labels. */
 function crmCalendarStageMeta(stageKey: string, c: any): { label: string; color: string } {
-    const k = String(stageKey || 'new').toLowerCase();
+    const k = String(stageKey || 'new').toLowerCase().replace(/\s+/g, '');
     const map: Record<string, { label: string; color: string }> = {
         new: { label: 'Upcoming Sales Calls', color: c.blue },
         qualified: { label: 'QUALIFIED', color: c.cyan },
@@ -830,7 +844,7 @@ function crmCalendarStageMeta(stageKey: string, c: any): { label: string; color:
         won: { label: 'WON', color: c.green },
         notinterested: { label: 'Not Interested', color: '#8b0000' },
     };
-    return map[k] || { label: k.replace(/_/g, ' ').toUpperCase(), color: c.primary };
+    return map[k] || { label: humanizeCrmStageKey(stageKey), color: c.primary };
 }
 
 function calendarItemStatusStyle(evt: any, colors: any): { color: string; text: string } {
@@ -2780,6 +2794,52 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
     );
 };
 
+type TaskAssigneeForm = { id: string; name: string };
+
+function normalizeTaskAssignees(task: any): TaskAssigneeForm[] {
+    if (Array.isArray(task?.assignees) && task.assignees.length) {
+        return task.assignees
+            .map((a: any) => ({
+                id: String(a?.id ?? a?.userId ?? '').trim(),
+                name: String(a?.name ?? '').trim(),
+            }))
+            .filter((a) => a.name);
+    }
+    const raw = String(task?.assignedTo || '').trim();
+    if (!raw) return [];
+    return raw
+        .split(/\s*,\s*/)
+        .map((name) => ({ id: '', name: name.trim() }))
+        .filter((a) => a.name);
+}
+
+function taskAssigneeNamesList(task: any): string[] {
+    return normalizeTaskAssignees(task).map((a) => a.name);
+}
+
+function taskAssigneesAvatarLetters(task: any): string {
+    const names = taskAssigneeNamesList(task);
+    if (!names.length) return '??';
+    if (names.length === 1) {
+        return names[0]
+            .split(/\s+/)
+            .map((n) => n[0])
+            .join('')
+            .slice(0, 2)
+            .toUpperCase();
+    }
+    const a = names[0].split(/\s+/)[0]?.[0] || '';
+    const b = names[1].split(/\s+/)[0]?.[0] || '';
+    return `${a}${b}`.toUpperCase() || '••';
+}
+
+function taskAssigneesShortLabel(task: any): string {
+    const names = taskAssigneeNamesList(task);
+    if (!names.length) return '';
+    if (names.length === 1) return names[0].split(/\s+/)[0] || names[0];
+    return `${names[0].split(/\s+/)[0] || names[0]} +${names.length - 1}`;
+}
+
 const ToDoView = ({
     tasks,
     setTasks,
@@ -2808,9 +2868,17 @@ const ToDoView = ({
 
     const currentUserId = String(currentUser?.id ?? '').trim();
     const currentUserName = String(currentUser?.name ?? '').trim().toLowerCase();
+    const currentUsername = String((currentUser as any)?.username ?? '').trim().toLowerCase();
     const isAssignedToCurrentUser = (t: any) => {
         const assignedUserId = String(t?.assignedToUserId ?? '').trim();
         if (assignedUserId && currentUserId && assignedUserId === currentUserId) return true;
+        for (const a of normalizeTaskAssignees(t)) {
+            if (currentUserId && a.id && String(a.id) === currentUserId) return true;
+            const an = a.name.toLowerCase();
+            if (currentUserName && an && (an === currentUserName || currentUserName.includes(an.split(/\s+/)[0] || '')))
+                return true;
+            if (currentUsername && an === currentUsername) return true;
+        }
         const assignedToName = String(t?.assignedTo ?? '').trim().toLowerCase();
         return !!assignedToName && !!currentUserName && assignedToName === currentUserName;
     };
@@ -3016,9 +3084,11 @@ const ToDoView = ({
                                         <div className="flex items-center gap-2 bg-black/20 px-3 py-1.5 rounded-full border border-white/5">
                                             <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black text-black"
                                                 style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
-                                                {task.assignedTo?.split(' ').map((n: any) => n[0]).join('')}
+                                                {taskAssigneesAvatarLetters(task)}
                                             </div>
-                                            <span className="text-[10px] font-bold opacity-70 hidden lg:block" style={{ color: colors.textMain }}>{task.assignedTo?.split(' ')[0]}</span>
+                                            <span className="text-[10px] font-bold opacity-70 hidden lg:block max-w-[120px] truncate" style={{ color: colors.textMain }}>
+                                                {taskAssigneesShortLabel(task) || '—'}
+                                            </span>
                                         </div>
                                         <button
                                             type="button"
@@ -3504,16 +3574,26 @@ export default function AdvancedSalesDashboard() {
     const [tasks, setTasks] = useState<any[]>([]);
     const [showTaskModal, setShowTaskModal] = useState(false);
     const [editingTask, setEditingTask] = useState<any>(null);
-    const [taskFormData, setTaskFormData] = useState({
+    const [taskFormData, setTaskFormData] = useState<{
+        task: string;
+        client: string;
+        date: string;
+        priority: string;
+        assignees: TaskAssigneeForm[];
+        description: string;
+        category: string;
+        star: boolean;
+    }>({
         task: '',
         client: '',
         date: '',
         priority: 'Medium',
-        assignedTo: '',
+        assignees: [],
         description: '',
         category: 'Follow-up',
-        star: false
+        star: false,
     });
+    const [taskAssigneePick, setTaskAssigneePick] = useState('');
 
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
     const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
@@ -3892,18 +3972,52 @@ export default function AdvancedSalesDashboard() {
 
     const [taxonomyRefresh, setTaxonomyRefresh] = useState(0);
     useEffect(() => {
-        const onTax = () => setTaxonomyRefresh((n) => n + 1);
+        const mergeIntoProperty = (propertyId: string, patch: Record<string, unknown>) => {
+            setProperties((prev) =>
+                prev.map((p) => (String(p.id) === String(propertyId) ? { ...p, ...patch } : p))
+            );
+            setActiveProperty((prev) =>
+                prev && String(prev.id) === String(propertyId) ? { ...prev, ...patch } : prev
+            );
+        };
+        const onTax = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; segments?: string[]; accountTypes?: string[] }>)
+                .detail;
+            if (!d?.propertyId) return;
+            const patch: Record<string, unknown> = {};
+            if (Array.isArray(d.segments)) patch.segments = d.segments;
+            if (Array.isArray(d.accountTypes)) patch.accountTypes = d.accountTypes;
+            if (Object.keys(patch).length) mergeIntoProperty(String(d.propertyId), patch);
+            setTaxonomyRefresh((n) => n + 1);
+        };
+        const onMeals = (e: Event) => {
+            const d = (e as CustomEvent<{
+                propertyId?: string;
+                mealPlans?: unknown[];
+                eventPackages?: unknown[];
+            }>).detail;
+            if (!d?.propertyId) return;
+            const patch: Record<string, unknown> = {};
+            if (Array.isArray(d.mealPlans)) patch.mealPlans = d.mealPlans;
+            if (Array.isArray(d.eventPackages)) patch.eventPackages = d.eventPackages;
+            if (Object.keys(patch).length) mergeIntoProperty(String(d.propertyId), patch);
+            setTaxonomyRefresh((n) => n + 1);
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
-        return () => window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+        window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        return () => {
+            window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+            window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        };
     }, []);
 
     const propertySegmentLabels = useMemo(
-        () => loadSegmentsForProperty(String(activeProperty?.id || '')),
-        [activeProperty?.id, taxonomyRefresh]
+        () => resolveSegmentsForProperty(String(activeProperty?.id || ''), activeProperty),
+        [activeProperty, taxonomyRefresh]
     );
     const propertyAccountTypeLabels = useMemo(
-        () => loadAccountTypesForProperty(String(activeProperty?.id || '')),
-        [activeProperty?.id, taxonomyRefresh]
+        () => resolveAccountTypesForProperty(String(activeProperty?.id || ''), activeProperty),
+        [activeProperty, taxonomyRefresh]
     );
 
     const dashboardSegmentChartData = useMemo(() => {
@@ -4398,9 +4512,9 @@ export default function AdvancedSalesDashboard() {
             activity: l.subject || l.nextStep || 'Sales opportunity',
             client: l.company || '—',
             date: l.lastContact || l.date || '—',
-            result: l.stage || l.status || '—',
+            result: crmCalendarStageMeta(String(l.stage || l.status || 'new'), colors).label,
         }));
-    }, [crmLeads, dashboardCurrentRange]);
+    }, [crmLeads, dashboardCurrentRange, colors]);
 
     const dashboardFeedAccountProfiles = useMemo(() => {
         return (accounts || []).slice(0, 14).map((acc: any) => {
@@ -4426,10 +4540,10 @@ export default function AdvancedSalesDashboard() {
                 client: task.client,
                 date: task.date || '',
                 priority: task.priority || 'Medium',
-                assignedTo: task.assignedTo || '',
+                assignees: normalizeTaskAssignees(task),
                 description: task.description || '',
                 category: task.category || 'Follow-up',
-                star: task.star || false
+                star: task.star || false,
             });
         } else {
             setEditingTask(null);
@@ -4438,12 +4552,15 @@ export default function AdvancedSalesDashboard() {
                 client: '',
                 date: new Date().toISOString().split('T')[0],
                 priority: 'Medium',
-                assignedTo: currentUser?.name || '',
+                assignees: currentUser?.name
+                    ? [{ id: String(currentUser.id ?? ''), name: String(currentUser.name) }]
+                    : [],
                 description: '',
                 category: 'Follow-up',
-                star: false
+                star: false,
             });
         }
+        setTaskAssigneePick('');
         setShowTaskModal(true);
     };
 
@@ -4451,22 +4568,28 @@ export default function AdvancedSalesDashboard() {
         if (!canMutateOperational(currentUser)) return;
         if (!taskFormData.task) return;
 
+        const assignedToJoined = taskFormData.assignees.map((a) => a.name).filter(Boolean).join(', ');
+        const payload = {
+            ...taskFormData,
+            assignedTo: assignedToJoined,
+            assignees: taskFormData.assignees,
+        };
         if (editingTask) {
-            setTasks(prev =>
-                prev.map(t =>
+            setTasks((prev) =>
+                prev.map((t) =>
                     String(t.id) === String(editingTask.id)
-                        ? { ...t, ...taskFormData, propertyId: t.propertyId || activeProperty?.id || null }
+                        ? { ...t, ...payload, propertyId: t.propertyId || activeProperty?.id || null }
                         : t
                 )
             );
         } else {
             const newTask = {
                 id: `T${Date.now()}`,
-                ...taskFormData,
+                ...payload,
                 completed: false,
-                propertyId: activeProperty?.id || null
+                propertyId: activeProperty?.id || null,
             };
-            setTasks(prev => [newTask, ...prev]);
+            setTasks((prev) => [newTask, ...prev]);
         }
         setShowTaskModal(false);
     };
@@ -5700,7 +5823,7 @@ export default function AdvancedSalesDashboard() {
                             <div className="col-span-1 md:col-span-8 h-64 md:h-64">
                                 <Card
                                     className="h-full"
-                                    tabs={['Tasks', 'Requests', 'Sales Calls', 'Acc. Profiles']}
+                                    tabs={['Tasks', 'Requests', 'Sales Calls', 'ACC. Production']}
                                     activeTab={feedTab}
                                     onTabChange={setFeedTab}
                                     actionIcon={Search}
@@ -5719,7 +5842,7 @@ export default function AdvancedSalesDashboard() {
                                         <table className="w-full text-left border-collapse">
                                             <thead className="sticky top-0 z-10 text-[9px] uppercase tracking-wider font-semibold" style={{ backgroundColor: colors.card, color: colors.textMuted, borderBottom: `1px solid ${colors.border}` }}>
                                                 <tr>
-                                                    {feedTab === 'Acc. Profiles' ? (
+                                                    {feedTab === 'ACC. Production' ? (
                                                         <>
                                                             <th className="px-4 py-2 border-b" style={{ borderColor: colors.border }}>Account Name</th>
                                                             <th className="px-4 py-2 border-b hidden sm:table-cell" style={{ borderColor: colors.border }}>Profile Type</th>
@@ -5749,7 +5872,7 @@ export default function AdvancedSalesDashboard() {
                                                         style={{ borderColor: colors.border }}
                                                         onClick={() => feedTab === 'Tasks' ? handleOpenTaskModal(item) : null}
                                                     >
-                                                        {feedTab === 'Acc. Profiles' ? (
+                                                        {feedTab === 'ACC. Production' ? (
                                                             <>
                                                                 <td className="px-4 py-2 font-medium" style={{ color: colors.textMain }}>{item.client}</td>
                                                                 <td className="px-4 py-2 hidden sm:table-cell" style={{ color: colors.textMuted }}>{item.type}</td>
@@ -5778,9 +5901,11 @@ export default function AdvancedSalesDashboard() {
                                                                         <div className="flex items-center gap-2">
                                                                             <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-black shadow-sm shrink-0"
                                                                                 style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
-                                                                                {item.assignedTo ? item.assignedTo.split(' ').map((n: any) => n[0]).join('') : '??'}
+                                                                                {taskAssigneesAvatarLetters(item)}
                                                                             </div>
-                                                                            <span className="truncate max-w-[80px]">{item.assignedTo}</span>
+                                                                            <span className="truncate max-w-[100px]" title={taskAssigneeNamesList(item).join(', ')}>
+                                                                                {taskAssigneeNamesList(item).join(', ') || '—'}
+                                                                            </span>
                                                                         </div>
                                                                     </td>
                                                                 )}
@@ -6098,25 +6223,100 @@ export default function AdvancedSalesDashboard() {
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-4">
                                         <div>
-                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Assigned User</label>
-                                            <select
-                                                disabled={taskModalReadOnly}
-                                                value={taskFormData.assignedTo}
-                                                onChange={e => setTaskFormData({ ...taskFormData, assignedTo: e.target.value })}
-                                                className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm appearance-none cursor-pointer font-medium disabled:opacity-50"
-                                                style={{
-                                                    backgroundColor: colors.orange + '10',
-                                                    borderColor: colors.orange + '40',
-                                                    color: colors.textMain
-                                                }}
-                                            >
-                                                <option value="" className="bg-black">Unassigned</option>
-                                                {taskAssignableUsers.map((user) => (
-                                                    <option key={user.id} value={user.name} className="bg-black">{user.name}</option>
-                                                ))}
-                                            </select>
+                                            <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Assigned users</label>
+                                            <div className="flex flex-wrap gap-2 mb-3">
+                                                {taskFormData.assignees.length === 0 ? (
+                                                    <span className="text-xs opacity-50 italic" style={{ color: colors.textMuted }}>No assignees yet</span>
+                                                ) : (
+                                                    taskFormData.assignees.map((a, idx) => (
+                                                        <span
+                                                            key={`${a.id}-${idx}-${a.name}`}
+                                                            className="inline-flex items-center gap-1.5 pl-3 pr-1 py-1 rounded-full text-xs font-bold border"
+                                                            style={{
+                                                                backgroundColor: colors.orange + '15',
+                                                                borderColor: colors.orange + '50',
+                                                                color: colors.textMain,
+                                                            }}
+                                                        >
+                                                            {a.name}
+                                                            {!taskModalReadOnly && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                        setTaskFormData({
+                                                                            ...taskFormData,
+                                                                            assignees: taskFormData.assignees.filter((_, i) => i !== idx),
+                                                                        })
+                                                                    }
+                                                                    className="p-1 rounded-full hover:bg-white/10"
+                                                                    style={{ color: colors.textMuted }}
+                                                                    aria-label={`Remove ${a.name}`}
+                                                                >
+                                                                    <X size={12} />
+                                                                </button>
+                                                            )}
+                                                        </span>
+                                                    ))
+                                                )}
+                                            </div>
+                                            {!taskModalReadOnly && (
+                                                <div className="flex flex-wrap gap-2 items-stretch">
+                                                    <select
+                                                        value={taskAssigneePick}
+                                                        onChange={(e) => setTaskAssigneePick(e.target.value)}
+                                                        className="flex-1 min-w-[160px] px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm appearance-none cursor-pointer font-medium"
+                                                        style={{
+                                                            backgroundColor: colors.orange + '10',
+                                                            borderColor: colors.orange + '40',
+                                                            color: colors.textMain,
+                                                        }}
+                                                    >
+                                                        <option value="" className="bg-black">Select user…</option>
+                                                        {taskAssignableUsers
+                                                            .filter(
+                                                                (user) =>
+                                                                    !taskFormData.assignees.some(
+                                                                        (a) => a.id === user.id || a.name === user.name
+                                                                    )
+                                                            )
+                                                            .map((user) => (
+                                                                <option key={user.id} value={user.id} className="bg-black">
+                                                                    {user.name}
+                                                                </option>
+                                                            ))}
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const u = taskAssignableUsers.find(
+                                                                (x) => String(x.id) === String(taskAssigneePick)
+                                                            );
+                                                            if (!u) return;
+                                                            if (
+                                                                taskFormData.assignees.some(
+                                                                    (a) => a.id === u.id || a.name === u.name
+                                                                )
+                                                            )
+                                                                return;
+                                                            setTaskFormData({
+                                                                ...taskFormData,
+                                                                assignees: [...taskFormData.assignees, { id: u.id, name: u.name }],
+                                                            });
+                                                            setTaskAssigneePick('');
+                                                        }}
+                                                        className="px-4 py-2.5 rounded-2xl border text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shrink-0 hover:brightness-110 transition-all"
+                                                        style={{
+                                                            backgroundColor: colors.primary,
+                                                            borderColor: colors.primary,
+                                                            color: '#000',
+                                                        }}
+                                                    >
+                                                        <UserPlus size={16} /> Assign user
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                         <div>
                                             <label className="text-[10px] uppercase font-black mb-1.5 block tracking-widest opacity-60" style={{ color: colors.textMuted }}>Client/Account</label>
@@ -6124,13 +6324,13 @@ export default function AdvancedSalesDashboard() {
                                                 type="text"
                                                 readOnly={taskModalReadOnly}
                                                 value={taskFormData.client}
-                                                onChange={e => setTaskFormData({ ...taskFormData, client: e.target.value })}
+                                                onChange={(e) => setTaskFormData({ ...taskFormData, client: e.target.value })}
                                                 placeholder="e.g. Saudi Aramco"
                                                 className="w-full px-4 py-2.5 rounded-2xl border outline-none transition-all text-sm font-medium shadow-sm"
                                                 style={{
                                                     backgroundColor: colors.cyan + '10',
                                                     borderColor: colors.cyan + '40',
-                                                    color: colors.textMain
+                                                    color: colors.textMain,
                                                 }}
                                             />
                                         </div>

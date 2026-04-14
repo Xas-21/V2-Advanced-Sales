@@ -1,4 +1,8 @@
-/** Per-property meal plans (rooms) and event packages (MICE agenda), stored in localStorage. */
+/** Per-property meal plans (rooms) and event packages (MICE agenda).
+ *  Canonical source: property record on the server (`mealPlans`, `eventPackages`).
+ *  localStorage is legacy fallback until data is saved from Manage Property. */
+
+import { apiUrl } from './backendApi';
 
 export const MEALS_PACKAGES_CHANGED_EVENT = 'visatour-meals-packages-changed';
 
@@ -128,15 +132,53 @@ function parseEventPackages(raw: string | null): EventPackageEntry[] | null {
     }
 }
 
-function dispatchChanged(propertyId: string) {
+function mealPlansFromArray(arr: unknown): MealPlanEntry[] {
+    if (!Array.isArray(arr)) return [];
+    const out: MealPlanEntry[] = [];
+    for (const row of arr) {
+        const name = String((row as any)?.name ?? '').trim();
+        const code = String((row as any)?.code ?? '').trim();
+        const id = String((row as any)?.id ?? '').trim() || newId('mp');
+        if (name && code) out.push({ id, name, code: code.toUpperCase() });
+    }
+    return out;
+}
+
+function eventPackagesFromArray(arr: unknown): EventPackageEntry[] {
+    if (!Array.isArray(arr)) return [];
+    const out: EventPackageEntry[] = [];
+    for (const row of arr) {
+        const name = String((row as any)?.name ?? '').trim();
+        const code = String((row as any)?.code ?? '').trim();
+        const id = String((row as any)?.id ?? '').trim() || newId('ep');
+        const timingId: EventPackageTimingId = isTimingId((row as any)?.timingId) ? (row as any).timingId : 'coffee_1';
+        if (name && code) out.push({ id, name, code, timingId });
+    }
+    return out;
+}
+
+function dispatchChanged(
+    propertyId: string,
+    extra?: { mealPlans?: MealPlanEntry[]; eventPackages?: EventPackageEntry[] }
+) {
     try {
-        window.dispatchEvent(new CustomEvent(MEALS_PACKAGES_CHANGED_EVENT, { detail: { propertyId } }));
+        window.dispatchEvent(
+            new CustomEvent(MEALS_PACKAGES_CHANGED_EVENT, { detail: { propertyId, ...extra } })
+        );
     } catch {
         /* ignore */
     }
 }
 
-export function loadMealPlansForProperty(propertyId: string): MealPlanEntry[] {
+function postPropertyPatch(payload: Record<string, unknown>) {
+    fetch(apiUrl('/api/properties'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    }).catch(() => {});
+}
+
+function loadMealPlansLocalOnly(propertyId: string): MealPlanEntry[] {
     if (!propertyId) return DEFAULT_MEAL_PLANS.map((m) => ({ ...m }));
     try {
         const list = parseMealPlans(localStorage.getItem(mealPlansKey(propertyId)));
@@ -146,24 +188,7 @@ export function loadMealPlansForProperty(propertyId: string): MealPlanEntry[] {
     }
 }
 
-export function saveMealPlansForProperty(propertyId: string, plans: MealPlanEntry[]): void {
-    if (!propertyId) return;
-    try {
-        const clean = plans
-            .map((p) => ({
-                id: p.id || newId('mp'),
-                name: String(p.name || '').trim(),
-                code: String(p.code || '').trim().toUpperCase(),
-            }))
-            .filter((p) => p.name && p.code);
-        localStorage.setItem(mealPlansKey(propertyId), JSON.stringify(clean));
-    } catch {
-        /* ignore */
-    }
-    dispatchChanged(propertyId);
-}
-
-export function loadEventPackagesForProperty(propertyId: string): EventPackageEntry[] {
+function loadEventPackagesLocalOnly(propertyId: string): EventPackageEntry[] {
     if (!propertyId) return DEFAULT_EVENT_PACKAGES.map((p) => ({ ...p }));
     try {
         const list = parseEventPackages(localStorage.getItem(eventPackagesKey(propertyId)));
@@ -173,22 +198,71 @@ export function loadEventPackagesForProperty(propertyId: string): EventPackageEn
     }
 }
 
+export function resolveMealPlansForProperty(
+    propertyId: string,
+    property?: { mealPlans?: unknown } | null
+): MealPlanEntry[] {
+    if (!propertyId) return DEFAULT_MEAL_PLANS.map((m) => ({ ...m }));
+    if (property && 'mealPlans' in property && Array.isArray(property.mealPlans)) {
+        return mealPlansFromArray(property.mealPlans);
+    }
+    return loadMealPlansLocalOnly(propertyId);
+}
+
+export function resolveEventPackagesForProperty(
+    propertyId: string,
+    property?: { eventPackages?: unknown } | null
+): EventPackageEntry[] {
+    if (!propertyId) return DEFAULT_EVENT_PACKAGES.map((p) => ({ ...p }));
+    if (property && 'eventPackages' in property && Array.isArray(property.eventPackages)) {
+        return eventPackagesFromArray(property.eventPackages);
+    }
+    return loadEventPackagesLocalOnly(propertyId);
+}
+
+export function loadMealPlansForProperty(propertyId: string): MealPlanEntry[] {
+    return resolveMealPlansForProperty(propertyId, null);
+}
+
+export function saveMealPlansForProperty(propertyId: string, plans: MealPlanEntry[]): void {
+    if (!propertyId) return;
+    const clean = plans
+        .map((p) => ({
+            id: p.id || newId('mp'),
+            name: String(p.name || '').trim(),
+            code: String(p.code || '').trim().toUpperCase(),
+        }))
+        .filter((p) => p.name && p.code);
+    try {
+        localStorage.setItem(mealPlansKey(propertyId), JSON.stringify(clean));
+    } catch {
+        /* ignore */
+    }
+    dispatchChanged(propertyId, { mealPlans: clean });
+    postPropertyPatch({ id: propertyId, mealPlans: clean });
+}
+
+export function loadEventPackagesForProperty(propertyId: string): EventPackageEntry[] {
+    return resolveEventPackagesForProperty(propertyId, null);
+}
+
 export function saveEventPackagesForProperty(propertyId: string, packages: EventPackageEntry[]): void {
     if (!propertyId) return;
+    const clean = packages
+        .map((p) => ({
+            id: p.id || newId('ep'),
+            name: String(p.name || '').trim(),
+            code: String(p.code || '').trim(),
+            timingId: isTimingId(p.timingId) ? p.timingId : 'coffee_1',
+        }))
+        .filter((p) => p.name && p.code);
     try {
-        const clean = packages
-            .map((p) => ({
-                id: p.id || newId('ep'),
-                name: String(p.name || '').trim(),
-                code: String(p.code || '').trim(),
-                timingId: isTimingId(p.timingId) ? p.timingId : 'coffee_1',
-            }))
-            .filter((p) => p.name && p.code);
         localStorage.setItem(eventPackagesKey(propertyId), JSON.stringify(clean));
     } catch {
         /* ignore */
     }
-    dispatchChanged(propertyId);
+    dispatchChanged(propertyId, { eventPackages: clean });
+    postPropertyPatch({ id: propertyId, eventPackages: clean });
 }
 
 export function getTimingSlotsForTimingId(timingId: EventPackageTimingId): {

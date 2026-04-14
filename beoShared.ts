@@ -240,14 +240,23 @@ export function calculateAccFinancialsForRequest(
 ) {
     const nights = calculateNights(form.checkIn, form.checkOut);
     const rtNorm = normalizeRequestTypeKey(form.requestType || fallbackRequestType || '');
+    const usePerRoomStayNights = rtNorm === 'series' || rtNorm === 'event_rooms';
 
     const roomsCostNoTax = (form.rooms || []).reduce((acc: number, r: any) => {
-        const rowNights = rtNorm === 'series' ? calculateNights(r.arrival, r.departure) : nights;
+        let rowNights = nights;
+        if (usePerRoomStayNights) {
+            const perRow = calculateNights(r.arrival, r.departure);
+            rowNights = perRow > 0 ? perRow : nights;
+        }
         return acc + (Number(r.rate || 0) * Number(r.count || 0) * rowNights);
     }, 0);
 
     const totalRoomNights = (form.rooms || []).reduce((acc: number, r: any) => {
-        const rowNights = rtNorm === 'series' ? calculateNights(r.arrival, r.departure) : nights;
+        let rowNights = nights;
+        if (usePerRoomStayNights) {
+            const perRow = calculateNights(r.arrival, r.departure);
+            rowNights = perRow > 0 ? perRow : nights;
+        }
         return acc + (Number(r.count || 0) * rowNights);
     }, 0);
 

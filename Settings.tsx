@@ -12,16 +12,18 @@ import {
 } from 'lucide-react';
 import { apiUrl } from './backendApi';
 import {
-    loadSegmentsForProperty,
+    resolveSegmentsForProperty,
     saveSegmentsForProperty,
-    loadAccountTypesForProperty,
+    resolveAccountTypesForProperty,
     saveAccountTypesForProperty,
+    TAXONOMY_CHANGED_EVENT,
 } from './propertyTaxonomy';
 import {
-    loadMealPlansForProperty,
+    resolveMealPlansForProperty,
     saveMealPlansForProperty,
-    loadEventPackagesForProperty,
+    resolveEventPackagesForProperty,
     saveEventPackagesForProperty,
+    MEALS_PACKAGES_CHANGED_EVENT,
     EVENT_PACKAGE_TIMING_OPTIONS,
     type MealPlanEntry,
     type EventPackageEntry,
@@ -586,14 +588,14 @@ export default function Settings({
             setEventPackagesList([]);
             return;
         }
-        setTaxonomySegments(loadSegmentsForProperty(managingProperty.id));
-        setTaxonomyAccountTypes(loadAccountTypesForProperty(managingProperty.id));
+        setTaxonomySegments(resolveSegmentsForProperty(managingProperty.id, managingProperty));
+        setTaxonomyAccountTypes(resolveAccountTypesForProperty(managingProperty.id, managingProperty));
         setEditSegIdx(null);
         setEditTypeIdx(null);
         setTaxonomyNewSegment('');
         setTaxonomyNewType('');
-        setMealPlansList(loadMealPlansForProperty(managingProperty.id));
-        setEventPackagesList(loadEventPackagesForProperty(managingProperty.id));
+        setMealPlansList(resolveMealPlansForProperty(managingProperty.id, managingProperty));
+        setEventPackagesList(resolveEventPackagesForProperty(managingProperty.id, managingProperty));
         setEditMealIdx(null);
         setEditPkgIdx(null);
         setNewMealName('');
@@ -604,7 +606,13 @@ export default function Settings({
         setEditCxlId(null);
         setEditCxlLabel('');
         setNewCxlReason('');
-    }, [managingProperty?.id]);
+    }, [
+        managingProperty?.id,
+        managingProperty?.segments,
+        managingProperty?.accountTypes,
+        managingProperty?.mealPlans,
+        managingProperty?.eventPackages,
+    ]);
 
     useEffect(() => {
         if (!managingProperty) return;
@@ -674,6 +682,44 @@ export default function Settings({
                 persistCxlLocal(propId, defaults);
             });
     }, [managingProperty]);
+
+    useEffect(() => {
+        const mergePatch = (propertyId: string, patch: Record<string, unknown>) => {
+            setProperties((prev) =>
+                prev.map((p) => (String(p.id) === String(propertyId) ? { ...p, ...patch } : p))
+            );
+            setManagingProperty((mp) =>
+                mp && String(mp.id) === String(propertyId) ? { ...mp, ...patch } : mp
+            );
+        };
+        const onTax = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; segments?: string[]; accountTypes?: string[] }>)
+                .detail;
+            if (!d?.propertyId) return;
+            const patch: Record<string, unknown> = {};
+            if (Array.isArray(d.segments)) patch.segments = d.segments;
+            if (Array.isArray(d.accountTypes)) patch.accountTypes = d.accountTypes;
+            if (Object.keys(patch).length) mergePatch(String(d.propertyId), patch);
+        };
+        const onMeals = (e: Event) => {
+            const d = (e as CustomEvent<{
+                propertyId?: string;
+                mealPlans?: unknown[];
+                eventPackages?: unknown[];
+            }>).detail;
+            if (!d?.propertyId) return;
+            const patch: Record<string, unknown> = {};
+            if (Array.isArray(d.mealPlans)) patch.mealPlans = d.mealPlans;
+            if (Array.isArray(d.eventPackages)) patch.eventPackages = d.eventPackages;
+            if (Object.keys(patch).length) mergePatch(String(d.propertyId), patch);
+        };
+        window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+        window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        return () => {
+            window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
+            window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        };
+    }, []);
 
     const tabs = appIsAdmin
         ? [

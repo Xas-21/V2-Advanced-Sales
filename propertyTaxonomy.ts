@@ -1,4 +1,8 @@
-/** Per-property lists for dashboard distribution, account type, and request segment. */
+/** Per-property lists for dashboard distribution, account type, and request segment.
+ *  Canonical source: property record on the server (`segments`, `accountTypes`).
+ *  localStorage is legacy fallback until data is saved from Manage Property. */
+
+import { apiUrl } from './backendApi';
 
 export const SEGMENTS_BY_PROP_PREFIX = 'visatour_property_segments_v1::';
 export const ACCOUNT_TYPES_BY_PROP_PREFIX = 'visatour_property_account_types_v1::';
@@ -38,8 +42,23 @@ function parseStringList(raw: string | null): string[] | null {
     }
 }
 
-export function loadSegmentsForProperty(propertyId: string): string[] {
+export function normalizeTaxonomyStringList(input: unknown): string[] {
+    if (!Array.isArray(input)) return [];
+    return [
+        ...new Set(
+            input
+                .map((x) => (typeof x === 'string' ? x.trim() : String(x?.name ?? '').trim()))
+                .filter(Boolean)
+        ),
+    ];
+}
+
+/** Prefer server-backed lists on the property; else localStorage; else defaults. */
+export function resolveSegmentsForProperty(propertyId: string, property?: { segments?: unknown } | null): string[] {
     if (!propertyId) return [...DEFAULT_PROPERTY_SEGMENTS];
+    if (property && 'segments' in property && Array.isArray(property.segments)) {
+        return normalizeTaxonomyStringList(property.segments);
+    }
     try {
         const list = parseStringList(localStorage.getItem(segmentsKey(propertyId)));
         return list?.length ? list : [...DEFAULT_PROPERTY_SEGMENTS];
@@ -48,23 +67,14 @@ export function loadSegmentsForProperty(propertyId: string): string[] {
     }
 }
 
-export function saveSegmentsForProperty(propertyId: string, segments: string[]): void {
-    if (!propertyId) return;
-    try {
-        const clean = [...new Set(segments.map((s) => String(s).trim()).filter(Boolean))];
-        localStorage.setItem(segmentsKey(propertyId), JSON.stringify(clean));
-    } catch {
-        /* ignore */
-    }
-    try {
-        window.dispatchEvent(new CustomEvent(TAXONOMY_CHANGED_EVENT, { detail: { propertyId } }));
-    } catch {
-        /* ignore */
-    }
-}
-
-export function loadAccountTypesForProperty(propertyId: string): string[] {
+export function resolveAccountTypesForProperty(
+    propertyId: string,
+    property?: { accountTypes?: unknown } | null
+): string[] {
     if (!propertyId) return [...DEFAULT_PROPERTY_ACCOUNT_TYPES];
+    if (property && 'accountTypes' in property && Array.isArray(property.accountTypes)) {
+        return normalizeTaxonomyStringList(property.accountTypes);
+    }
     try {
         const list = parseStringList(localStorage.getItem(accountTypesKey(propertyId)));
         return list?.length ? list : [...DEFAULT_PROPERTY_ACCOUNT_TYPES];
@@ -73,17 +83,56 @@ export function loadAccountTypesForProperty(propertyId: string): string[] {
     }
 }
 
+/** @deprecated Use resolveSegmentsForProperty(id, null) or pass the property object from the API. */
+export function loadSegmentsForProperty(propertyId: string): string[] {
+    return resolveSegmentsForProperty(propertyId, null);
+}
+
+/** @deprecated Use resolveAccountTypesForProperty(id, null) or pass the property object from the API. */
+export function loadAccountTypesForProperty(propertyId: string): string[] {
+    return resolveAccountTypesForProperty(propertyId, null);
+}
+
+function postPropertyPatch(payload: Record<string, unknown>) {
+    fetch(apiUrl('/api/properties'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    }).catch(() => {});
+}
+
+export function saveSegmentsForProperty(propertyId: string, segments: string[]): void {
+    if (!propertyId) return;
+    const clean = normalizeTaxonomyStringList(segments);
+    try {
+        localStorage.setItem(segmentsKey(propertyId), JSON.stringify(clean));
+    } catch {
+        /* ignore */
+    }
+    try {
+        window.dispatchEvent(
+            new CustomEvent(TAXONOMY_CHANGED_EVENT, { detail: { propertyId, segments: clean } })
+        );
+    } catch {
+        /* ignore */
+    }
+    postPropertyPatch({ id: propertyId, segments: clean });
+}
+
 export function saveAccountTypesForProperty(propertyId: string, types: string[]): void {
     if (!propertyId) return;
+    const clean = normalizeTaxonomyStringList(types);
     try {
-        const clean = [...new Set(types.map((s) => String(s).trim()).filter(Boolean))];
         localStorage.setItem(accountTypesKey(propertyId), JSON.stringify(clean));
     } catch {
         /* ignore */
     }
     try {
-        window.dispatchEvent(new CustomEvent(TAXONOMY_CHANGED_EVENT, { detail: { propertyId } }));
+        window.dispatchEvent(
+            new CustomEvent(TAXONOMY_CHANGED_EVENT, { detail: { propertyId, accountTypes: clean } })
+        );
     } catch {
         /* ignore */
     }
+    postPropertyPatch({ id: propertyId, accountTypes: clean });
 }

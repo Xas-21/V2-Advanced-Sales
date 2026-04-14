@@ -9,10 +9,13 @@ import {
 import AddAccountModal from './AddAccountModal';
 import ConfirmDialog from './ConfirmDialog';
 import { contactDisplayName } from './accountLeadMapping';
-import { loadSegmentsForProperty, loadAccountTypesForProperty } from './propertyTaxonomy';
 import {
-    loadMealPlansForProperty,
-    loadEventPackagesForProperty,
+    resolveSegmentsForProperty,
+    resolveAccountTypesForProperty,
+} from './propertyTaxonomy';
+import {
+    resolveMealPlansForProperty,
+    resolveEventPackagesForProperty,
     MEALS_PACKAGES_CHANGED_EVENT,
     getAgendaTimingSlotsForPackageName,
     defaultEventPackageName,
@@ -174,14 +177,14 @@ export default function RequestsManager({
     const canDeletePayments =
         (canDeletePaymentsProp ?? userCanDeleteRequestPayments(currentUser)) && !readOnlyOperational;
 
-    const effectiveSegmentOptions = useMemo(
-        () => (segmentOptions?.length ? segmentOptions : loadSegmentsForProperty(activeProperty?.id || '')),
-        [segmentOptions, activeProperty?.id]
-    );
-    const effectiveAccountTypeOptions = useMemo(
-        () => (accountTypeOptions?.length ? accountTypeOptions : loadAccountTypesForProperty(activeProperty?.id || '')),
-        [accountTypeOptions, activeProperty?.id]
-    );
+    const effectiveSegmentOptions = useMemo(() => {
+        if (Array.isArray(segmentOptions)) return segmentOptions;
+        return resolveSegmentsForProperty(activeProperty?.id || '', activeProperty);
+    }, [segmentOptions, activeProperty]);
+    const effectiveAccountTypeOptions = useMemo(() => {
+        if (Array.isArray(accountTypeOptions)) return accountTypeOptions;
+        return resolveAccountTypesForProperty(activeProperty?.id || '', activeProperty);
+    }, [accountTypeOptions, activeProperty]);
 
     const [mealsPackagesRev, setMealsPackagesRev] = useState(0);
     useEffect(() => {
@@ -192,13 +195,13 @@ export default function RequestsManager({
 
     const mealPlansForProperty = useMemo(() => {
         void mealsPackagesRev;
-        return loadMealPlansForProperty(activeProperty?.id || '');
-    }, [activeProperty?.id, mealsPackagesRev]);
+        return resolveMealPlansForProperty(activeProperty?.id || '', activeProperty);
+    }, [activeProperty, mealsPackagesRev]);
 
     const eventPackagesForProperty = useMemo(() => {
         void mealsPackagesRev;
-        return loadEventPackagesForProperty(activeProperty?.id || '');
-    }, [activeProperty?.id, mealsPackagesRev]);
+        return resolveEventPackagesForProperty(activeProperty?.id || '', activeProperty);
+    }, [activeProperty, mealsPackagesRev]);
 
     const [requests, setRequests] = useState<any[]>([]);
     const [taxesList, setTaxesList] = useState<any[]>([]);
@@ -362,7 +365,9 @@ export default function RequestsManager({
                     startTime: '', endTime: '',
                     coffee1: '', coffee2: '', lunchTime: '', dinnerTime: '',
                     rate: 0, pax: 0, rental: 0,
-                    package: defaultEventPackageName(loadEventPackagesForProperty(activeProperty?.id || '')),
+                    package: defaultEventPackageName(
+                        resolveEventPackagesForProperty(activeProperty?.id || '', activeProperty)
+                    ),
                     notes: '',
                 }],
             });
@@ -377,7 +382,7 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty?.id]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -562,6 +567,15 @@ export default function RequestsManager({
         setAccountSearch(accountName);
         // Event-only, event+rooms, and series all use renderAccommodationForm() + accForm — populate accForm.
         if (type === 'event' || type === 'event_rooms' || type === 'series') {
+            const rawRooms = Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms;
+            const roomsHydrated =
+                type === 'series' || type === 'event_rooms'
+                    ? rawRooms.map((r: any) => ({
+                          ...r,
+                          arrival: r.arrival || req.checkIn || '',
+                          departure: r.departure || req.checkOut || '',
+                      }))
+                    : rawRooms;
             setAccForm({
                 ...initialAccommodation,
                 ...req,
@@ -573,7 +587,7 @@ export default function RequestsManager({
                 agenda: Array.isArray(req.agenda)
                     ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
                     : initialAccommodation.agenda,
-                rooms: Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms,
+                rooms: roomsHydrated,
                 transportation: Array.isArray(req.transportation) ? req.transportation : [],
                 payments: savedPayments,
                 logs: req.logs || [],
@@ -1077,8 +1091,8 @@ export default function RequestsManager({
                         onClick={() => {
                             setRequestType(type.id);
                             setStep(2);
-                            // Ensure rooms have series fields if needed
-                            if (type.id === 'series') {
+                            // Per-room stay dates (series + event with rooms)
+                            if (type.id === 'series' || type.id === 'event_rooms') {
                                 setAccForm(prev => ({
                                     ...prev,
                                     rooms: prev.rooms.map(r => ({
@@ -1142,11 +1156,21 @@ export default function RequestsManager({
         const eventDayDenomForm = Math.max(1, fin.totalEventDays || eventAgendaSpanDays || 1);
         const eventCostPerDayForm = fin.eventCostWithTax / eventDayDenomForm;
         const remainingBalanceForm = Math.max(0, (fin.grandTotalWithTax || 0) - (fin.paidAmount || 0));
+        const roomGridLikeSeries = requestType === 'series' || requestType === 'event_rooms';
 
         const addRoom = () => {
-            const newRoom = requestType === 'series'
-                ? { id: Date.now(), arrival: accForm.checkIn || '', departure: accForm.checkOut || '', type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
-                : { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 };
+            const newRoom =
+                requestType === 'series' || requestType === 'event_rooms'
+                    ? {
+                          id: Date.now(),
+                          arrival: accForm.checkIn || '',
+                          departure: accForm.checkOut || '',
+                          type: 'Standard',
+                          occupancy: 'Single',
+                          count: 1,
+                          rate: 0,
+                      }
+                    : { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 };
 
             setAccForm({
                 ...accForm,
@@ -1190,30 +1214,35 @@ export default function RequestsManager({
         };
 
         const addAgendaRow = () => {
+            const prev = accForm.agenda || [];
+            const last = prev.length ? prev[prev.length - 1] : null;
             const defPkg = defaultEventPackageName(eventPackagesForProperty);
+            const newRow = last
+                ? {
+                      ...last,
+                      id: Date.now(),
+                  }
+                : {
+                      id: Date.now(),
+                      startDate: '',
+                      endDate: '',
+                      venue: defaultVenueName(),
+                      shape: 'Theater',
+                      startTime: '',
+                      endTime: '',
+                      coffee1: '',
+                      coffee2: '',
+                      lunchTime: '',
+                      dinnerTime: '',
+                      rate: 0,
+                      pax: 0,
+                      rental: 0,
+                      package: defPkg,
+                      notes: '',
+                  };
             setAccForm({
                 ...accForm,
-                agenda: [
-                    ...(accForm.agenda || []),
-                    {
-                        id: Date.now(),
-                        startDate: '',
-                        endDate: '',
-                        venue: defaultVenueName(),
-                        shape: 'Theater',
-                        startTime: '',
-                        endTime: '',
-                        coffee1: '',
-                        coffee2: '',
-                        lunchTime: '',
-                        dinnerTime: '',
-                        rate: 0,
-                        pax: 0,
-                        rental: 0,
-                        package: defPkg,
-                        notes: '',
-                    },
-                ],
+                agenda: [...prev, newRow],
             });
         };
 
@@ -1564,14 +1593,22 @@ export default function RequestsManager({
                             <>
                                 <div>
                                     <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
-                                        {requestType === 'series' ? 'Series Start' : 'Check-in Date'}
+                                        {requestType === 'series'
+                                            ? 'Series Start'
+                                            : requestType === 'event_rooms'
+                                              ? 'Start Date'
+                                              : 'Check-in Date'}
                                     </label>
                                     <input type="date" value={accForm.checkIn} onChange={e => setAccForm({ ...accForm, checkIn: e.target.value })}
                                         className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
                                 </div>
                                 <div>
                                     <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
-                                        {requestType === 'series' ? 'Series End' : 'Check-out Date'}
+                                        {requestType === 'series'
+                                            ? 'Series End'
+                                            : requestType === 'event_rooms'
+                                              ? 'End Date'
+                                              : 'Check-out Date'}
                                     </label>
                                     <input type="date" value={accForm.checkOut} onChange={e => setAccForm({ ...accForm, checkOut: e.target.value })}
                                         className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
@@ -1636,15 +1673,19 @@ export default function RequestsManager({
                         </div>
 
                         <div className="space-y-3">
-                            {requestType === 'series' ? (
+                            {roomGridLikeSeries ? (
                                 <div className="grid grid-cols-12 gap-4 px-4 py-2 opacity-40 text-[10px] font-bold uppercase">
-                                    <div className="col-span-2">Arrival</div>
-                                    <div className="col-span-2">Departure</div>
+                                    <div className="col-span-2">
+                                        {requestType === 'event_rooms' ? 'Start Date' : 'Arrival'}
+                                    </div>
+                                    <div className="col-span-2">
+                                        {requestType === 'event_rooms' ? 'End Date' : 'Departure'}
+                                    </div>
                                     <div className="col-span-1 text-center">Nts</div>
                                     <div className="col-span-2">Room Type</div>
-                                    <div className="col-span-2">Occupancy</div>
+                                    <div className="col-span-1">Occupancy</div>
                                     <div className="col-span-1 text-center">Qty</div>
-                                    <div className="col-span-1 text-right">Rate</div>
+                                    <div className="col-span-2 text-right">Rate</div>
                                     <div className="col-span-1"></div>
                                 </div>
                             ) : (
@@ -1659,7 +1700,7 @@ export default function RequestsManager({
 
                             {accForm.rooms.map((room) => (
                                 <div key={room.id} className="grid grid-cols-12 gap-3 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
-                                    {requestType === 'series' && (
+                                    {roomGridLikeSeries && (
                                         <>
                                             <div className="col-span-2">
                                                 <input type="date" className="w-full px-2 py-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none"
@@ -1674,7 +1715,7 @@ export default function RequestsManager({
                                             </div>
                                         </>
                                     )}
-                                    <div className={requestType === 'series' ? "col-span-2" : "col-span-3"}>
+                                    <div className={roomGridLikeSeries ? "col-span-2" : "col-span-3"}>
                                         <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
                                             {roomTypeSelectOptions.map((name) => (
@@ -1682,19 +1723,19 @@ export default function RequestsManager({
                                             ))}
                                         </select>
                                     </div>
-                                    <div className={requestType === 'series' ? "col-span-2" : "col-span-3"}>
+                                    <div className={roomGridLikeSeries ? "col-span-1" : "col-span-3"}>
                                         <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
                                             <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
                                         </select>
                                     </div>
-                                    <div className={requestType === 'series' ? "col-span-1" : "col-span-2"}>
+                                    <div className={roomGridLikeSeries ? "col-span-1" : "col-span-2"}>
                                         <input type="number" className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
                                             value={room.count} onChange={e => updateRoom(room.id, 'count', Number(e.target.value))} />
                                     </div>
-                                    <div className={requestType === 'series' ? "col-span-1" : "col-span-3"}>
-                                        <div className="relative">
-                                            <input type="number" className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono"
+                                    <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
+                                        <div className="relative min-w-0">
+                                            <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono"
                                                 value={room.rate} onChange={e => updateRoom(room.id, 'rate', Number(e.target.value))} />
                                         </div>
                                     </div>
@@ -1765,7 +1806,7 @@ export default function RequestsManager({
                 </div>
 
                 {/* Additional Section for Event/Series flows */}
-                {(requestType === 'event' || requestType === 'event_rooms' || requestType === 'series') && (
+                {(requestType === 'event' || requestType === 'event_rooms') && (
                     <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                         <div className="flex justify-between items-center">
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
@@ -2708,7 +2749,11 @@ export default function RequestsManager({
                                                 <td colSpan={5} className="px-6 py-8 text-center opacity-40 italic">No rooms on this request</td>
                                             </tr>
                                         ) : (request.rooms || []).map((r: any, idx: number) => {
-                                            const rNights = detailType === 'series' ? calculateNights(r.arrival, r.departure) : fin.nights;
+                                            let rNights = fin.nights;
+                                            if (detailType === 'series' || detailType === 'event_rooms') {
+                                                const perRow = calculateNights(r.arrival, r.departure);
+                                                rNights = perRow > 0 ? perRow : fin.nights;
+                                            }
                                             const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
                                             return (
                                                 <tr key={idx}>
