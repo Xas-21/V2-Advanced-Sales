@@ -1664,15 +1664,27 @@ const EventsView = ({
 
                 <div className="w-full min-w-0 border rounded-xl overflow-hidden" style={{ borderColor: colors.border }}>
                     <div
-                        className="flex flex-wrap items-end justify-between gap-3 px-3 py-2 border-b"
+                        className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2 sm:gap-3 px-3 py-2 border-b"
                         style={{ borderColor: colors.border, backgroundColor: colors.bg + '66' }}
                     >
-                        <div>
-                            <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>Days to show</label>
+                        <div className="flex justify-start min-w-0">
+                            <button
+                                type="button"
+                                onClick={() => shiftAvailabilityGridStart(-7)}
+                                className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg border text-[10px] sm:text-xs font-black uppercase tracking-wide shrink-0 h-[42px]"
+                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                            >
+                                <ChevronLeft size={16} strokeWidth={2.5} />
+                                <span className="sm:hidden">Prev</span>
+                                <span className="hidden sm:inline">Previous week</span>
+                            </button>
+                        </div>
+                        <div className="flex flex-col items-center justify-end min-w-0">
+                            <label className="text-[10px] uppercase font-bold block mb-1 text-center w-full" style={{ color: colors.textMuted }}>Days to show</label>
                             <select
                                 value={gridDayCount}
                                 onChange={(e) => setAvailabilityGridDays(Number(e.target.value))}
-                                className="px-3 py-2 rounded-lg border text-xs font-bold min-w-[6.5rem]"
+                                className="px-3 py-2 rounded-lg border text-xs font-bold min-w-[6.5rem] w-full max-w-[9rem]"
                                 style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
                             >
                                 {[3, 5, 7, 10, 14, 21, 28, 31].map((n) => (
@@ -1682,15 +1694,18 @@ const EventsView = ({
                                 ))}
                             </select>
                         </div>
-                        <button
-                            type="button"
-                            onClick={() => shiftAvailabilityGridStart(7)}
-                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border text-xs font-black uppercase tracking-wide shrink-0 h-[42px]"
-                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
-                        >
-                            Next week
-                            <ChevronRight size={16} strokeWidth={2.5} />
-                        </button>
+                        <div className="flex justify-end min-w-0">
+                            <button
+                                type="button"
+                                onClick={() => shiftAvailabilityGridStart(7)}
+                                className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg border text-[10px] sm:text-xs font-black uppercase tracking-wide shrink-0 h-[42px]"
+                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                            >
+                                <span className="sm:hidden">Next</span>
+                                <span className="hidden sm:inline">Next week</span>
+                                <ChevronRight size={16} strokeWidth={2.5} />
+                            </button>
+                        </div>
                     </div>
                     <div className="px-3 py-2 border-b text-[10px] font-black uppercase tracking-wider" style={{ borderColor: colors.border, color: colors.textMuted }}>
                         Availability grid — {gridRangeSubtitle} (after Search or Align grid)
