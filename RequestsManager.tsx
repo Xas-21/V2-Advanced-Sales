@@ -39,6 +39,7 @@ import {
     getAccountForRequest,
     printBeoDocument,
     calculateAccFinancialsForRequest,
+    addCalendarDaysIso,
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
     paymentsMeetOrExceedTotal,
@@ -576,6 +577,9 @@ export default function RequestsManager({
                           departure: r.departure || req.checkOut || '',
                       }))
                     : rawRooms;
+            const ci = String(req.checkIn || '').slice(0, 10);
+            const co = String(req.checkOut || '').slice(0, 10);
+            const nightsHydrated = ci && co ? calculateNights(ci, co) : Math.max(0, Number(req.nights) || 0);
             setAccForm({
                 ...initialAccommodation,
                 ...req,
@@ -584,10 +588,16 @@ export default function RequestsManager({
                 receivedDate: req.receivedDate || req.requestDate || initialAccommodation.receivedDate,
                 requestName: req.requestName || '',
                 confirmationNo: req.confirmationNo || initialAccommodation.confirmationNo,
+                nights: nightsHydrated,
                 agenda: Array.isArray(req.agenda)
                     ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
                     : initialAccommodation.agenda,
-                rooms: roomsHydrated,
+                rooms: roomsHydrated.map((r: any) => {
+                    const a = String(r.arrival || ci || '').slice(0, 10);
+                    const d = String(r.departure || co || '').slice(0, 10);
+                    const n = a && d ? calculateNights(a, d) : Math.max(0, Number(r.nights) || 0);
+                    return { ...r, nights: n };
+                }),
                 transportation: Array.isArray(req.transportation) ? req.transportation : [],
                 payments: savedPayments,
                 logs: req.logs || [],
@@ -611,11 +621,15 @@ export default function RequestsManager({
                 });
             }
         } else {
+            const ci2 = String(req.checkIn || '').slice(0, 10);
+            const co2 = String(req.checkOut || '').slice(0, 10);
+            const nightsAcc = ci2 && co2 ? calculateNights(ci2, co2) : Math.max(0, Number(req.nights) || 0);
             setAccForm({
                 ...initialAccommodation,
                 ...req,
                 accountName,
                 accountId: req.accountId || '',
+                nights: nightsAcc,
                 payments: savedPayments,
                 logs: req.logs || [],
                 segment: req.segment || '',
@@ -1165,6 +1179,7 @@ export default function RequestsManager({
                           id: Date.now(),
                           arrival: accForm.checkIn || '',
                           departure: accForm.checkOut || '',
+                          nights: 0,
                           type: 'Standard',
                           occupancy: 'Single',
                           count: 1,
@@ -1189,6 +1204,47 @@ export default function RequestsManager({
             setAccForm({
                 ...accForm,
                 rooms: accForm.rooms.map(r => r.id === id ? { ...r, [field]: value } : r)
+            });
+        };
+
+        const patchRoom = (id: number, patch: Record<string, any>) => {
+            setAccForm({
+                ...accForm,
+                rooms: accForm.rooms.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+            });
+        };
+
+        const syncAccCheckIn = (v: string) => {
+            setAccForm((prev) => {
+                const next: any = { ...prev, checkIn: v };
+                const n = Math.max(0, Math.floor(Number(prev.nights) || 0));
+                if (v && n > 0) {
+                    next.checkOut = addCalendarDaysIso(v, n);
+                } else if (v && next.checkOut) {
+                    next.nights = calculateNights(v, next.checkOut);
+                }
+                return next;
+            });
+        };
+
+        const syncAccCheckOut = (v: string) => {
+            setAccForm((prev) => {
+                const next: any = { ...prev, checkOut: v };
+                if (next.checkIn && v) {
+                    next.nights = calculateNights(next.checkIn, v);
+                }
+                return next;
+            });
+        };
+
+        const syncAccNights = (raw: number) => {
+            const n = Math.max(0, Math.floor(Number(raw) || 0));
+            setAccForm((prev) => {
+                const next: any = { ...prev, nights: n };
+                if (prev.checkIn && n > 0) {
+                    next.checkOut = addCalendarDaysIso(prev.checkIn, n);
+                }
+                return next;
             });
         };
 
@@ -1258,6 +1314,36 @@ export default function RequestsManager({
                 ...accForm,
                 agenda: (accForm.agenda || []).map((item: any) => item.id === id ? { ...item, [field]: value } : item)
             });
+        };
+
+        const patchAgendaRow = (id: number, patch: Record<string, any>) => {
+            setAccForm({
+                ...accForm,
+                agenda: (accForm.agenda || []).map((item: any) => (item.id === id ? { ...item, ...patch } : item)),
+            });
+        };
+
+        const onAgendaStartDateChange = (row: any, newStart: string) => {
+            const oldS = String(row.startDate || '').slice(0, 10);
+            const e = String(row.endDate || '').slice(0, 10);
+            const patch: any = { startDate: newStart };
+            if (newStart && e && oldS) {
+                const span = inclusiveCalendarDays(oldS, e);
+                patch.endDate = addCalendarDaysIso(newStart, span - 1);
+            }
+            patchAgendaRow(row.id, patch);
+        };
+
+        const onAgendaEndDateChange = (row: any, newEnd: string) => {
+            patchAgendaRow(row.id, { endDate: newEnd });
+        };
+
+        const onAgendaInclusiveDaysChange = (row: any, raw: string) => {
+            const num = Math.floor(Number(raw));
+            if (!raw || Number.isNaN(num) || num < 1) return;
+            const s = String(row.startDate || '').slice(0, 10);
+            if (!s) return;
+            patchAgendaRow(row.id, { endDate: addCalendarDaysIso(s, num - 1) });
         };
 
         const handlePostPayment = () => {
@@ -1608,7 +1694,7 @@ export default function RequestsManager({
                                               ? 'Start Date'
                                               : 'Check-in Date'}
                                     </label>
-                                    <input type="date" value={accForm.checkIn} onChange={e => setAccForm({ ...accForm, checkIn: e.target.value })}
+                                    <input type="date" value={accForm.checkIn} onChange={e => syncAccCheckIn(e.target.value)}
                                         className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
                                 </div>
                                 <div>
@@ -1619,16 +1705,30 @@ export default function RequestsManager({
                                               ? 'End Date'
                                               : 'Check-out Date'}
                                     </label>
-                                    <input type="date" value={accForm.checkOut} onChange={e => setAccForm({ ...accForm, checkOut: e.target.value })}
+                                    <input type="date" value={accForm.checkOut} onChange={e => syncAccCheckOut(e.target.value)}
                                         className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all" style={{ borderColor: colors.border, color: colors.textMain }} />
                                 </div>
                                 <div>
                                     <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>
                                         Total Nights
                                     </label>
-                                    <div className="px-3 py-2 rounded border bg-black/10 font-bold flex items-center gap-2" style={{ borderColor: colors.border, color: colors.textMain }}>
-                                        <Moon size={14} className="opacity-40" /> {fin.nights} Night(s)
+                                    <div className="flex items-center gap-2 rounded border bg-black/10 overflow-hidden" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        <Moon size={14} className="opacity-40 shrink-0 ml-3" />
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            className="flex-1 min-w-0 py-2 pr-3 bg-transparent outline-none focus:border-primary border-0 font-bold text-sm tabular-nums text-center"
+                                            style={{ color: colors.textMain }}
+                                            value={
+                                                accForm.checkIn && accForm.checkOut
+                                                    ? calculateNights(accForm.checkIn, accForm.checkOut)
+                                                    : (Number(accForm.nights) > 0 ? accForm.nights : '')
+                                            }
+                                            onChange={(e) => syncAccNights(Number(e.target.value))}
+                                            placeholder="0"
+                                        />
                                     </div>
+                                    <p className="text-[10px] mt-1 opacity-50" style={{ color: colors.textMuted }}>Edits check-out from check-in + nights.</p>
                                 </div>
                             </>
                         )}
@@ -1653,37 +1753,40 @@ export default function RequestsManager({
 
                 {/* Section 3: Request Details - Hide for Event Only */}
                 {requestType !== 'event' && (
-                    <div className="p-6 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div className="flex justify-between items-center">
+                    <div className="p-6 rounded-xl border space-y-3" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="flex flex-wrap justify-between items-center gap-3">
                             <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2" style={{ color: colors.primary }}>
                                 <BedDouble size={16} /> Section 3: {requestType === 'series' ? 'Group Details' : 'Room Request Details'}
                             </h3>
-                            <div className="flex items-center gap-4">
-                                {requestType !== 'series' && (
-                                    <div className="flex items-center gap-2">
-                                        <label className="text-xs font-bold uppercase opacity-50">Meal Plan:</label>
-                                        <select value={accForm.mealPlan} onChange={e => setAccForm({ ...accForm, mealPlan: e.target.value })}
-                                            className="px-2 py-1 text-xs rounded border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }}>
-                                            {mealPlansForProperty.map((m) => (
-                                                <option key={m.id} value={m.code}>{m.name} ({m.code})</option>
-                                            ))}
-                                            {accForm.mealPlan &&
-                                            !mealPlansForProperty.some((m) => m.code === accForm.mealPlan) ? (
-                                                <option value={accForm.mealPlan}>{accForm.mealPlan} (saved)</option>
-                                            ) : null}
-                                        </select>
-                                    </div>
-                                )}
-                                <button onClick={addRoom}
-                                    className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
-                                    <Plus size={16} /> {requestType === 'series' ? 'Add Group' : 'Add Room'}
-                                </button>
-                            </div>
+                            <button onClick={addRoom}
+                                className="px-4 py-2 rounded-xl bg-primary text-black text-xs font-black uppercase tracking-widest flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 shrink-0">
+                                <Plus size={16} /> {requestType === 'series' ? 'Add Group' : 'Add Room'}
+                            </button>
                         </div>
 
-                        <div className="space-y-3">
+                        <div
+                            className="flex flex-col sm:flex-row sm:items-center gap-2 py-2 px-3 rounded-lg border w-full"
+                            style={{ borderColor: colors.border, backgroundColor: colors.bg + '40' }}
+                        >
+                            <label className="text-[10px] font-black uppercase shrink-0 opacity-60 whitespace-nowrap" style={{ color: colors.textMuted }}>Meal plan</label>
+                            <select
+                                value={accForm.mealPlan}
+                                onChange={(e) => setAccForm({ ...accForm, mealPlan: e.target.value })}
+                                className="w-full sm:flex-1 min-w-0 py-1.5 px-2 text-xs rounded border bg-black/20 outline-none focus:border-primary"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                {mealPlansForProperty.map((m) => (
+                                    <option key={m.id} value={m.code}>{m.name} ({m.code})</option>
+                                ))}
+                                {accForm.mealPlan && !mealPlansForProperty.some((mm) => mm.code === accForm.mealPlan) ? (
+                                    <option value={accForm.mealPlan}>{accForm.mealPlan} (saved)</option>
+                                ) : null}
+                            </select>
+                        </div>
+
+                        <div className="space-y-2">
                             {roomGridLikeSeries ? (
-                                <div className="grid grid-cols-12 gap-2 sm:gap-3 px-2 sm:px-4 py-2 opacity-40 text-[10px] font-bold uppercase items-end">
+                                <div className="grid grid-cols-12 gap-2 sm:gap-3 px-2 sm:px-4 py-1.5 opacity-40 text-[10px] font-bold uppercase items-end">
                                     <div className="col-span-2 min-w-0">
                                         {requestType === 'event_rooms' ? 'Start Date' : 'Arrival'}
                                     </div>
@@ -1708,32 +1811,69 @@ export default function RequestsManager({
                             )}
 
                             {accForm.rooms.map((room) => (
-                                <div key={room.id} className="grid grid-cols-12 gap-2 sm:gap-3 items-center p-3 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
+                                <div key={room.id} className="grid grid-cols-12 gap-2 sm:gap-3 items-center p-2 rounded-lg bg-black/10 border border-white/5 hover:border-white/10 transition-all group">
                                     {roomGridLikeSeries && (
                                         <>
                                             <div className="col-span-2 min-w-0">
                                                 <input
                                                     type="date"
-                                                    className="w-full min-w-[9.25rem] max-w-full box-border px-2 py-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    className="w-full min-w-[9rem] max-w-full box-border px-2 py-1 text-[11px] leading-tight rounded bg-black/20 border border-transparent focus:border-primary outline-none"
                                                     value={(room as any).arrival}
-                                                    onChange={(e) => updateRoom(room.id, 'arrival', e.target.value)}
+                                                    onChange={(e) => {
+                                                        const v = e.target.value;
+                                                        const n = Math.max(0, Math.floor(Number((room as any).nights) || 0));
+                                                        const dep = String((room as any).departure || '').slice(0, 10);
+                                                        if (v && n > 0) {
+                                                            patchRoom(room.id, { arrival: v, departure: addCalendarDaysIso(v, n) });
+                                                        } else if (v && dep) {
+                                                            patchRoom(room.id, { arrival: v, nights: calculateNights(v, dep) });
+                                                        } else {
+                                                            patchRoom(room.id, { arrival: v });
+                                                        }
+                                                    }}
                                                 />
                                             </div>
                                             <div className="col-span-2 min-w-0">
                                                 <input
                                                     type="date"
-                                                    className="w-full min-w-[9.25rem] max-w-full box-border px-2 py-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none"
+                                                    className="w-full min-w-[9rem] max-w-full box-border px-2 py-1 text-[11px] leading-tight rounded bg-black/20 border border-transparent focus:border-primary outline-none"
                                                     value={(room as any).departure}
-                                                    onChange={(e) => updateRoom(room.id, 'departure', e.target.value)}
+                                                    onChange={(e) => {
+                                                        const v = e.target.value;
+                                                        const a = String((room as any).arrival || '').slice(0, 10);
+                                                        const patch: any = { departure: v };
+                                                        if (a && v) patch.nights = calculateNights(a, v);
+                                                        patchRoom(room.id, patch);
+                                                    }}
                                                 />
                                             </div>
-                                            <div className="col-span-1 text-center font-bold text-xs">
-                                                {calculateNights((room as any).arrival, (room as any).departure)}
+                                            <div className="col-span-1 min-w-0">
+                                                <input
+                                                    type="number"
+                                                    min={0}
+                                                    className="w-full min-w-0 py-1 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center font-bold tabular-nums"
+                                                    value={(() => {
+                                                        const ra = String((room as any).arrival || '').slice(0, 10);
+                                                        const rd = String((room as any).departure || '').slice(0, 10);
+                                                        if (ra && rd) return calculateNights(ra, rd);
+                                                        return Number((room as any).nights) > 0 ? (room as any).nights : '';
+                                                    })()}
+                                                    onChange={(e) => {
+                                                        const n = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                                                        const a = String((room as any).arrival || '').slice(0, 10);
+                                                        if (a && n > 0) {
+                                                            patchRoom(room.id, { nights: n, departure: addCalendarDaysIso(a, n) });
+                                                        } else {
+                                                            patchRoom(room.id, { nights: n });
+                                                        }
+                                                    }}
+                                                    title="Nights (updates departure from arrival + nights)"
+                                                />
                                             </div>
                                         </>
                                     )}
                                     <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                        <select className="w-full min-w-0 py-1.5 px-2 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             title={room.type}
                                             value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
                                             {roomTypeSelectOptions.map((name) => (
@@ -1742,18 +1882,18 @@ export default function RequestsManager({
                                         </select>
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-3"}>
-                                        <select className="w-full min-w-0 py-2 px-1.5 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
+                                        <select className="w-full min-w-0 py-1.5 px-1.5 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
                                             <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
                                         </select>
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2"}>
-                                        <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
+                                        <input type="number" className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center"
                                             value={room.count} onChange={e => updateRoom(room.id, 'count', Number(e.target.value))} />
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-2 min-w-0" : "col-span-3"}>
-                                        <div className="relative min-w-0 w-full max-w-[11rem] ml-auto">
-                                            <input type="number" className="w-full min-w-0 p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none text-right font-mono tabular-nums"
+                                        <div className={`relative min-w-0 w-full max-w-[11rem] ${roomGridLikeSeries ? 'mx-auto' : ''}`}>
+                                            <input type="number" className="w-full min-w-0 py-1.5 px-2 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none text-center font-mono tabular-nums"
                                                 value={room.rate} onChange={e => updateRoom(room.id, 'rate', Number(e.target.value))} />
                                         </div>
                                     </div>
@@ -1845,33 +1985,60 @@ export default function RequestsManager({
 
                         <div className="space-y-4">
                             {(accForm.agenda || []).map((row: any) => (
-                                <div key={row.id} className="p-6 rounded-2xl bg-black/20 border border-white/5 space-y-6 relative group overflow-hidden">
+                                <div key={row.id} className="p-5 rounded-2xl bg-black/20 border border-white/5 space-y-5 relative group overflow-hidden">
                                     <button onClick={() => deleteAgendaRow(row.id)} className="absolute top-4 right-4 p-2 text-red-500 hover:bg-red-500/10 rounded-full transition-all">
                                         <Trash2 size={16} />
                                     </button>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Start Date</label>
-                                            <input type="date" value={row.startDate} onChange={e => updateAgendaRow(row.id, 'startDate', e.target.value)}
-                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                            <input
+                                                type="date"
+                                                value={row.startDate}
+                                                onChange={(e) => onAgendaStartDateChange(row, e.target.value)}
+                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Days</label>
+                                            <input
+                                                type="number"
+                                                min={1}
+                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold text-center tabular-nums"
+                                                value={
+                                                    row.startDate && row.endDate
+                                                        ? inclusiveCalendarDays(
+                                                              String(row.startDate).slice(0, 10),
+                                                              String(row.endDate).slice(0, 10)
+                                                          )
+                                                        : ''
+                                                }
+                                                onChange={(e) => onAgendaInclusiveDaysChange(row, e.target.value)}
+                                                title="Inclusive calendar days (sets end date from start)"
+                                                placeholder="—"
+                                            />
                                         </div>
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">End Date</label>
-                                            <input type="date" value={row.endDate} onChange={e => updateAgendaRow(row.id, 'endDate', e.target.value)}
-                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold" />
+                                            <input
+                                                type="date"
+                                                value={row.endDate}
+                                                onChange={(e) => onAgendaEndDateChange(row, e.target.value)}
+                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold"
+                                            />
                                         </div>
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Meeting Room</label>
                                             <select value={row.venue} onChange={e => updateAgendaRow(row.id, 'venue', e.target.value)}
-                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
                                                 {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
                                             </select>
                                         </div>
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Setup Style (Shape)</label>
                                             <select value={row.shape} onChange={e => updateAgendaRow(row.id, 'shape', e.target.value)}
-                                                className="w-full px-4 py-2.5 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
                                                 <option>Theater</option><option>Classroom</option><option>U-Shape</option><option>Banquet</option><option>Boardroom</option>
                                             </select>
                                         </div>
@@ -2772,8 +2939,12 @@ export default function RequestsManager({
                                         ) : (request.rooms || []).map((r: any, idx: number) => {
                                             let rNights = fin.nights;
                                             if (detailType === 'series' || detailType === 'event_rooms') {
-                                                const perRow = calculateNights(r.arrival, r.departure);
-                                                rNights = perRow > 0 ? perRow : fin.nights;
+                                                const a = String(r.arrival || '').slice(0, 10);
+                                                const d = String(r.departure || '').slice(0, 10);
+                                                const perRow = a && d ? calculateNights(a, d) : 0;
+                                                const manual = Number(r.nights);
+                                                rNights =
+                                                    perRow > 0 ? perRow : a && Number.isFinite(manual) && manual > 0 ? manual : fin.nights;
                                             }
                                             const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
                                             return (

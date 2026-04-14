@@ -115,6 +115,16 @@ export function calculateNights(inDate: string, outDate: string) {
     return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
 }
 
+/** Add calendar days to an ISO date (YYYY-MM-DD). Uses noon UTC to avoid DST edge cases. */
+export function addCalendarDaysIso(isoDate: string, deltaDays: number): string {
+    const base = String(isoDate || '').slice(0, 10);
+    if (!base) return '';
+    const d = new Date(`${base}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return '';
+    d.setDate(d.getDate() + deltaDays);
+    return d.toISOString().slice(0, 10);
+}
+
 export function normalizeRequestTypeKey(raw: string = '') {
     const t = String(raw || '').toLowerCase().trim();
     if (t === 'event' || t === 'events' || t === 'event only' || t === 'mice' || t === 'mice event') return 'event';
@@ -242,21 +252,23 @@ export function calculateAccFinancialsForRequest(
     const rtNorm = normalizeRequestTypeKey(form.requestType || fallbackRequestType || '');
     const usePerRoomStayNights = rtNorm === 'series' || rtNorm === 'event_rooms';
 
+    const perRoomNightsResolved = (r: any): number => {
+        if (!usePerRoomStayNights) return nights;
+        const a = String(r?.arrival || '').slice(0, 10);
+        const d = String(r?.departure || '').slice(0, 10);
+        if (a && d) return calculateNights(a, d);
+        const manual = Number(r?.nights);
+        if (a && Number.isFinite(manual) && manual > 0) return manual;
+        return nights;
+    };
+
     const roomsCostNoTax = (form.rooms || []).reduce((acc: number, r: any) => {
-        let rowNights = nights;
-        if (usePerRoomStayNights) {
-            const perRow = calculateNights(r.arrival, r.departure);
-            rowNights = perRow > 0 ? perRow : nights;
-        }
+        const rowNights = perRoomNightsResolved(r);
         return acc + (Number(r.rate || 0) * Number(r.count || 0) * rowNights);
     }, 0);
 
     const totalRoomNights = (form.rooms || []).reduce((acc: number, r: any) => {
-        let rowNights = nights;
-        if (usePerRoomStayNights) {
-            const perRow = calculateNights(r.arrival, r.departure);
-            rowNights = perRow > 0 ? perRow : nights;
-        }
+        const rowNights = perRoomNightsResolved(r);
         return acc + (Number(r.count || 0) * rowNights);
     }, 0);
 
