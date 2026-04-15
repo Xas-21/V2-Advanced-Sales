@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { apiUrl } from './backendApi';
 import {
     LayoutList, Search, Plus, Calendar, User, FileText, Check, DollarSign,
     Box, Users, Clock, Coffee, Utensils, Music, Bus, Car, BedDouble,
     Trash2, Save, ChevronDown, ChevronRight, Calculator, Filter,
-    MoreHorizontal, Moon, Bed, Tag, X, Settings, CreditCard, RefreshCw, Printer
+    MoreHorizontal, Moon, Bed, Tag, X, Settings, CreditCard, RefreshCw, Printer,
+    Bell, AlertTriangle
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
 import ConfirmDialog from './ConfirmDialog';
@@ -22,7 +23,9 @@ import {
     normalizeAgendaRowTimes,
     DEFAULT_EVENT_PACKAGES,
 } from './propertyMealsPackages';
-import { canDeleteRequestPayments as userCanDeleteRequestPayments } from './userPermissions';
+import { canDeleteRequestPayments as userCanDeleteRequestPayments, canUseRequestAlerts } from './userPermissions';
+import RequestAlertsModal from './RequestAlertsModal';
+import { normalizeRequestAlerts, requestHasAlerts, type RequestAlert } from './requestAlerts';
 import {
     sumPaymentAmounts,
     calculateNights,
@@ -182,6 +185,7 @@ export default function RequestsManager({
         currentUser?.name || currentUser?.username || currentUser?.email || 'User';
     const canDeletePayments =
         (canDeletePaymentsProp ?? userCanDeleteRequestPayments(currentUser)) && !readOnlyOperational;
+    const canManageRequestAlerts = canUseRequestAlerts(currentUser) && !readOnlyOperational;
 
     const effectiveSegmentOptions = useMemo(() => {
         if (Array.isArray(segmentOptions)) return segmentOptions;
@@ -272,6 +276,9 @@ export default function RequestsManager({
     const [gisOpsNotesDraft, setGisOpsNotesDraft] = useState('');
     /** Series only: map `rooms` row index → include in GIS / print (default true when opened). */
     const [gisSeriesRowInclude, setGisSeriesRowInclude] = useState<Record<number, boolean>>({});
+    const [requestAlertsModalId, setRequestAlertsModalId] = useState<string | null>(null);
+    const [requestAlertsModalAuto, setRequestAlertsModalAuto] = useState(false);
+    const prevDetailRequestIdRef = useRef<string | null>(null);
 
     const getSearchOnlyParams = (params: any = {}) => {
         const { subView, ...rest } = params || {};
@@ -310,6 +317,15 @@ export default function RequestsManager({
         const start = (listCurrentPage - 1) * listPageSize;
         return listPageRequests.slice(start, start + listPageSize);
     }, [listPageRequests, listCurrentPage, listPageSize]);
+
+    const requestAlertsModalRequest = useMemo(() => {
+        if (!requestAlertsModalId) return null;
+        const id = String(requestAlertsModalId);
+        const fromList = requests.find((r: any) => String(r.id) === id);
+        if (fromList) return fromList;
+        if (selectedRequest && String(selectedRequest.id) === id) return selectedRequest;
+        return null;
+    }, [requestAlertsModalId, requests, selectedRequest]);
 
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
 
@@ -552,6 +568,25 @@ export default function RequestsManager({
             onConsumedPendingOpenRequest?.();
         }
     }, [pendingOpenRequestId, requests, isLoading, onConsumedPendingOpenRequest]);
+
+    /** When opening a request that has alerts, show the alerts modal shortly after the detail view mounts. */
+    useEffect(() => {
+        const id = selectedRequest?.id ?? null;
+        if (!id) {
+            prevDetailRequestIdRef.current = null;
+            return;
+        }
+        const prev = prevDetailRequestIdRef.current;
+        if (prev === id) return;
+        prevDetailRequestIdRef.current = id;
+        const list = normalizeRequestAlerts(selectedRequest);
+        if (list.length === 0) return;
+        const t = window.setTimeout(() => {
+            setRequestAlertsModalId(String(id));
+            setRequestAlertsModalAuto(true);
+        }, 250);
+        return () => clearTimeout(t);
+    }, [selectedRequest]);
 
     useEffect(() => {
         if (readOnlyOperational) return;
@@ -940,6 +975,15 @@ export default function RequestsManager({
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const persistRequestAlerts = async (requestId: string, alerts: RequestAlert[]) => {
+        const existing = requests.find((r: any) => String(r.id) === String(requestId));
+        if (!existing) return;
+        await updateRequest(String(requestId), { alerts });
+        setSelectedRequest((prev: any) =>
+            prev && String(prev.id) === String(requestId) ? { ...prev, alerts } : prev
+        );
     };
 
     const renderActivities = (logs: any[]) => (
@@ -2809,7 +2853,26 @@ export default function RequestsManager({
                             </div>
                         </div>
                     </div>
-                    <div className="flex gap-3">
+                    <div className="flex gap-3 items-center">
+                        {(canManageRequestAlerts || requestHasAlerts(request)) && (
+                            <button
+                                type="button"
+                                title="Request alerts"
+                                onClick={() => {
+                                    setRequestAlertsModalId(String(request.id));
+                                    setRequestAlertsModalAuto(false);
+                                }}
+                                className="relative p-2.5 rounded-xl border font-bold hover:bg-white/5 transition-all"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <Bell size={18} />
+                                {requestHasAlerts(request) ? (
+                                    <span className="absolute bottom-0.5 right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-500 shadow-sm pointer-events-none">
+                                        <AlertTriangle size={8} className="text-white" fill="currentColor" />
+                                    </span>
+                                ) : null}
+                            </button>
+                        )}
                         {!readOnlyOperational && (
                         <button 
                             onClick={(e) => {
@@ -3537,6 +3600,36 @@ export default function RequestsManager({
                     )}
                     {!readOnlyOperational &&
                         (() => {
+                            const optReqAlerts = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                            if (!optReqAlerts) return null;
+                            if (!canManageRequestAlerts && !requestHasAlerts(optReqAlerts)) return null;
+                            return (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setRequestAlertsModalId(String(optReqAlerts.id));
+                                        setRequestAlertsModalAuto(false);
+                                        setActiveOptionsMenu(null);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]"
+                                    style={{ color: colors.textMain }}
+                                >
+                                    <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500 relative shrink-0">
+                                        <Bell size={12} />
+                                        {requestHasAlerts(optReqAlerts) ? (
+                                            <AlertTriangle
+                                                size={8}
+                                                className="absolute bottom-0 right-0 text-red-500"
+                                                fill="currentColor"
+                                            />
+                                        ) : null}
+                                    </div>
+                                    <span>Alert</span>
+                                </button>
+                            );
+                        })()}
+                    {!readOnlyOperational &&
+                        (() => {
                             const optReq = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
                             const optKind = optReq ? normalizeRequestTypeKey(optReq.requestType) : '';
                             if (optKind !== 'event' && optKind !== 'event_rooms' && optKind !== 'series') return null;
@@ -3665,6 +3758,24 @@ export default function RequestsManager({
                     onCancel={() => {
                         setPendingDeleteRequest(null);
                         setShowDeleteRequestConfirm(false);
+                    }}
+                />
+
+                <RequestAlertsModal
+                    isOpen={Boolean(requestAlertsModalId && requestAlertsModalRequest)}
+                    theme={theme}
+                    request={requestAlertsModalRequest}
+                    canManage={canManageRequestAlerts && !requestAlertsModalAuto}
+                    autoOpened={requestAlertsModalAuto}
+                    actorName={requestLogUser}
+                    onClose={() => {
+                        setRequestAlertsModalId(null);
+                        setRequestAlertsModalAuto(false);
+                    }}
+                    onSave={async (alerts) => {
+                        const id = requestAlertsModalId;
+                        if (!id) return;
+                        await persistRequestAlerts(String(id), alerts);
                     }}
                 />
                 
@@ -4578,9 +4689,31 @@ export default function RequestsManager({
                             }}
                         >
                             {column === 'options' && (
-                                <div className="relative">
+                                <div className="relative flex items-center justify-center gap-1">
+                                    {(canManageRequestAlerts || requestHasAlerts(request)) && (
+                                        <button
+                                            type="button"
+                                            title="Request alerts"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setRequestAlertsModalId(String(request.id));
+                                                setRequestAlertsModalAuto(false);
+                                            }}
+                                            className={`relative flex items-center justify-center rounded-md border font-black transition-all hover:bg-white/10 active:scale-95 ${compact ? 'p-1' : 'p-1.5'}`}
+                                            style={{ color: colors.textMain, borderColor: colors.border }}
+                                        >
+                                            <Bell size={compact ? 11 : 13} />
+                                            {requestHasAlerts(request) ? (
+                                                <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-red-500">
+                                                    <AlertTriangle size={6} className="text-white" fill="currentColor" />
+                                                </span>
+                                            ) : null}
+                                        </button>
+                                    )}
                                     {readOnlyOperational ? (
-                                        <span className="text-[10px] opacity-30" style={{ color: colors.textMuted }}>—</span>
+                                        !(canManageRequestAlerts || requestHasAlerts(request)) ? (
+                                            <span className="text-[10px] opacity-30" style={{ color: colors.textMuted }}>—</span>
+                                        ) : null
                                     ) : (
                                         <button
                                             type="button"

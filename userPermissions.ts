@@ -32,6 +32,8 @@ export const ALL_PERMISSION_IDS = [
     'contracts.templates.delete',
     'requests.delete',
     'requests.deletePayments',
+    /** Add / edit / delete request alerts, OPTS → Alert, and toolbar bell (view pop-ups still show for all). */
+    'requests.alerts',
     'crm.deleteCalls',
     'accounts.timelineManual',
     'mutate.operational',
@@ -66,6 +68,7 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'contracts.templates.delete': 'Delete contract templates (Contracts library)',
     'requests.delete': 'Delete requests',
     'requests.deletePayments': 'Delete request payment / deposit lines',
+    'requests.alerts': 'Requests: alerts (add, edit, delete & toolbar)',
     'crm.deleteCalls': 'Delete sales calls',
     'accounts.timelineManual': 'Edit / delete manual timeline activities',
     'mutate.operational': 'Create & edit operational data (not view-only)',
@@ -124,7 +127,7 @@ export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
     {
         id: 'requests',
         title: 'Requests & payments',
-        permissions: ['requests.delete', 'requests.deletePayments'],
+        permissions: ['requests.delete', 'requests.deletePayments', 'requests.alerts'],
     },
     {
         id: 'contracts',
@@ -203,17 +206,19 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
         'contracts.delete',
         'requests.delete',
         'requests.deletePayments',
+        'requests.alerts',
         'crm.deleteCalls',
         'accounts.timelineManual'
     ),
-    'Sales Manager': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
-    'Sales Executive': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
-    'Sales Coordinator': permSet('mutate.operational', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Manager': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Executive': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Coordinator': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
     'Reservations Team': permSet(
         'mutate.operational',
         'accounts.viewOnly',
         'nav.todo',
-        'nav.requests'
+        'nav.requests',
+        'requests.alerts'
     ),
 };
 
@@ -365,6 +370,11 @@ export function canDeleteRequests(user: any): boolean {
 
 export function canDeleteRequestPayments(user: any): boolean {
     return can(user, 'requests.deletePayments');
+}
+
+/** Manage request alerts (OPTS → Alert, bell button, add/edit/delete). */
+export function canUseRequestAlerts(user: any): boolean {
+    return can(user, 'requests.alerts');
 }
 
 export function canDeleteSalesCalls(user: any): boolean {

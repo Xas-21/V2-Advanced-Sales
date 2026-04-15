@@ -3709,25 +3709,32 @@ export default function AdvancedSalesDashboard() {
         if (!ap?.id) {
             return currentUser?.name ? [row({ id: currentUser.id, name: currentUser.name })] : [];
         }
-        const ids = new Set((ap.assignedUserIds || []).map((x: any) => String(x)));
-        let fromAssigned = (systemUsers || []).filter((u: any) => u?.id != null && ids.has(String(u.id))).map(row);
+        // Match Settings "Staff Management": users on this property are those in assignedUserIds
+        // OR whose primary propertyId matches. Previously we only used propertyId when assignedUserIds
+        // was empty, so a partial assignedUserIds list (e.g. one admin) hid everyone else.
+        const assignedIds = new Set((ap.assignedUserIds || []).map((x: any) => String(x)));
+        const propId = String(ap.id);
+        const byUserId = new Map<string, { id: string; name: string }>();
 
-        if (!fromAssigned.length) {
-            fromAssigned = (systemUsers || [])
-                .filter((u: any) => String(u.propertyId ?? '') === String(ap.id))
-                .map(row);
+        for (const u of systemUsers || []) {
+            if (u?.id == null && u?.username == null) continue;
+            const uid = String(u.id ?? '');
+            const onProperty =
+                (uid && assignedIds.has(uid)) || String(u.propertyId ?? '') === propId;
+            if (!onProperty) continue;
+            const r = row(u);
+            if (!r.name) continue;
+            if (!byUserId.has(r.id)) byUserId.set(r.id, r);
         }
 
-        const byName = new Map<string, { id: string; name: string }>();
-        for (const u of fromAssigned) {
-            if (u.name && !byName.has(u.name)) byName.set(u.name, u);
-        }
         const curName = currentUser?.name ? String(currentUser.name).trim() : '';
-        if (curName && !byName.has(curName)) {
-            byName.set(curName, { id: String(currentUser.id), name: curName });
+        const curId = String(currentUser?.id ?? '');
+        if (curName && curId && !byUserId.has(curId)) {
+            byUserId.set(curId, { id: curId, name: curName });
         }
-        const merged = [...byName.values()];
-        return merged.length ? merged : curName ? [{ id: String(currentUser.id), name: curName }] : [];
+
+        const merged = [...byUserId.values()].sort((a, b) => a.name.localeCompare(b.name));
+        return merged.length ? merged : curName ? [{ id: curId || String(currentUser.id), name: curName }] : [];
     }, [activeProperty, systemUsers, currentUser]);
 
     const resolveContactForAlert = useCallback(
