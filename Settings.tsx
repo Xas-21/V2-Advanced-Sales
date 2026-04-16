@@ -8,7 +8,7 @@ import {
     User, Upload, Save, Edit, Plus, Trash2, X, Check, Mail, Phone, Shield,
     MapPin, Layout, Box, FileText, List, ChevronDown, ChevronRight, Monitor,
     TrendingUp, Calculator, CalendarDays, ChevronLeft, CheckSquare, Zap, CheckCircle2, Download, Clock,
-    UserMinus, RefreshCw, Tags, UtensilsCrossed
+    UserMinus, RefreshCw, Tags, UtensilsCrossed, Bell
 } from 'lucide-react';
 import { apiUrl } from './backendApi';
 import {
@@ -57,6 +57,15 @@ import {
     ymdBoundsForCalendarYear,
 } from './userProfileMetrics';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+import type { PropertyAlertSettingsMap, SystemAlertKind } from './propertyAlertSettings';
+import {
+    ALERT_TYPE_REGISTRY,
+    CLIENT_FEEDBACK_LOOKBACK_DAYS,
+    CLIENT_FEEDBACK_URGENT_LAST_DAYS,
+    mergePropertyAlertSettings,
+    resolveAlertSettingsForProperty,
+    saveAlertSettingsForProperty,
+} from './propertyAlertSettings';
 
 interface SettingsProps {
     theme: any;
@@ -121,6 +130,7 @@ export default function Settings({
     const [users, setUsers] = useState(initialUsers);
     const [managingProperty, setManagingProperty] = useState<any>(null);
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [alertSettingsSaveStatus, setAlertSettingsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
     useEffect(() => {
         fetch(apiUrl('/api/users'))
@@ -552,6 +562,13 @@ export default function Settings({
     );
 
     const [activePropTab, setActivePropTab] = useState('rooms');
+    const [alertSettingsDraft, setAlertSettingsDraft] = useState<PropertyAlertSettingsMap>(() =>
+        mergePropertyAlertSettings(null)
+    );
+
+    useEffect(() => {
+        if (activePropTab !== 'alert_notifications') setAlertSettingsSaveStatus('idle');
+    }, [activePropTab]);
     const [cxlReasons, setCxlReasons] = useState<any[]>([]);
     const [newCxlReason, setNewCxlReason] = useState('');
     const [editCxlId, setEditCxlId] = useState<string | null>(null);
@@ -624,8 +641,10 @@ export default function Settings({
             setTaxonomyAccountTypes([]);
             setMealPlansList([]);
             setEventPackagesList([]);
+            setAlertSettingsDraft(mergePropertyAlertSettings(null));
             return;
         }
+        setAlertSettingsDraft(resolveAlertSettingsForProperty(managingProperty.id, managingProperty));
         setTaxonomySegments(resolveSegmentsForProperty(managingProperty.id, managingProperty));
         setTaxonomyAccountTypes(resolveAccountTypesForProperty(managingProperty.id, managingProperty));
         setEditSegIdx(null);
@@ -650,6 +669,7 @@ export default function Settings({
         managingProperty?.accountTypes,
         managingProperty?.mealPlans,
         managingProperty?.eventPackages,
+        managingProperty?.alertSettings,
     ]);
 
     useEffect(() => {
@@ -776,6 +796,7 @@ export default function Settings({
         { id: 'taxes', label: 'Tax Config', icon: DollarSign },
         { id: 'segments_types', label: 'Segments & Account Types', icon: Tags },
         { id: 'cxl', label: 'CXL', icon: List },
+        { id: 'alert_notifications', label: 'Alerts & Notifications', icon: Bell },
         ...(appIsAdmin ? [{ id: 'users', label: 'User Mgmt', icon: Users }] : []),
     ];
 
@@ -1531,6 +1552,7 @@ export default function Settings({
                         {activePropTab === 'taxes' && renderTaxesTab()}
                         {activePropTab === 'segments_types' && renderSegmentsTypesTab()}
                         {activePropTab === 'cxl' && renderCxlTab()}
+                        {activePropTab === 'alert_notifications' && renderAlertsNotificationsTab()}
                         {activePropTab === 'users' && renderUsersTab()}
                     </div>
                 </div>
@@ -2545,6 +2567,152 @@ export default function Settings({
                         </tbody>
                     </table>
                 </div>
+            </div>
+        );
+    };
+
+    const renderAlertsNotificationsTab = () => {
+        const propId = managingProperty?.id;
+        if (!propId) return null;
+
+        const patchRow = (kind: SystemAlertKind, field: 'enabled' | 'createTask', value: boolean) => {
+            setAlertSettingsDraft((prev) => {
+                const cur = prev[kind];
+                const nextRow =
+                    field === 'enabled'
+                        ? { ...cur, enabled: value, createTask: value ? cur.createTask : false }
+                        : { ...cur, createTask: value };
+                return { ...prev, [kind]: nextRow };
+            });
+        };
+
+        const handleSaveAlertSettings = async () => {
+            setAlertSettingsSaveStatus('saving');
+            try {
+                const clean = mergePropertyAlertSettings(alertSettingsDraft);
+                const ok = await saveAlertSettingsForProperty(propId, clean);
+                if (!ok) throw new Error('save failed');
+                const nextProp = { ...managingProperty, alertSettings: clean };
+                setManagingProperty(nextProp);
+                setProperties((prev: any[]) => prev.map((p: any) => (p.id === propId ? { ...p, alertSettings: clean } : p)));
+                setAlertSettingsSaveStatus('saved');
+                setTimeout(() => setAlertSettingsSaveStatus('idle'), 3000);
+            } catch (err) {
+                console.error('Error saving alert settings:', err);
+                setAlertSettingsSaveStatus('error');
+            }
+        };
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-start">
+                    <div className="min-w-0 flex-1">
+                        <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Alerts &amp; notifications</h2>
+                        <p className="text-sm mt-1 max-w-3xl" style={{ color: colors.textMuted }}>
+                            Control which automated request alerts run for this property. When Auto-task is on, the system creates a task assigned to the
+                            request owner (subject, description, client, priority, due date) while the alert is active. New alert types added in code appear here automatically.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                        {alertSettingsSaveStatus === 'saved' && (
+                            <span className="text-[10px] font-bold text-emerald-500 animate-pulse">SAVED SUCCESSFULLY!</span>
+                        )}
+                        {alertSettingsSaveStatus === 'error' && (
+                            <span className="text-[10px] font-bold text-red-500">ERROR SAVING!</span>
+                        )}
+                        <button
+                            type="button"
+                            onClick={handleSaveAlertSettings}
+                            disabled={alertSettingsSaveStatus === 'saving'}
+                            className="px-6 py-2 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center gap-2 hover:brightness-110 active:scale-95 transition-all disabled:opacity-50"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            {alertSettingsSaveStatus === 'saving' ? (
+                                <RefreshCw size={14} className="animate-spin" />
+                            ) : (
+                                <Save size={14} />
+                            )}
+                            {alertSettingsSaveStatus === 'saving' ? 'Saving...' : 'Save configuration'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <table className="w-full text-left">
+                        <thead style={{ backgroundColor: colors.bg }}>
+                            <tr>
+                                <th className="p-4 text-[10px] uppercase font-bold tracking-widest" style={{ color: colors.textMuted }}>Alert type</th>
+                                <th className="p-4 text-[10px] uppercase font-bold tracking-widest text-center w-28" style={{ color: colors.textMuted }}>Active</th>
+                                <th className="p-4 text-[10px] uppercase font-bold tracking-widest text-center w-44" style={{ color: colors.textMuted }}>Auto-task (owner)</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y" style={{ borderColor: colors.border }}>
+                            {ALERT_TYPE_REGISTRY.map((def) => {
+                                const row = alertSettingsDraft[def.kind];
+                                return (
+                                    <tr key={def.kind} className="hover:bg-white/5 transition-colors align-top">
+                                        <td className="p-4">
+                                            <div className="font-bold text-sm" style={{ color: colors.textMain }}>{def.title}</div>
+                                            <p className="text-xs mt-1 leading-relaxed" style={{ color: colors.textMuted }}>{def.description}</p>
+                                        </td>
+                                        <td className="p-4 text-center">
+                                            <input
+                                                type="checkbox"
+                                                checked={row.enabled}
+                                                onChange={(e) => patchRow(def.kind, 'enabled', e.target.checked)}
+                                                className="w-4 h-4 rounded border cursor-pointer align-middle"
+                                                style={{ accentColor: colors.primary, borderColor: colors.border }}
+                                            />
+                                        </td>
+                                        <td className="p-4 text-center">
+                                            <input
+                                                type="checkbox"
+                                                disabled={!row.enabled}
+                                                checked={row.createTask}
+                                                onChange={(e) => patchRow(def.kind, 'createTask', e.target.checked)}
+                                                className="w-4 h-4 rounded border cursor-pointer align-middle disabled:opacity-40 disabled:cursor-not-allowed"
+                                                style={{ accentColor: colors.primary, borderColor: colors.border }}
+                                                title={!row.enabled ? 'Turn on the alert type first' : 'Create task for request owner when this alert fires'}
+                                            />
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+
+                <details className="rounded-xl border p-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <summary className="text-sm font-bold cursor-pointer" style={{ color: colors.textMain }}>
+                        How &quot;Post-stay / post-event client feedback&quot; works (rules)
+                    </summary>
+                    <div className="mt-3 text-xs space-y-2 leading-relaxed" style={{ color: colors.textMuted }}>
+                        <p>
+                            <span className="font-bold" style={{ color: colors.textMain }}>When it can appear.</span>{' '}
+                            The request must not be Cancelled or Lost. The system picks the latest relevant end date for the stay or event
+                            (checkout, last room departure, agenda dates, or MICE event window end). The alert is eligible from the{' '}
+                            <span className="font-semibold" style={{ color: colors.textMain }}>first calendar day after</span> that end date,
+                            through <span className="font-semibold" style={{ color: colors.textMain }}>{CLIENT_FEEDBACK_LOOKBACK_DAYS} calendar days</span>{' '}
+                            past the end date (then it stops). It does not show on the end date itself.
+                        </p>
+                        <p>
+                            <span className="font-bold" style={{ color: colors.textMain }}>Daily behavior.</span>{' '}
+                            The app recomputes alerts when you use it (and the main shell refreshes date context periodically). There is no separate
+                            overnight job: each time lists are evaluated, &quot;today&quot; determines whether you are inside that window. Dismissing the alert
+                            records a per-user dismiss for that day (same pattern as other system alerts).
+                        </p>
+                        <p>
+                            <span className="font-bold" style={{ color: colors.textMain }}>Urgent vs normal.</span>{' '}
+                            Inside the window, the last <span className="font-semibold" style={{ color: colors.textMain }}>{CLIENT_FEEDBACK_URGENT_LAST_DAYS} days</span>{' '}
+                            (closest to the end of the window) are marked <span className="font-semibold text-red-400">urgent</span> (red styling). Earlier days in the window use a softer accent.
+                            If Auto-task is enabled, urgent rows also get <span className="font-semibold" style={{ color: colors.textMain }}>High</span> priority; otherwise Medium.
+                        </p>
+                        <p>
+                            <span className="font-bold" style={{ color: colors.textMain }}>One row per request end.</span>{' '}
+                            The dismiss key is tied to that end date, so you get one feedback reminder stream per request/end anchor until you dismiss or the window passes.
+                        </p>
+                    </div>
+                </details>
             </div>
         );
     };

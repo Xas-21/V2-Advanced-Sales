@@ -3,14 +3,21 @@ import {
     getEventDateWindow,
     normalizeRequestTypeKey,
 } from './beoShared';
+import type { PropertyAlertSettingsMap, SystemAlertKind } from './propertyAlertSettings';
+import {
+    CLIENT_FEEDBACK_LOOKBACK_DAYS,
+    CLIENT_FEEDBACK_URGENT_LAST_DAYS,
+    isAlertKindActive,
+    mergePropertyAlertSettings,
+} from './propertyAlertSettings';
 
-export type RequestAlertKind = 'offer' | 'deposit' | 'payment' | 'gis' | 'beo';
+export type RequestAlertKind = SystemAlertKind;
 
 export type RequestAlertAccent = 'yellow' | 'blue' | 'green' | 'lightGreen' | 'lightBlue' | 'red';
 
 export interface RequestAlert {
     dismissKey: string;
-    kind: RequestAlertKind;
+    kind: SystemAlertKind;
     requestId: string;
     title: string;
     body: string;
@@ -128,13 +135,14 @@ function pushDeadlineAlerts(
     req: any,
     contactName: string,
     creatorName: string,
-    today: Date
+    today: Date,
+    settings: PropertyAlertSettingsMap
 ): void {
     const { name: reqName, account } = requestNameAccount(req);
     const base = { requestId: String(req.id), creatorName };
 
     // Offer — Inquiry only
-    if (!isExcludedStatus(req) && normStatus(req) === 'Inquiry') {
+    if (isAlertKindActive(settings, 'offer') && !isExcludedStatus(req) && normStatus(req) === 'Inquiry') {
         const d = daysUntilLocal(req?.offerDeadline, today);
         if (d === null) {
             /* skip */
@@ -172,7 +180,7 @@ function pushDeadlineAlerts(
     }
 
     // Deposit — Accepted
-    if (!isExcludedStatus(req) && normStatus(req) === 'Accepted') {
+    if (isAlertKindActive(settings, 'deposit') && !isExcludedStatus(req) && normStatus(req) === 'Accepted') {
         const d = daysUntilLocal(req?.depositDeadline, today);
         if (d === null) {
             /* skip */
@@ -210,7 +218,7 @@ function pushDeadlineAlerts(
     }
 
     // Full payment — Tentative, tiers 3 / 2 / 1 (green for 3 & 2, red urgent at 1 or overdue)
-    if (!isExcludedStatus(req) && normStatus(req) === 'Tentative') {
+    if (isAlertKindActive(settings, 'payment') && !isExcludedStatus(req) && normStatus(req) === 'Tentative') {
         const d = daysUntilLocal(req?.paymentDeadline, today);
         if (d === null) {
             /* skip */
@@ -254,12 +262,14 @@ function pushGisBeoAlerts(
     creatorName: string,
     account: string,
     reqName: string,
-    today: Date
+    today: Date,
+    settings: PropertyAlertSettingsMap
 ): void {
     const base = { requestId: String(req.id), creatorName };
 
     // GIS
     if (
+        isAlertKindActive(settings, 'gis') &&
         !isExcludedStatus(req) &&
         isGisType(req) &&
         gisStatusAllowed(req)
@@ -286,7 +296,7 @@ function pushGisBeoAlerts(
     }
 
     // BEO — Definite only
-    if (!isExcludedStatus(req) && normStatus(req) === 'Definite' && isBeoType(req)) {
+    if (isAlertKindActive(settings, 'beo') && !isExcludedStatus(req) && normStatus(req) === 'Definite' && isBeoType(req)) {
         const starts = collectBeoStartDates(req);
         for (const start of starts) {
             const d = daysUntilLocal(start, today);
@@ -331,17 +341,97 @@ function pushGisBeoAlerts(
     }
 }
 
+/** Collect candidate end-of-service dates (checkout, last departure, agenda end, event window end). */
+function collectCheckoutOrEndDates(req: any): string[] {
+    const t = normalizeRequestTypeKey(req?.requestType);
+    const set = new Set<string>();
+    const push = (raw: unknown) => {
+        const x = normalizeAlertDate(raw);
+        if (x) set.add(x);
+    };
+
+    if (t === 'accommodation') {
+        push(req?.checkOut);
+        return [...set].sort();
+    }
+
+    if (t === 'event') {
+        const w = getEventDateWindow(req);
+        push(w?.end);
+        return [...set].sort();
+    }
+
+    push(req?.checkOut);
+    const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+    for (const g of rooms) {
+        push(g?.departure);
+    }
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    for (const row of agenda) {
+        push(row?.endDate);
+        push(row?.startDate);
+    }
+    return [...set].sort();
+}
+
+function latestServiceEndIso(req: any): string | null {
+    const dates = collectCheckoutOrEndDates(req).filter(Boolean);
+    if (!dates.length) return null;
+    return dates[dates.length - 1] ?? null;
+}
+
+function pushClientFeedbackAlerts(
+    out: RequestAlert[],
+    req: any,
+    contactName: string,
+    creatorName: string,
+    today: Date,
+    settings: PropertyAlertSettingsMap
+): void {
+    if (!isAlertKindActive(settings, 'client_feedback')) return;
+    if (isExcludedStatus(req)) return;
+
+    const end = latestServiceEndIso(req);
+    if (!end) return;
+
+    const d = daysUntilLocal(end, today);
+    if (d === null) return;
+    // d = calendar days from today to end: negative = end is in the past. Show from day after end through lookback window.
+    if (d > -1 || d < -CLIENT_FEEDBACK_LOOKBACK_DAYS) return;
+
+    const { name: reqName, account } = requestNameAccount(req);
+    const base = { requestId: String(req.id), creatorName };
+    const dk = `client_feedback:${req.id}:${end}`;
+    const urgent = d >= -CLIENT_FEEDBACK_URGENT_LAST_DAYS;
+    out.push({
+        ...base,
+        dismissKey: dk,
+        kind: 'client_feedback',
+        title: 'Client experience feedback',
+        body: `Contact ${contactName} and collect feedback regarding "${reqName}" (${account}). Service ended ${end}.`,
+        accent: urgent ? 'red' : 'lightBlue',
+        urgent,
+        anchorDate: end,
+    });
+}
+
 /**
  * Build all alerts for the given requests (already scoped to property).
  * One row per rule anchor; no duplicate tiers for the same day.
  */
-export function computeAllRequestAlerts(inputs: RequestAlertInput[], today: Date): RequestAlert[] {
+export function computeAllRequestAlerts(
+    inputs: RequestAlertInput[],
+    today: Date,
+    settings?: PropertyAlertSettingsMap
+): RequestAlert[] {
+    const resolved = settings ?? mergePropertyAlertSettings(null);
     const out: RequestAlert[] = [];
     for (const { request, contactName, creatorName } of inputs) {
         if (!request?.id) continue;
-        pushDeadlineAlerts(out, request, contactName, creatorName, today);
+        pushDeadlineAlerts(out, request, contactName, creatorName, today, resolved);
         const { name: reqName, account } = requestNameAccount(request);
-        pushGisBeoAlerts(out, request, creatorName, account, reqName, today);
+        pushGisBeoAlerts(out, request, creatorName, account, reqName, today, resolved);
+        pushClientFeedbackAlerts(out, request, contactName, creatorName, today, resolved);
     }
     return out;
 }

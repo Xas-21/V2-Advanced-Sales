@@ -86,7 +86,6 @@ interface RequestsManagerProps {
     currency?: CurrencyCode;
 }
 
-const DEFAULT_ROOM_TYPE_OPTIONS = ['Standard', 'Deluxe', 'Suite', 'Villa', 'Executive'];
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
 
 const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft', 'Cancelled'] as const;
@@ -119,9 +118,7 @@ const initialAccommodation = {
     depositDeadline: '',
     paymentDeadline: '',
     mealPlan: 'RO',
-    rooms: [
-        { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
-    ],
+    rooms: [{ id: Date.now(), type: '', occupancy: 'Single', count: 1, rate: 0 }],
     transportation: [] as any[],
     agenda: [] as any[],
     invoices: {
@@ -136,6 +133,19 @@ const initialAccommodation = {
     logs: [] as any[],
     segment: ''
 };
+
+/** Remove all-zero placeholder room rows (keeps series/event+rooms rows that have stay dates). */
+function sanitizeRequestRoomsForSave(rooms: unknown): any[] {
+    const raw = Array.isArray(rooms) ? rooms : [];
+    const cleaned = raw.filter((r: any) => {
+        const c = Number(r?.count ?? 0);
+        const rt = Number(r?.rate ?? 0);
+        if (c > 0 || rt > 0) return true;
+        if (String(r?.arrival || '').trim() || String(r?.departure || '').trim()) return true;
+        return false;
+    });
+    return cleaned.length > 0 ? cleaned : raw;
+}
 
 const initialEvent = {
     requestName: '', leadId: '', accountId: '', confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000), requestDate: new Date().toISOString().split('T')[0],
@@ -237,6 +247,42 @@ export default function RequestsManager({
     // Form Data States
     const [accForm, setAccForm] = useState(initialAccommodation);
     const [evtForm, setEvtForm] = useState(initialEvent);
+
+    const primaryPropertyRoomType = useMemo(() => propertyRoomNames[0] || '', [propertyRoomNames]);
+
+    /** Property-configured names plus any types already on rows (valid `<select>` values while lists load). */
+    const roomTypeSelectOptions = useMemo(() => {
+        const fromProp = propertyRoomNames.filter(Boolean);
+        const seen = new Set(fromProp.map((s) => s.toLowerCase()));
+        const out = [...fromProp];
+        (accForm.rooms || []).forEach((r: any) => {
+            const t = String(r?.type || '').trim();
+            if (t && !seen.has(t.toLowerCase())) {
+                seen.add(t.toLowerCase());
+                out.push(t);
+            }
+        });
+        return out;
+    }, [propertyRoomNames, accForm.rooms]);
+
+    /** If this property has no "Standard" room type, remap placeholder Standard rows to the first configured type. */
+    useEffect(() => {
+        if (!propertyRoomNames.length) return;
+        const hasStandard = propertyRoomNames.some((n) => String(n).toLowerCase() === 'standard');
+        const first = propertyRoomNames[0];
+        if (!first || hasStandard) return;
+        setAccForm((prev) => {
+            let changed = false;
+            const next = (prev.rooms || []).map((r: any) => {
+                if (String(r?.type || '') === 'Standard') {
+                    changed = true;
+                    return { ...r, type: first };
+                }
+                return r;
+            });
+            return changed ? { ...prev, rooms: next } : prev;
+        });
+    }, [propertyRoomNames]);
     const [uploadingDocs, setUploadingDocs] = useState<Record<string, boolean>>({});
     // Combined/Series forms would use similar structures or composite
 
@@ -362,7 +408,7 @@ export default function RequestsManager({
             setAccForm({ 
                 ...initialAccommodation, 
                 id: 'REQ-' + Math.floor(Math.random() * 100000),
-                rooms: [{ id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }],
+                rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: 'Single', count: 1, rate: 0 }],
                 payments: [],
                 logs: [],
                 transportation: [],
@@ -404,7 +450,7 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -459,7 +505,9 @@ export default function RequestsManager({
                 const rData = rRes.ok ? await rRes.json() : [];
                 if (Array.isArray(vData)) setPropertyVenues(vData);
                 if (Array.isArray(rData)) {
-                    const names = rData.map((x: any) => x.name).filter(Boolean);
+                    const names = rData
+                        .map((x: any) => String(x?.name ?? x?.label ?? x?.roomType ?? '').trim())
+                        .filter(Boolean);
                     setPropertyRoomNames(names);
                 }
             } catch {
@@ -543,8 +591,6 @@ export default function RequestsManager({
     const venueOptions = propertyVenues.length
         ? propertyVenues
         : [{ id: 'placeholder', name: '— Add venues in Property Settings —' }];
-
-    const roomTypeSelectOptions = propertyRoomNames.length ? propertyRoomNames : DEFAULT_ROOM_TYPE_OPTIONS;
 
     const defaultVenueName = () => (propertyVenues[0] as any)?.name || '';
 
@@ -874,6 +920,7 @@ export default function RequestsManager({
 
             const payload = {
                 ...formData,
+                rooms: sanitizeRequestRoomsForSave(formData.rooms),
                 id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
                 requestName: formData.requestName || 'Unnamed Request',
                 account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
@@ -1230,6 +1277,7 @@ export default function RequestsManager({
         const roomGridLikeSeries = requestType === 'series' || requestType === 'event_rooms';
 
         const addRoom = () => {
+            const rt = primaryPropertyRoomType || '';
             const newRoom =
                 requestType === 'series' || requestType === 'event_rooms'
                     ? {
@@ -1237,12 +1285,12 @@ export default function RequestsManager({
                           arrival: accForm.checkIn || '',
                           departure: accForm.checkOut || '',
                           nights: 0,
-                          type: 'Standard',
+                          type: rt,
                           occupancy: 'Single',
                           count: 1,
                           rate: 0,
                       }
-                    : { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 };
+                    : { id: Date.now(), type: rt, occupancy: 'Single', count: 1, rate: 0 };
 
             setAccForm({
                 ...accForm,
@@ -1919,7 +1967,14 @@ export default function RequestsManager({
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
                                         <select className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all truncate"
                                             title={room.type}
-                                            value={room.type} onChange={e => updateRoom(room.id, 'type', e.target.value)}>
+                                            value={room.type || ''}
+                                            onChange={e => updateRoom(room.id, 'type', e.target.value)}
+                                        >
+                                            {roomTypeSelectOptions.length === 0 ? (
+                                                <option value="">
+                                                    {primaryPropertyRoomType ? primaryPropertyRoomType : '— Add room types in Property Settings —'}
+                                                </option>
+                                            ) : null}
                                             {roomTypeSelectOptions.map((name) => (
                                                 <option key={name} value={name}>{name}</option>
                                             ))}
@@ -3282,7 +3337,7 @@ export default function RequestsManager({
                     <div>
                         <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>{`Amount (${selectedCurrency})`}</label>
                         <input type="number" value={newPayment.amount || ''} onChange={e => setNewPayment({ ...newPayment, amount: Number(e.target.value) })}
-                            className="w-full px-4 py-4 rounded-xl border bg-black/20 outline-none text-2xl font-mono font-black text-right"
+                            className="w-full px-4 py-4 rounded-xl border bg-black/20 outline-none text-2xl font-mono font-black text-center tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             style={{ borderColor: colors.border, color: '#10b981' }} />
                     </div>
                     <div>
@@ -3505,7 +3560,7 @@ export default function RequestsManager({
                 lines.push({
                     checkIn,
                     checkOut,
-                    roomType: String(g?.type || g?.roomType || 'Standard'),
+                    roomType: String(g?.type || g?.roomType || '').trim() || (propertyRoomNames[0] || '—'),
                     occupancy: String(g?.occupancy || 'N/A'),
                     roomCount,
                     rate,
@@ -3529,7 +3584,7 @@ export default function RequestsManager({
             lines.push({
                 checkIn,
                 checkOut,
-                roomType: String(r?.type || r?.roomType || 'Standard'),
+                roomType: String(r?.type || r?.roomType || '').trim() || (propertyRoomNames[0] || '—'),
                 occupancy: String(r?.occupancy || 'N/A'),
                 roomCount,
                 rate,

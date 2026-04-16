@@ -116,6 +116,11 @@ import {
     resolveAccountTypesForProperty,
     TAXONOMY_CHANGED_EVENT,
 } from './propertyTaxonomy';
+import {
+    ALERT_SETTINGS_CHANGED_EVENT,
+    resolveAlertSettingsForProperty,
+    shouldCreateTaskForAlertKind,
+} from './propertyAlertSettings';
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
@@ -4112,11 +4117,18 @@ export default function AdvancedSalesDashboard() {
             if (Object.keys(patch).length) mergeIntoProperty(String(d.propertyId), patch);
             setTaxonomyRefresh((n) => n + 1);
         };
+        const onAlertSettings = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; alertSettings?: unknown }>).detail;
+            if (!d?.propertyId || d.alertSettings == null) return;
+            mergeIntoProperty(String(d.propertyId), { alertSettings: d.alertSettings });
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        window.addEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+            window.removeEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
         };
     }, []);
 
@@ -4200,6 +4212,11 @@ export default function AdvancedSalesDashboard() {
         return (sharedRequests || []).filter((r: any) => !pid || !r.propertyId || r.propertyId === pid);
     }, [sharedRequests, activeProperty?.id]);
 
+    const propertyAlertPrefs = useMemo(
+        () => resolveAlertSettingsForProperty(String(activeProperty?.id || ''), activeProperty),
+        [activeProperty?.id, activeProperty?.alertSettings],
+    );
+
     const activeAlerts = useMemo(() => {
         const pid = activeProperty?.id;
         if (!pid) return [];
@@ -4208,17 +4225,80 @@ export default function AdvancedSalesDashboard() {
             contactName: resolveContactForAlert(r),
             creatorName: resolveCreatorForAlert(r),
         }));
-        const raw = computeAllRequestAlerts(inputs, new Date());
+        const raw = computeAllRequestAlerts(inputs, new Date(), propertyAlertPrefs);
         const today = localDateKey(new Date());
         return raw.filter((a) => !isDismissedForDate(dismissMap, a.dismissKey, today));
     }, [
         scopedRequests,
         dismissMap,
         activeProperty?.id,
+        propertyAlertPrefs,
         resolveContactForAlert,
         resolveCreatorForAlert,
         alertDayKey,
         alertUserKey,
+    ]);
+
+    const canMutateOps = canMutateOperational(currentUser);
+    useEffect(() => {
+        if (!canMutateOps) return;
+        const pid = activeProperty?.id;
+        if (!pid) return;
+        const settings = resolveAlertSettingsForProperty(String(pid), activeProperty);
+        const today = localDateKey(new Date());
+        const inputs = scopedRequests.map((r: any) => ({
+            request: r,
+            contactName: resolveContactForAlert(r),
+            creatorName: resolveCreatorForAlert(r),
+        }));
+        const raw = computeAllRequestAlerts(inputs, new Date(), settings);
+        const visible = raw.filter((a) => !isDismissedForDate(dismissMap, a.dismissKey, today));
+
+        setTasks((prev) => {
+            const additions: any[] = [];
+            for (const a of visible) {
+                if (!shouldCreateTaskForAlertKind(settings, a.kind)) continue;
+                if (prev.some((t: any) => String(t.alertDismissKey) === String(a.dismissKey))) continue;
+                const req = scopedRequests.find((x: any) => String(x.id) === String(a.requestId));
+                if (!req) continue;
+                const ownerId = req.createdByUserId;
+                if (ownerId == null || String(ownerId).trim() === '') continue;
+                const u = (systemUsers || []).find((x: any) => String(x.id) === String(ownerId));
+                const ownerName = String(u?.name || u?.username || '').trim();
+                if (!ownerName) continue;
+                const acc = getAccountForRequest(req, accounts);
+                const client = String(acc?.name || req?.account || req?.accountName || '—').trim();
+                additions.push({
+                    id: `T-auto-${String(a.dismissKey).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                    task: a.title,
+                    client,
+                    date: a.anchorDate || today,
+                    priority: a.urgent ? 'High' : 'Medium',
+                    assignees: [{ id: String(ownerId), name: ownerName }],
+                    assignedTo: ownerName,
+                    description: a.body,
+                    category: 'Follow-up',
+                    star: Boolean(a.urgent),
+                    completed: false,
+                    propertyId: String(pid),
+                    alertDismissKey: a.dismissKey,
+                    alertKind: a.kind,
+                });
+            }
+            if (!additions.length) return prev;
+            skipNextTasksSync.current = true;
+            return [...additions, ...prev];
+        });
+    }, [
+        canMutateOps,
+        activeProperty,
+        scopedRequests,
+        dismissMap,
+        resolveContactForAlert,
+        resolveCreatorForAlert,
+        systemUsers,
+        accounts,
+        alertDayKey,
     ]);
 
     const handleAlertDone = useCallback(
