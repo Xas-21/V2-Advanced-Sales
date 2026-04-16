@@ -97,6 +97,19 @@ interface RequestsManagerProps {
 
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
 
+/** WCAG relative luminance for `#RRGGBB` — pick rooms-grid row palette from app background. */
+function screenLuminanceFromHex(hex: string): number {
+    const raw = String(hex || '').trim();
+    const m = raw.match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return 0.5;
+    const v = parseInt(m[1], 16);
+    const r = ((v >> 16) & 255) / 255;
+    const g = ((v >> 8) & 255) / 255;
+    const b = (v & 255) / 255;
+    const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
 const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft', 'Cancelled'] as const;
 const DEFAULT_CXL_REASONS = ['Price too high', 'Changed dates', 'Destination change', 'Budget issues', 'Group cancelled', 'Competitor offer', 'Other'];
 const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
@@ -202,6 +215,12 @@ export default function RequestsManager({
     currency = 'SAR',
 }: RequestsManagerProps) {
     const colors = theme.colors;
+    /** Saturated status row fills only when the shell is a dark theme (luxury / colorful). */
+    const gridRoomsThemeDark = useMemo(
+        () => screenLuminanceFromHex(String(colors.bg || '#ffffff')) < 0.34,
+        [colors.bg]
+    );
+    const gridRoomsRowText = gridRoomsThemeDark ? '#f8fafc' : colors.textMain;
     const selectedCurrency = resolveCurrencyCode(currency);
     const formatMoney = (amountSar: number, maxFractionDigits = 2) =>
         formatCurrencyAmount(amountSar, selectedCurrency, { maximumFractionDigits: maxFractionDigits });
@@ -347,6 +366,8 @@ export default function RequestsManager({
     const [gisTargetRequestId, setGisTargetRequestId] = useState<string | null>(null);
     const [gisBillingDraft, setGisBillingDraft] = useState('');
     const [gisOpsNotesDraft, setGisOpsNotesDraft] = useState('');
+    /** `HH:MM` (24h) from `<input type="time" />`; persisted on request as `gisExpectedArrivalTime`. */
+    const [gisExpectedArrivalTimeDraft, setGisExpectedArrivalTimeDraft] = useState('');
     /** Series only: map `rooms` row index → include in GIS / print (default true when opened). */
     const [gisSeriesRowInclude, setGisSeriesRowInclude] = useState<Record<number, boolean>>({});
     const [requestAlertsModalId, setRequestAlertsModalId] = useState<string | null>(null);
@@ -3774,6 +3795,7 @@ export default function RequestsManager({
                                         setGisTargetRequestId(req.id);
                                         setGisBillingDraft(String(req.gisBillingInstructions ?? ''));
                                         setGisOpsNotesDraft(String(req.gisOperationalNotes ?? ''));
+                                        setGisExpectedArrivalTimeDraft(String(req.gisExpectedArrivalTime ?? '').trim());
                                         if (normalizeRequestTypeKey(req.requestType) === 'series') {
                                             const inc: Record<number, boolean> = {};
                                             (Array.isArray(req.rooms) ? req.rooms : []).forEach((g: any, gi: number) => {
@@ -4258,6 +4280,14 @@ export default function RequestsManager({
                                                     alert('Select at least one check-in block (series) or ensure room lines exist before printing.');
                                                     return;
                                                 }
+                                                const arrivalTime = String(gisExpectedArrivalTimeDraft || '').trim();
+                                                if (!arrivalTime) {
+                                                    alert(
+                                                        'Expected arrival time is required before printing the GIS.\n\n' +
+                                                            'Enter the time the group is expected to arrive at the property, then try Print again.'
+                                                    );
+                                                    return;
+                                                }
                                                 const popup = window.open('', '_blank', 'width=1200,height=900');
                                                 if (!popup) return;
                                                 const esc = (v: any) =>
@@ -4317,7 +4347,7 @@ export default function RequestsManager({
                                                         <div><h2 style="margin:0;">Group Information Sheet (GIS)</h2><div>${activeProperty?.name || 'Property'}</div></div>
                                                         ${activeProperty?.logoUrl ? `<img src="${activeProperty.logoUrl}" style="height:56px;max-width:160px;object-fit:contain;" />` : ''}
                                                     </div>
-                                                    <p><b>Company:</b> ${esc(gisReq.account || gisReq.accountName || '—')}<br/><b>Group:</b> ${esc(gisReq.requestName || gisReq.confirmationNo || gisReq.id || '—')}<br/><b>Type:</b> ${esc(gisReq.requestType || gisType)}<br/><b>Status:</b> ${esc(gisReq.status || '—')}</p>
+                                                    <p><b>Company:</b> ${esc(gisReq.account || gisReq.accountName || '—')}<br/><b>Group:</b> ${esc(gisReq.requestName || gisReq.confirmationNo || gisReq.id || '—')}<br/><b>Type:</b> ${esc(gisReq.requestType || gisType)}<br/><b>Status:</b> ${esc(gisReq.status || '—')}<br/><b>Expected arrival time:</b> ${esc(arrivalTime)}</p>
                                                     <div class="box">
                                                         <b>Contacts</b>
                                                         <table>
@@ -4356,22 +4386,25 @@ export default function RequestsManager({
                                                 await updateRequest(gisTargetRequestId, {
                                                     gisBillingInstructions: gisBillingDraft,
                                                     gisOperationalNotes: gisOpsNotesDraft,
+                                                    gisExpectedArrivalTime: String(gisExpectedArrivalTimeDraft || '').trim(),
                                                 });
                                                 if (selectedRequest?.id === gisTargetRequestId) {
                                                     setSelectedRequest((prev: any) => prev ? {
                                                         ...prev,
                                                         gisBillingInstructions: gisBillingDraft,
                                                         gisOperationalNotes: gisOpsNotesDraft,
+                                                        gisExpectedArrivalTime: String(gisExpectedArrivalTimeDraft || '').trim(),
                                                     } : null);
                                                 }
                                                 setShowGisModal(false);
                                                 setGisTargetRequestId(null);
                                                 setGisSeriesRowInclude({});
+                                                setGisExpectedArrivalTimeDraft('');
                                             }}
                                             className="px-4 py-2 rounded-xl border font-bold text-xs"
                                             style={{ borderColor: colors.border, color: colors.textMain }}
                                         >
-                                            Save GIS Notes
+                                            Save GIS informations
                                         </button>
                                         <button
                                             type="button"
@@ -4379,6 +4412,7 @@ export default function RequestsManager({
                                                 setShowGisModal(false);
                                                 setGisTargetRequestId(null);
                                                 setGisSeriesRowInclude({});
+                                                setGisExpectedArrivalTimeDraft('');
                                             }}
                                             className="px-4 py-2 rounded-xl border font-bold text-xs"
                                             style={{ borderColor: colors.border, color: colors.textMain }}
@@ -4388,6 +4422,30 @@ export default function RequestsManager({
                                     </div>
                                 </div>
                                 <div className="flex-1 overflow-auto p-6 custom-scrollbar">
+                                    <div
+                                        className="p-4 rounded-xl border-2 mb-5"
+                                        style={{ borderColor: colors.primary + '66', backgroundColor: colors.primary + '0d' }}
+                                    >
+                                        <label
+                                            htmlFor="gis-expected-arrival-time"
+                                            className="block text-xs font-black uppercase tracking-wide"
+                                            style={{ color: colors.textMain }}
+                                        >
+                                            Expected arrival time{' '}
+                                            <span className="text-red-500 normal-case font-black">(required to print GIS)</span>
+                                        </label>
+                                        <p className="text-[11px] mt-1 mb-2 leading-snug" style={{ color: colors.textMuted }}>
+                                            The time the group is expected to arrive at the property. This value is saved with the GIS and must be set before you print.
+                                        </p>
+                                        <input
+                                            id="gis-expected-arrival-time"
+                                            type="time"
+                                            value={gisExpectedArrivalTimeDraft}
+                                            onChange={(e) => setGisExpectedArrivalTimeDraft(e.target.value)}
+                                            className="w-full max-w-[220px] px-3 py-2 rounded-xl border text-sm font-bold"
+                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                        />
+                                    </div>
                                     <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
                                         <div>
                                             <h2 className="text-2xl font-black" style={{ color: colors.textMain }}>GIS — {gisReq.confirmationNo || gisReq.id}</h2>
@@ -4671,8 +4729,30 @@ export default function RequestsManager({
         return colors[Math.abs(hash) % colors.length];
     };
 
-    /** Bright accent for status text, dots, and light cell overlays (matches classic grid legend). */
+    /** Status chroma for request list, kanban rows, and UI dots (theme tokens — not grid row fills). */
     const getStatusColor = (status: string) => {
+        const s = String(status || '').trim().toLowerCase();
+        switch (s) {
+            case 'inquiry':
+                return colors.textMuted;
+            case 'accepted':
+                return colors.yellow;
+            case 'tentative':
+                return colors.blue;
+            case 'definite':
+                return colors.green;
+            case 'actual':
+                return '#059669';
+            case 'lost':
+            case 'cancelled':
+                return colors.red;
+            default:
+                return colors.primary;
+        }
+    };
+
+    /** Bright accent for rooms grid only (left bar + status label on tinted row backgrounds). */
+    const getGridRoomsStatusAccent = (status: string) => {
         const s = String(status || '').trim().toLowerCase();
         switch (s) {
             case 'inquiry':
@@ -4694,31 +4774,48 @@ export default function RequestsManager({
     };
 
     /**
-     * Solid fill for rooms grid: company, group, and day cells with room counts (legacy UI).
-     * Reference tones: Accepted `#63481D`, Actual `#163020`.
+     * Solid fill for rooms grid: company, group, and day cells with room counts.
+     * Dark themes: legacy browns/greens; light themes: soft pastels on blue/white/desert.
      */
     const getGridRoomsRowBackground = (status: string) => {
         const s = String(status || '').trim().toLowerCase();
+        if (gridRoomsThemeDark) {
+            switch (s) {
+                case 'inquiry':
+                    return '#2a3544';
+                case 'accepted':
+                    return '#63481D';
+                case 'tentative':
+                    return '#1e3a5f';
+                case 'definite':
+                    return '#1a452d';
+                case 'actual':
+                    return '#163020';
+                case 'lost':
+                case 'cancelled':
+                    return '#3f1519';
+                default:
+                    return '#2a3544';
+            }
+        }
         switch (s) {
             case 'inquiry':
-                return '#2a3544';
+                return '#e2e8f0';
             case 'accepted':
-                return '#63481D';
+                return '#fde68a';
             case 'tentative':
-                return '#1e3a5f';
+                return '#bfdbfe';
             case 'definite':
-                return '#1a452d';
+                return '#bbf7d0';
             case 'actual':
-                return '#163020';
+                return '#86efac';
             case 'lost':
             case 'cancelled':
-                return '#3f1519';
+                return '#fecaca';
             default:
-                return '#2a3544';
+                return '#e2e8f0';
         }
     };
-
-    const GRID_ROOMS_ROW_TEXT = '#f8fafc';
 
     const toShortPackage = (pkg: string) => {
         const p = String(pkg || '').toLowerCase().trim();
@@ -5502,11 +5599,11 @@ export default function RequestsManager({
                                                     style={{
                                                         borderColor: colors.border,
                                                         backgroundColor: rowBg,
-                                                        color: GRID_ROOMS_ROW_TEXT,
+                                                        color: gridRoomsRowText,
                                                         minWidth: companyColWidth,
                                                         width: companyColWidth,
                                                         maxWidth: companyColWidth,
-                                                        borderLeft: `3px solid ${getStatusColor(row.status)}`,
+                                                        borderLeft: `3px solid ${getGridRoomsStatusAccent(row.status)}`,
                                                         boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
                                                         zIndex: pinnedBodyZ,
                                                     }}
@@ -5519,7 +5616,7 @@ export default function RequestsManager({
                                                         left: companyColWidth,
                                                         borderColor: colors.border,
                                                         backgroundColor: rowBg,
-                                                        color: GRID_ROOMS_ROW_TEXT,
+                                                        color: gridRoomsRowText,
                                                         minWidth: groupColWidth,
                                                         width: groupColWidth,
                                                         maxWidth: groupColWidth,
@@ -5538,7 +5635,7 @@ export default function RequestsManager({
                                                             className="border px-1 py-1 text-center relative font-semibold"
                                                             style={{
                                                                 borderColor: colors.border,
-                                                                color: value > 0 ? GRID_ROOMS_ROW_TEXT : colors.textMuted,
+                                                                color: value > 0 ? gridRoomsRowText : colors.textMuted,
                                                                 backgroundColor: value > 0 ? rowBg : colors.bg,
                                                                 zIndex: dayCellZ,
                                                             }}
@@ -5547,12 +5644,12 @@ export default function RequestsManager({
                                                         </td>
                                                     );
                                                 })}
-                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.totalRoomNights}</td>
-                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: getStatusColor(row.status), backgroundColor: rowBg }}>{row.status}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.paymentStatus}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.offerDeadline || '—'}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.depositDeadline || '—'}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.paymentDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: gridRoomsRowText, backgroundColor: rowBg }}>{row.totalRoomNights}</td>
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: getGridRoomsStatusAccent(row.status), backgroundColor: rowBg }}>{row.status}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: gridRoomsRowText, backgroundColor: rowBg }}>{row.paymentStatus}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: gridRoomsRowText, backgroundColor: rowBg }}>{row.offerDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: gridRoomsRowText, backgroundColor: rowBg }}>{row.depositDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: gridRoomsRowText, backgroundColor: rowBg }}>{row.paymentDeadline || '—'}</td>
                                             </tr>
                                             );
                                         })}
