@@ -936,6 +936,10 @@ const CalendarView = ({
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
+    /** 0 = Sunday … 6 = Saturday, aligned with `days` header */
+    const firstWeekdayOfMonth = new Date(year, month, 1).getDay();
+    const monthGridCells = firstWeekdayOfMonth + daysInMonth;
+    const trailingPadDays = Math.ceil(monthGridCells / 7) * 7 - monthGridCells;
     const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
 
     const displayEvents = useMemo(() => {
@@ -1151,14 +1155,22 @@ const CalendarView = ({
                     ))}
                 </div>
                 <div className="grid grid-cols-7 flex-1 auto-rows-fr">
+                    {Array.from({ length: firstWeekdayOfMonth }).map((_, i) => (
+                        <div
+                            key={`empty-start-${i}`}
+                            className={`border-r-2 border-b-2 min-h-[110px] ${i % 7 === 6 ? 'border-r-0' : ''}`}
+                            style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }}
+                        />
+                    ))}
                     {Array.from({ length: daysInMonth }).map((_, i) => {
                         const dayNum = i + 1;
+                        const cellIndex = firstWeekdayOfMonth + i;
                         const dayYmd = `${monthPrefix}-${String(dayNum).padStart(2, '0')}`;
                         const dayEvents = displayEvents.filter((e: any) => e.ymd === dayYmd);
                         const now = new Date();
                         const isToday = now.getFullYear() === year && now.getMonth() === month && now.getDate() === dayNum;
                         return (
-                            <div key={dayNum} className={`border-r-2 border-b-2 p-1.5 min-h-[110px] relative group hover:bg-white/5 transition-colors ${dayNum % 7 === 0 ? 'border-r-0' : ''}`}
+                            <div key={dayNum} className={`border-r-2 border-b-2 p-1.5 min-h-[110px] relative group hover:bg-white/5 transition-colors ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
                                 style={{ borderColor: colors.border }}>
                                 <div className="flex justify-between items-center mb-1">
                                     <span className={`text-xs font-bold ${isToday ? 'bg-red-500 text-white w-5 h-5 flex items-center justify-center rounded-full text-[10px]' : ''}`}
@@ -1210,10 +1222,16 @@ const CalendarView = ({
                             </div>
                         );
                     })}
-                    {/* Fill remaining cells to complete the grid */}
-                    {Array.from({ length: (Math.ceil(daysInMonth / 7) * 7) - daysInMonth }).map((_, i) => (
-                        <div key={`empty-end-${i}`} className="border-r-2 border-b-2 min-h-[110px]" style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }} />
-                    ))}
+                    {Array.from({ length: trailingPadDays }).map((_, i) => {
+                        const cellIndex = firstWeekdayOfMonth + daysInMonth + i;
+                        return (
+                            <div
+                                key={`empty-end-${i}`}
+                                className={`border-r-2 border-b-2 min-h-[110px] ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
+                                style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }}
+                            />
+                        );
+                    })}
                 </div>
             </div>
         </div>
