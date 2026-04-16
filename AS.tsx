@@ -3703,15 +3703,52 @@ export default function AdvancedSalesDashboard() {
             .catch(() => {});
     }, []);
 
+    const terminateSessionAndShowLogin = useCallback(() => {
+        setCurrentUser(null);
+        setIsAuthenticated(false);
+        setShowLoginPage(true);
+        setCurrentView('dashboard');
+    }, []);
+
     useEffect(() => {
         refreshSystemUsers();
     }, [refreshSystemUsers]);
+
+    useEffect(() => {
+        const onFocus = () => refreshSystemUsers();
+        window.addEventListener('focus', onFocus);
+        return () => window.removeEventListener('focus', onFocus);
+    }, [refreshSystemUsers]);
+
+    useEffect(() => {
+        const myId = currentUser?.id != null ? String(currentUser.id) : null;
+        if (!myId) return;
+        const onStorage = (e: StorageEvent) => {
+            if (e.key !== 'as_force_relogin' || !e.newValue) return;
+            try {
+                const j = JSON.parse(e.newValue) as { userId?: string };
+                if (String(j.userId) === myId) {
+                    terminateSessionAndShowLogin();
+                }
+            } catch {
+                /* ignore */
+            }
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, [currentUser?.id, terminateSessionAndShowLogin]);
 
     /** Keep session user aligned with server (permissions, role) after login or staff directory refresh. */
     useEffect(() => {
         if (!currentUser?.id || !Array.isArray(systemUsers) || systemUsers.length === 0) return;
         const fresh = systemUsers.find((u: any) => String(u?.id) === String(currentUser.id));
         if (!fresh) return;
+        const serverV = Number((fresh as any).sessionVersion ?? 0);
+        const localV = Number((currentUser as any).sessionVersion ?? 0);
+        if (serverV !== localV) {
+            terminateSessionAndShowLogin();
+            return;
+        }
         const keys = ['role', 'permissionGrants', 'permissionRevokes', 'propertyId', 'name', 'email', 'username', 'status'] as const;
         const patch: Record<string, unknown> = {};
         for (const k of keys) {
@@ -3722,7 +3759,7 @@ export default function AdvancedSalesDashboard() {
         if (Object.keys(patch).length > 0) {
             setCurrentUser((prev: any) => (prev ? { ...prev, ...patch } : prev));
         }
-    }, [systemUsers, currentUser?.id]);
+    }, [systemUsers, currentUser?.id, currentUser?.sessionVersion, terminateSessionAndShowLogin]);
 
     const taskAssignableUsers = useMemo(() => {
         const ap = activeProperty;
@@ -5961,6 +5998,7 @@ export default function AdvancedSalesDashboard() {
                             onOpenTasks={() => setCurrentView('todo')}
                             currency={currentCurrency}
                             onUsersDirectoryChange={refreshSystemUsers}
+                            onRequireReLogin={terminateSessionAndShowLogin}
                         />
                     ) : currentView === 'todo' ? (
                         <ToDoView tasks={tasks} setTasks={setTasks} handleOpenTaskModal={handleOpenTaskModal} handleToggleTaskComplete={handleToggleTaskComplete} colors={colors} theme={theme} activePropertyId={activeProperty?.id} canMutateOperational={canMutateOperational(currentUser)} currentUser={currentUser} />

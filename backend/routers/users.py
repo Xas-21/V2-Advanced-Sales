@@ -5,11 +5,21 @@ from utils import USERS_FILE, read_json_file, write_json_file
 
 router = APIRouter(prefix="/api/users")
 
+
+def _next_session_version(user: dict) -> int:
+    return int(user.get("sessionVersion") or 0) + 1
+
+
 @router.get("")
 def get_users():
     users = read_json_file(USERS_FILE)
-    # Filter passwords for safety
-    return [{k: v for k, v in user.items() if k != "password"} for user in users]
+    # Filter passwords for safety; always expose sessionVersion for client auth alignment
+    out = []
+    for user in users:
+        row = {k: v for k, v in user.items() if k != "password"}
+        row["sessionVersion"] = int(user.get("sessionVersion") or 0)
+        out.append(row)
+    return out
 
 @router.post("")
 def create_or_update_user(user_data: dict):
@@ -26,10 +36,16 @@ def create_or_update_user(user_data: dict):
         user_data["username"] = user_data.get("name", "").split(" ")[0].lower()
         
     if existing_idx >= 0:
+        prev = users[existing_idx]
         # Preserve existing passwords if untouched
         if "password" not in user_data or user_data["password"] == "":
-            user_data["password"] = users[existing_idx].get("password", "password123")
-        users[existing_idx] = {**users[existing_idx], **user_data}
+            user_data["password"] = prev.get("password", "password123")
+        else:
+            new_pw = user_data["password"]
+            old_pw = prev.get("password", "password123")
+            if new_pw != old_pw:
+                user_data["sessionVersion"] = _next_session_version(prev)
+        users[existing_idx] = {**prev, **user_data}
     else:
         if not user_data.get("id"):
             user_data["id"] = f"U-{uuid.uuid4().hex[:10]}"

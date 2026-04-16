@@ -25,16 +25,51 @@ def test_root():
 
 
 def test_login_success_sets_cookie_and_user_shape():
+    # Use demo123 so this passes with either JSON-file users or Postgres-seeded users.
     r = client.post(
         "/api/login",
-        json={"username": "Abdullah", "password": "password123"},
+        json={"username": "Abdullah", "password": "demo123"},
     )
     assert r.status_code == 200
     data = r.json()
     assert "user" in data
     assert data["user"].get("username") == "Abdullah"
     assert "password" not in data["user"]
+    assert "sessionVersion" in data["user"]
+    assert isinstance(data["user"].get("sessionVersion"), int)
     assert "session_id" in r.cookies
+
+
+def test_change_password_then_login_with_new():
+    u = "Abdullah"
+    old_pw = "password123"
+    new_pw = "password123_tmp_rot9xx"
+    r_bad = client.post(
+        "/api/auth/change-password",
+        json={"username": u, "current_password": "wrong", "new_password": "aaaa"},
+    )
+    assert r_bad.status_code == 401
+
+    r_ok = client.post(
+        "/api/auth/change-password",
+        json={"username": u, "current_password": "demo123", "new_password": new_pw},
+    )
+    assert r_ok.status_code == 200
+    assert r_ok.json().get("ok") is True
+    assert isinstance(r_ok.json().get("sessionVersion"), int)
+
+    r_old = client.post("/api/login", json={"username": u, "password": old_pw})
+    assert r_old.status_code == 401
+
+    r_new = client.post("/api/login", json={"username": u, "password": new_pw})
+    assert r_new.status_code == 200
+
+    # Restore password for other tests / dev data
+    r_restore = client.post(
+        "/api/auth/change-password",
+        json={"username": u, "current_password": new_pw, "new_password": old_pw},
+    )
+    assert r_restore.status_code == 200
 
 
 def test_login_invalid():
@@ -59,6 +94,8 @@ def test_get_users():
     assert isinstance(users, list)
     for u in users:
         assert "password" not in u
+        assert "sessionVersion" in u
+        assert isinstance(u.get("sessionVersion"), int)
 
 
 def test_get_properties():

@@ -79,6 +79,8 @@ interface SettingsProps {
     currency?: CurrencyCode;
     /** Refetch `/api/users` so other sessions (and sidebar permissions) stay in sync. */
     onUsersDirectoryChange?: () => void;
+    /** Clear local session and show login (e.g. after password change invalidates other tabs). */
+    onRequireReLogin?: () => void;
 }
 
 // Mock Data
@@ -117,6 +119,7 @@ export default function Settings({
     onOpenTasks,
     currency = 'SAR',
     onUsersDirectoryChange,
+    onRequireReLogin,
 }: SettingsProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -157,6 +160,67 @@ export default function Settings({
     const [selectedUserForStats, setSelectedUserForStats] = useState<any>(null);
     const [showResetPassword, setShowResetPassword] = useState(false);
     const [resetPasswordData, setResetPasswordData] = useState({ current: '', new: '', confirm: '' });
+    const [resetPasswordBusy, setResetPasswordBusy] = useState(false);
+
+    const handleProfileChangePassword = async () => {
+        const username = String(currentUser?.username ?? '').trim();
+        if (!username) {
+            alert('Missing username on your profile. Contact an administrator.');
+            return;
+        }
+        if (!resetPasswordData.current) {
+            alert('Enter your current password.');
+            return;
+        }
+        if (resetPasswordData.new.length < 4) {
+            alert('New password must be at least 4 characters.');
+            return;
+        }
+        if (resetPasswordData.new !== resetPasswordData.confirm) {
+            alert('New password and confirmation do not match.');
+            return;
+        }
+        setResetPasswordBusy(true);
+        try {
+            const res = await fetch(apiUrl('/api/auth/change-password'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username,
+                    current_password: resetPasswordData.current,
+                    new_password: resetPasswordData.new,
+                }),
+            });
+            const raw = await res.text();
+            let detail: string | undefined;
+            try {
+                const j = JSON.parse(raw);
+                detail = typeof j?.detail === 'string' ? j.detail : Array.isArray(j?.detail) ? j.detail[0]?.msg : undefined;
+            } catch {
+                detail = raw?.slice(0, 200);
+            }
+            if (!res.ok) {
+                alert(detail || 'Could not update password.');
+                return;
+            }
+            try {
+                localStorage.setItem(
+                    'as_force_relogin',
+                    JSON.stringify({ userId: String(currentUser.id), at: Date.now() }),
+                );
+            } catch {
+                /* ignore quota / private mode */
+            }
+            setResetPasswordData({ current: '', new: '', confirm: '' });
+            setShowResetPassword(false);
+            onUsersDirectoryChange?.();
+            onRequireReLogin?.();
+        } catch {
+            alert('Could not reach the server. Is the backend running?');
+        } finally {
+            setResetPasswordBusy(false);
+        }
+    };
 
     // Tax Config - Refactored for per-tax scope
     const [taxes, setTaxes] = useState<any[]>([
@@ -1481,11 +1545,13 @@ export default function Settings({
                                         value={resetPasswordData.confirm} onChange={e => setResetPasswordData({ ...resetPasswordData, confirm: e.target.value })} />
                                 </div>
                                 <button
-                                    className="w-full py-4 rounded-xl font-bold transition-all"
+                                    type="button"
+                                    disabled={resetPasswordBusy}
+                                    className="w-full py-4 rounded-xl font-bold transition-all disabled:opacity-50"
                                     style={{ backgroundColor: colors.primary, color: '#000' }}
-                                    onClick={() => { alert('Password Updated'); setShowResetPassword(false); }}
+                                    onClick={() => void handleProfileChangePassword()}
                                 >
-                                    Save New Credentials
+                                    {resetPasswordBusy ? 'Saving…' : 'Save New Credentials'}
                                 </button>
                             </div>
                         </div>
