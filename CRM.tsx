@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     Users, Phone, Mail, MapPin, Tag, TrendingUp, DollarSign,
     Calendar, MessageSquare, FileText, MoreVertical, X, ArrowRight,
@@ -206,6 +206,9 @@ export default function CRM({
     };
 
     const [listMenuLeadId, setListMenuLeadId] = useState<string | null>(null);
+    /** false = oldest → newest (default); true = newest → oldest */
+    const [listSortNewestFirst, setListSortNewestFirst] = useState(false);
+    const crmAccountComboRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (!listMenuLeadId) return;
@@ -215,6 +218,20 @@ export default function CRM({
         document.addEventListener('mousedown', onDoc);
         return () => document.removeEventListener('mousedown', onDoc);
     }, [listMenuLeadId]);
+
+    useEffect(() => {
+        if (!showAddCallModal) return;
+        const onDoc = (e: MouseEvent) => {
+            const el = crmAccountComboRef.current;
+            if (el && !el.contains(e.target as Node)) setShowAccountDropdown(false);
+        };
+        document.addEventListener('mousedown', onDoc);
+        return () => document.removeEventListener('mousedown', onDoc);
+    }, [showAddCallModal]);
+
+    useEffect(() => {
+        if (showAddCallModal) setShowAccountDropdown(false);
+    }, [showAddCallModal]);
 
     const [showEditCallModal, setShowEditCallModal] = useState(false);
     const [editCallForm, setEditCallForm] = useState({
@@ -235,6 +252,14 @@ export default function CRM({
 
     // Calculate stats (respect visible month filter)
     const allLeads = Object.values(crmLeadsForView).flat();
+    const listSortedLeads = useMemo(() => {
+        const leads = Object.values(crmLeadsForView).flat();
+        const leadSortYmd = (l: any) => String(l.lastContact || l.date || '').trim() || '';
+        return [...leads].sort((a, b) => {
+            const cmp = leadSortYmd(a).localeCompare(leadSortYmd(b));
+            return listSortNewestFirst ? -cmp : cmp;
+        });
+    }, [crmLeadsForView, listSortNewestFirst]);
     const totalLeads = allLeads.length;
     const pipelineValue = allLeads.reduce((sum: number, l: any) => sum + Number(l.value || 0), 0);
     const avgDealSize = totalLeads > 0 ? pipelineValue / totalLeads : 0;
@@ -697,7 +722,21 @@ export default function CRM({
             <div className="flex-1 overflow-hidden flex flex-col p-4 pt-2">
                 {currentView === 'list' ? (
                     <div className="flex-1 rounded-xl border overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div className="overflow-y-auto h-full scrollbar-thin">
+                        <div className="shrink-0 flex flex-wrap items-center justify-end gap-2 px-4 py-2 border-b" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                            <button
+                                type="button"
+                                onClick={() => setListSortNewestFirst((v) => !v)}
+                                className="text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-lg border transition-colors"
+                                style={{
+                                    borderColor: colors.border,
+                                    color: colors.textMain,
+                                    backgroundColor: listSortNewestFirst ? colors.primary + '28' : 'transparent',
+                                }}
+                            >
+                                {listSortNewestFirst ? 'Oldest → Newest' : 'Newest → Oldest'}
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto h-full scrollbar-thin flex-1 min-h-0">
                             <table className="w-full text-left border-collapse">
                                 <thead className="sticky top-0 z-10 text-[10px] uppercase tracking-wider font-semibold" style={{ backgroundColor: colors.bg, color: colors.textMuted, borderBottom: `1px solid ${colors.border}` }}>
                                     <tr>
@@ -706,12 +745,12 @@ export default function CRM({
                                         <th className="px-6 py-4">Current Stage</th>
                                         <th className="px-6 py-4">Valuation</th>
                                         <th className="px-6 py-4">Prob.</th>
-                                        <th className="px-6 py-4">Last Contact</th>
+                                        <th className="px-6 py-4">Date</th>
                                         <th className="px-6 py-4 text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-xs">
-                                    {allLeads.map((lead: any) => {
+                                    {listSortedLeads.map((lead: any) => {
                                         const stage = stages.find(s => crmLeads[s.id as keyof typeof crmLeads].some((l: any) => l.id === lead.id));
                                         return (
                                             <tr key={lead.id}
@@ -905,7 +944,7 @@ export default function CRM({
                             <div className="relative">
                                 <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Account Name</label>
                                 <div className="flex gap-2">
-                                    <div className="relative flex-1">
+                                    <div className="relative flex-1" ref={crmAccountComboRef}>
                                         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: colors.textMuted }} />
                                         <input
                                             type="text"

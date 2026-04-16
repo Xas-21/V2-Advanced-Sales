@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Search, Plus, Check, X } from 'lucide-react';
 
 interface AddSalesCallModalProps {
@@ -15,6 +15,7 @@ export default function AddSalesCallModal({ isOpen, onClose, onSave, onCreateAcc
     const colors = theme.colors;
     const [accountSearch, setAccountSearch] = useState('');
     const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+    const accountComboRef = useRef<HTMLDivElement>(null);
 
     // Initialize with default data
     const [newCallData, setNewCallData] = useState({
@@ -46,7 +47,18 @@ export default function AddSalesCallModal({ isOpen, onClose, onSave, onCreateAcc
                 followUpDate: ''
             });
             setAccountSearch('');
+            setShowAccountDropdown(false);
         }
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const onDoc = (e: MouseEvent) => {
+            const el = accountComboRef.current;
+            if (el && !el.contains(e.target as Node)) setShowAccountDropdown(false);
+        };
+        document.addEventListener('mousedown', onDoc);
+        return () => document.removeEventListener('mousedown', onDoc);
     }, [isOpen]);
 
     if (!isOpen) return null;
@@ -70,7 +82,7 @@ export default function AddSalesCallModal({ isOpen, onClose, onSave, onCreateAcc
                     <div className="relative">
                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Account Name</label>
                         <div className="flex gap-2">
-                            <div className="relative flex-1">
+                            <div className="relative flex-1" ref={accountComboRef}>
                                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: colors.textMuted }} />
                                 <input
                                     type="text"
