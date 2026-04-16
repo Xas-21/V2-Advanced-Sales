@@ -1,6 +1,7 @@
 /** Default win probability when a lead sits in this pipeline stage */
 export const PROBABILITY_BY_STAGE: Record<string, number> = {
     new: 10,
+    waiting: 15,
     qualified: 25,
     proposal: 50,
     negotiation: 75,

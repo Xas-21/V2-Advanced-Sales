@@ -1,10 +1,26 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import ReactDOM from 'react-dom/client'
 import AdvancedSalesDashboard from './AS'
 import './index.css'
 
+/** Stops mouse-wheel from changing values while a number input is focused (scroll still moves the page when unfocused). */
+function BlockWheelOnFocusedNumberInputs() {
+    useEffect(() => {
+        const onWheel = (e: WheelEvent) => {
+            const el = e.target;
+            if (!(el instanceof HTMLInputElement) || el.type !== 'number') return;
+            if (document.activeElement !== el) return;
+            e.preventDefault();
+        };
+        document.addEventListener('wheel', onWheel, { passive: false });
+        return () => document.removeEventListener('wheel', onWheel);
+    }, []);
+    return null;
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
+        <BlockWheelOnFocusedNumberInputs />
         <AdvancedSalesDashboard />
     </React.StrictMode>,
 )

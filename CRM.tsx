@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import {
     Users, Phone, Mail, MapPin, Tag, TrendingUp, DollarSign,
-    Calendar, MessageSquare, FileText, MoreVertical, X, ArrowRight,
+    Calendar, MessageSquare, FileText, MoreVertical, MoreHorizontal, X, ArrowRight,
     CheckCircle2, Clock, XCircle, Star, Building, User, Plus,
     Edit, Trash2, Filter, Search, ChevronDown, List, Kanban, Save,
     PhoneCall, Send, Eye, BarChart3, Award, Check, Copy, UserCircle
@@ -29,6 +29,17 @@ import {
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId } from './userProfileMetrics';
+import { createPortal } from 'react-dom';
+
+/** KPI and kanban tag: only when follow-up is explicitly on and a date exists (matches product behavior; avoids orphan dates counting alone). */
+function crmLeadHasScheduledFollowUp(lead: any): boolean {
+    const date = String(lead?.followUpDate ?? '').trim();
+    if (!date) return false;
+    const r = lead?.followUpRequired;
+    if (r === true || r === 1) return true;
+    if (typeof r === 'string' && r.toLowerCase() === 'true') return true;
+    return false;
+}
 
 interface CRMProps {
     theme: any;
@@ -140,6 +151,8 @@ export default function CRM({
     const [newCallData, setNewCallData] = useState({
         accountId: '',
         accountName: '',
+        /** Index into `account.contacts` for the person on this sales call */
+        selectedContactIndex: 0,
         date: new Date().toISOString().split('T')[0],
         city: '',
         subject: '',
@@ -151,15 +164,28 @@ export default function CRM({
         followUpDate: ''
     });
 
+    const [showAddContactPersonModal, setShowAddContactPersonModal] = useState(false);
+    const [newContactPersonForm, setNewContactPersonForm] = useState({
+        firstName: '',
+        lastName: '',
+        position: '',
+        email: '',
+        phone: '',
+        city: '',
+        country: '',
+    });
+
     useEffect(() => {
         if (crmReadOnly) return;
         if (!pendingCrmAccountId || !accounts.length) return;
         const acc = accounts.find((a: any) => a.id === pendingCrmAccountId);
         if (!acc) return;
+        const nextContacts = Array.isArray(acc.contacts) ? acc.contacts : [];
         setNewCallData((prev) => ({
             ...prev,
             accountId: acc.id,
-            accountName: acc.name
+            accountName: acc.name,
+            selectedContactIndex: nextContacts.length ? 0 : -1,
         }));
         setAccountSearch(acc.name);
         setShowAddCallModal(true);
@@ -168,6 +194,7 @@ export default function CRM({
 
     const stages = [
         { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
+        { id: 'waiting', title: 'Waiting list', color: '#94a3b8' },
         { id: 'qualified', title: 'QUALIFIED', color: colors.cyan },
         { id: 'proposal', title: 'PROPOSAL', color: colors.yellow },
         { id: 'negotiation', title: 'NEGOTIATION', color: colors.orange },
@@ -206,6 +233,19 @@ export default function CRM({
     };
 
     const [listMenuLeadId, setListMenuLeadId] = useState<string | null>(null);
+    const crmMenuAnchorRef = useRef<HTMLElement | null>(null);
+    const [crmMenuDropPos, setCrmMenuDropPos] = useState<{ top: number; right: number } | null>(null);
+    const crmMenuLead = useMemo(() => {
+        if (!listMenuLeadId) return null;
+        for (const k of Object.keys(crmLeadsForView)) {
+            const arr = (crmLeadsForView as any)[k] || [];
+            const hit = arr.find((l: any) => String(l.id) === String(listMenuLeadId));
+            if (hit) return hit;
+        }
+        return null;
+    }, [listMenuLeadId, crmLeadsForView]);
+    /** After a kanban drag starts, ignore the next click on that card (avoids opening profile when dropping). */
+    const ignoreNextPipelineCardClickIdRef = useRef<string | null>(null);
     /** false = oldest → newest (default); true = newest → oldest */
     const [listSortNewestFirst, setListSortNewestFirst] = useState(false);
     const crmAccountComboRef = useRef<HTMLDivElement>(null);
@@ -217,6 +257,29 @@ export default function CRM({
         };
         document.addEventListener('mousedown', onDoc);
         return () => document.removeEventListener('mousedown', onDoc);
+    }, [listMenuLeadId]);
+
+    useLayoutEffect(() => {
+        if (!listMenuLeadId) {
+            setCrmMenuDropPos(null);
+            return;
+        }
+        const el = crmMenuAnchorRef.current;
+        if (!el) {
+            setCrmMenuDropPos(null);
+            return;
+        }
+        const sync = () => {
+            const r = el.getBoundingClientRect();
+            setCrmMenuDropPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+        };
+        sync();
+        window.addEventListener('scroll', sync, true);
+        window.addEventListener('resize', sync);
+        return () => {
+            window.removeEventListener('scroll', sync, true);
+            window.removeEventListener('resize', sync);
+        };
     }, [listMenuLeadId]);
 
     useEffect(() => {
@@ -250,6 +313,14 @@ export default function CRM({
     });
     const editSnapshotRef = React.useRef<any>(null);
 
+    useEffect(() => {
+        if (!showEditCallModal) return;
+        const st = String(editCallForm.status);
+        if (st !== 'notInterested' && st !== 'won') return;
+        if (!editCallForm.followUpRequired && !String(editCallForm.followUpDate || '').trim()) return;
+        setEditCallForm((prev) => ({ ...prev, followUpRequired: false, followUpDate: '' }));
+    }, [editCallForm.status, showEditCallModal]);
+
     // Calculate stats (respect visible month filter)
     const allLeads = Object.values(crmLeadsForView).flat();
     const listSortedLeads = useMemo(() => {
@@ -266,12 +337,10 @@ export default function CRM({
     const wonThisMonth = crmLeadsForView.won?.length || 0;
     const highPotentialCount =
         (crmLeadsForView.proposal?.length || 0) + (crmLeadsForView.negotiation?.length || 0);
-    const followUpRequiredCount = allLeads.filter(
-        (lead: any) =>
-            Boolean(String(lead?.followUpDate || '').trim()) || Boolean(lead?.followUpRequired)
-    ).length;
+    const followUpRequiredCount = allLeads.filter((lead: any) => crmLeadHasScheduledFollowUp(lead)).length;
 
     const openLeadProfile = (lead: any) => {
+        setListMenuLeadId(null);
         const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
         setSelectedLead(acc ? mergeAccountIntoCrmLead(acc, lead) : lead);
         setCurrentView('profile');
@@ -336,8 +405,21 @@ export default function CRM({
 
         const account = accounts.find((a: any) => a.id === newCallData.accountId)
             || accounts.find((a: any) => a.name === newCallData.accountName);
-        if (!account?.contacts?.[0]) return;
-        const primaryContact = account.contacts[0];
+        if (!account) return;
+        const contacts = Array.isArray(account.contacts) ? account.contacts : [];
+        if (!contacts.length) {
+            window.alert('Add at least one contact person for this account (use + next to Contact person) before saving.');
+            return;
+        }
+        const idx = Math.min(
+            Math.max(0, Math.floor(Number(newCallData.selectedContactIndex) || 0)),
+            contacts.length - 1
+        );
+        const primaryContact = contacts[idx];
+        if (!primaryContact || !String(contactDisplayName(primaryContact) || '').trim()) {
+            window.alert('Choose a valid contact person for this sales call.');
+            return;
+        }
 
         const expected = parseFloat(String(newCallData.expectedRevenue || '').replace(/,/g, '')) || 0;
         const stageKey = newCallData.status as string;
@@ -348,6 +430,8 @@ export default function CRM({
                   ? [account.type]
                   : ['Corporate'];
 
+        const toNotInterestedNew = stageKey === 'notInterested';
+        const toWonNew = stageKey === 'won';
         const newLead = {
             id: `L${Date.now()}`,
             propertyId: activeProperty?.id || undefined,
@@ -371,7 +455,9 @@ export default function CRM({
             winRate: 0,
             description: newCallData.description,
             nextStep: newCallData.nextStep,
-            followUpDate: newCallData.followUpDate
+            followUpRequired: toNotInterestedNew || toWonNew ? false : !!newCallData.followUpRequired,
+            followUpDate:
+                toNotInterestedNew || toWonNew ? '' : newCallData.followUpRequired ? newCallData.followUpDate : ''
         };
 
         const targetStage = newCallData.status as keyof typeof crmLeads;
@@ -392,10 +478,64 @@ export default function CRM({
 
         setShowAddCallModal(false);
         setNewCallData({
-            accountId: '', accountName: '', date: new Date().toISOString().split('T')[0],
-            city: '', subject: '', expectedRevenue: '', description: '', status: 'new',
-            nextStep: '', followUpRequired: false, followUpDate: ''
+            accountId: '',
+            accountName: '',
+            selectedContactIndex: 0,
+            date: new Date().toISOString().split('T')[0],
+            city: '',
+            subject: '',
+            expectedRevenue: '',
+            description: '',
+            status: 'new',
+            nextStep: '',
+            followUpRequired: false,
+            followUpDate: '',
         });
+    };
+
+    const saveNewContactPersonToAccount = () => {
+        if (!newContactPersonForm.firstName?.trim() || !newContactPersonForm.lastName?.trim()) return;
+        const accountId = newCallData.accountId;
+        if (!accountId) {
+            window.alert('Select an account first.');
+            return;
+        }
+        const fullName = `${newContactPersonForm.firstName.trim()} ${newContactPersonForm.lastName.trim()}`;
+        const contactRow = {
+            firstName: newContactPersonForm.firstName.trim(),
+            lastName: newContactPersonForm.lastName.trim(),
+            name: fullName,
+            position: String(newContactPersonForm.position || '').trim(),
+            email: String(newContactPersonForm.email || '').trim(),
+            phone: String(newContactPersonForm.phone || '').trim(),
+            city: String(newContactPersonForm.city || '').trim(),
+            country: String(newContactPersonForm.country || '').trim(),
+        };
+        let appendedIndex = 0;
+        setAccounts((prev: any[]) =>
+            prev.map((a: any) => {
+                if (a.id !== accountId) return a;
+                const existing = Array.isArray(a.contacts) ? [...a.contacts] : [];
+                appendedIndex = existing.length;
+                return { ...a, contacts: [...existing, contactRow] };
+            })
+        );
+        appendCrmActivityToAccount(
+            accountId,
+            'Contact added',
+            `${currentUser?.name || currentUser?.username || 'User'} added contact ${fullName} from the Sales Calls form.`
+        );
+        setNewCallData((prev) => ({ ...prev, selectedContactIndex: appendedIndex }));
+        setNewContactPersonForm({
+            firstName: '',
+            lastName: '',
+            position: '',
+            email: '',
+            phone: '',
+            city: '',
+            country: '',
+        });
+        setShowAddContactPersonModal(false);
     };
 
     const handleSaveAccount = (newAccountData: any) => {
@@ -418,7 +558,13 @@ export default function CRM({
         setAccounts((prev: any[]) => [newAccount, ...prev]);
         setShowAddAccountModal(false);
         if (showAddCallModal) {
-            setNewCallData(prev => ({ ...prev, accountId: newAccount.id, accountName: newAccount.name }));
+            const nc = Array.isArray(newAccount.contacts) ? newAccount.contacts : [];
+            setNewCallData((prev) => ({
+                ...prev,
+                accountId: newAccount.id,
+                accountName: newAccount.name,
+                selectedContactIndex: nc.length ? 0 : -1,
+            }));
             setAccountSearch(newAccount.name);
         }
     };
@@ -438,7 +584,7 @@ export default function CRM({
             description: lead.description || '',
             status: sid,
             nextStep: lead.nextStep || '',
-            followUpRequired: !!lead.followUpDate,
+            followUpRequired: !!(lead.followUpRequired || lead.followUpDate),
             followUpDate: lead.followUpDate || ''
         });
         setShowEditCallModal(true);
@@ -454,6 +600,8 @@ export default function CRM({
         const newStage = editCallForm.status as keyof typeof crmLeads;
         const newValue = parseFloat(String(editCallForm.expectedRevenue || '').replace(/,/g, '')) || 0;
         const newProb = probabilityForStage(String(newStage));
+        const toNotInterested = String(newStage) === 'notInterested';
+        const toWon = String(newStage) === 'won';
         const updated = {
             ...oldLead,
             propertyId: activeProperty?.id || oldLead.propertyId,
@@ -465,7 +613,8 @@ export default function CRM({
             city: editCallForm.city,
             value: newValue,
             probability: newProb,
-            followUpDate: editCallForm.followUpRequired ? editCallForm.followUpDate : ''
+            followUpRequired: toNotInterested || toWon ? false : !!editCallForm.followUpRequired,
+            followUpDate: toNotInterested || toWon ? '' : editCallForm.followUpRequired ? editCallForm.followUpDate : ''
         };
 
         setCrmLeads((prev) => {
@@ -679,6 +828,7 @@ export default function CRM({
 
     // Main Pipeline View
     return (
+        <>
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
             {/* Header */}
             <div className="shrink-0 p-4 pt-3 pb-4 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -780,6 +930,7 @@ export default function CRM({
                                                             style={{ color: colors.textMuted }}
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
+                                                                crmMenuAnchorRef.current = e.currentTarget as HTMLElement;
                                                                 setListMenuLeadId((id) => (id === lead.id ? null : lead.id));
                                                             }}
                                                             aria-expanded={listMenuLeadId === lead.id}
@@ -787,56 +938,6 @@ export default function CRM({
                                                         >
                                                             <MoreVertical size={16} />
                                                         </button>
-                                                        {listMenuLeadId === lead.id && (
-                                                            <div
-                                                                className="absolute right-4 top-full mt-1 z-30 min-w-[220px] rounded-xl border shadow-xl py-1"
-                                                                style={{ backgroundColor: colors.card, borderColor: colors.border }}
-                                                            >
-                                                                {!crmReadOnly && (
-                                                                    <button
-                                                                        type="button"
-                                                                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
-                                                                        style={{ color: colors.textMain }}
-                                                                        onClick={() => openEditSalesCallModal(lead)}
-                                                                    >
-                                                                        <Edit size={14} /> Edit sales call
-                                                                    </button>
-                                                                )}
-                                                                {!crmReadOnly && (
-                                                                    <button
-                                                                        type="button"
-                                                                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
-                                                                        style={{ color: colors.textMain }}
-                                                                        onClick={() => duplicateSalesCallByLead(lead)}
-                                                                    >
-                                                                        <Copy size={14} /> Duplicate sales call
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    type="button"
-                                                                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
-                                                                    style={{ color: colors.textMain }}
-                                                                    onClick={() => {
-                                                                        setListMenuLeadId(null);
-                                                                        openLeadProfile(lead);
-                                                                    }}
-                                                                >
-                                                                    <UserCircle size={14} /> Open account profile
-                                                                </button>
-                                                                {canDelSalesCalls && (
-                                                                    <>
-                                                                        <div className="my-1 h-px" style={{ backgroundColor: colors.border }} />
-                                                                        <button
-                                                                            type="button"
-                                                                            className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium text-red-500 hover:bg-red-500/10"
-                                                                            onClick={() => deleteSalesCallByLead(lead)}
-                                                                        >
-                                                                            <Trash2 size={14} /> Delete sales call
-                                                                        </button>
-                                                                    </>
-                                                                )}
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>
@@ -858,10 +959,15 @@ export default function CRM({
                                     if (draggedLead && draggedLead.stage !== stage.id) {
                                         const oldStage = draggedLead.stage;
                                         const prob = probabilityForStage(String(stage.id));
+                                        const clearFollowUpOnStage =
+                                            String(stage.id) === 'notInterested' || String(stage.id) === 'won';
                                         const moved = {
                                             ...draggedLead,
                                             probability: prob,
-                                            propertyId: activeProperty?.id || draggedLead.propertyId
+                                            propertyId: activeProperty?.id || draggedLead.propertyId,
+                                            ...(clearFollowUpOnStage
+                                                ? { followUpRequired: false, followUpDate: '' }
+                                                : {}),
                                         };
                                         setCrmLeads({
                                             ...crmLeads,
@@ -889,15 +995,52 @@ export default function CRM({
                                     {crmLeadsForView[stage.id as keyof typeof crmLeadsForView]?.map((lead: any) => (
                                         <div key={lead.id}
                                             draggable={!crmReadOnly}
-                                            onDragStart={() => !crmReadOnly && setDraggedLead({ ...lead, stage: stage.id })}
-                                            onDragEnd={() => setDraggedLead(null)}
-                                            onClick={() => openLeadProfile(lead)}
-                                            className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300"
+                                            onDragStart={() => {
+                                                if (crmReadOnly) return;
+                                                ignoreNextPipelineCardClickIdRef.current = String(lead.id);
+                                                setDraggedLead({ ...lead, stage: stage.id });
+                                            }}
+                                            onDragEnd={() => {
+                                                setDraggedLead(null);
+                                                const id = String(lead.id);
+                                                window.setTimeout(() => {
+                                                    if (ignoreNextPipelineCardClickIdRef.current === id) {
+                                                        ignoreNextPipelineCardClickIdRef.current = null;
+                                                    }
+                                                }, 280);
+                                            }}
+                                            onClick={() => {
+                                                if (ignoreNextPipelineCardClickIdRef.current === String(lead.id)) {
+                                                    ignoreNextPipelineCardClickIdRef.current = null;
+                                                    return;
+                                                }
+                                                openLeadProfile(lead);
+                                            }}
+                                            className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300 relative"
                                             style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
 
-                                            <div className="mb-2">
-                                                <h4 className="font-bold text-sm mb-1" style={{ color: colors.textMain }}>{lead.company}</h4>
-                                                <p className="text-xs" style={{ color: colors.textMuted }}>{lead.contact} • {lead.position}</p>
+                                            <div className="flex justify-between items-start gap-2 mb-2">
+                                                <div className="min-w-0 flex-1">
+                                                    <h4 className="font-bold text-sm mb-1" style={{ color: colors.textMain }}>{lead.company}</h4>
+                                                    <p className="text-xs" style={{ color: colors.textMuted }}>{lead.contact} • {lead.position}</p>
+                                                </div>
+                                                <div className="shrink-0 relative" data-crm-list-menu onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                        type="button"
+                                                        className="p-1.5 rounded-md border opacity-70 hover:opacity-100 hover:bg-white/10 transition-all"
+                                                        style={{ color: colors.textMuted, borderColor: colors.border }}
+                                                        title="Actions"
+                                                        aria-expanded={listMenuLeadId === lead.id}
+                                                        aria-label="Sales call actions"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            crmMenuAnchorRef.current = e.currentTarget as HTMLElement;
+                                                            setListMenuLeadId((id) => (id === lead.id ? null : lead.id));
+                                                        }}
+                                                    >
+                                                        <MoreHorizontal size={16} />
+                                                    </button>
+                                                </div>
                                             </div>
 
                                             <div className="flex flex-wrap gap-1 mb-3" key={tagColorTick}>
@@ -912,13 +1055,29 @@ export default function CRM({
                                                 })}
                                             </div>
 
+                                            {crmLeadHasScheduledFollowUp(lead) ? (
+                                                <div className="flex justify-end mb-2">
+                                                    <span
+                                                        className="px-2 py-0.5 rounded text-[10px] font-bold"
+                                                        style={{ backgroundColor: `${colors.orange}28`, color: colors.orange }}
+                                                    >
+                                                        Follow up · {String(lead.followUpDate).trim()}
+                                                    </span>
+                                                </div>
+                                            ) : null}
+
                                             <div className="flex justify-between items-center text-xs mb-2">
                                                 <span style={{ color: colors.textMuted }}>{lead.probability}% probability</span>
                                                 <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(lead.value)}</span>
                                             </div>
 
-                                            <div className="pt-2 border-t text-xs" style={{ borderColor: colors.border, color: colors.textMuted }}>
-                                                Last contact: {lead.lastContact}
+                                            <div className="pt-2 border-t text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                <span>
+                                                    Date: {String(lead.lastContact || lead.date || '').trim() || '—'}
+                                                </span>
+                                                <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
+                                                    {String(lead.accountManager || lead.ownerUserId || '').trim() || '—'}
+                                                </span>
                                             </div>
                                         </div>
                                     ))}
@@ -935,7 +1094,14 @@ export default function CRM({
                         style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                         <div className="p-4 border-b flex justify-between items-center" style={{ borderColor: colors.border }}>
                             <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>Add Sales Call</h2>
-                            <button onClick={() => setShowAddCallModal(false)} className="p-2 hover:bg-white/5 rounded-full" style={{ color: colors.textMuted }}>
+                            <button
+                                onClick={() => {
+                                    setShowAddContactPersonModal(false);
+                                    setShowAddCallModal(false);
+                                }}
+                                className="p-2 hover:bg-white/5 rounded-full"
+                                style={{ color: colors.textMuted }}
+                            >
                                 <X size={20} />
                             </button>
                         </div>
@@ -964,7 +1130,13 @@ export default function CRM({
                                                     <button
                                                         key={a.id}
                                                         onClick={() => {
-                                                            setNewCallData({ ...newCallData, accountId: a.id, accountName: a.name });
+                                                            const ac = Array.isArray(a.contacts) ? a.contacts : [];
+                                                            setNewCallData({
+                                                                ...newCallData,
+                                                                accountId: a.id,
+                                                                accountName: a.name,
+                                                                selectedContactIndex: ac.length ? 0 : -1,
+                                                            });
                                                             setAccountSearch(a.name);
                                                             setShowAccountDropdown(false);
                                                         }}
@@ -990,6 +1162,69 @@ export default function CRM({
                                     </button>
                                 </div>
                             </div>
+
+                            {newCallData.accountId ? (
+                                <div>
+                                    <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Contact person</label>
+                                    <div className="flex gap-2">
+                                        <select
+                                            value={
+                                                (() => {
+                                                    const acc = accounts.find((x: any) => x.id === newCallData.accountId);
+                                                    const n = Array.isArray(acc?.contacts) ? acc.contacts.length : 0;
+                                                    if (!n) return '';
+                                                    const v = Math.min(
+                                                        Math.max(0, Math.floor(Number(newCallData.selectedContactIndex) || 0)),
+                                                        n - 1
+                                                    );
+                                                    return String(v);
+                                                })()
+                                            }
+                                            onChange={(e) =>
+                                                setNewCallData({
+                                                    ...newCallData,
+                                                    selectedContactIndex: parseInt(e.target.value, 10) || 0,
+                                                })
+                                            }
+                                            disabled={
+                                                !accounts.find((x: any) => x.id === newCallData.accountId)?.contacts?.length
+                                            }
+                                            className="flex-1 px-3 py-2 rounded-lg border text-sm outline-none"
+                                            style={{
+                                                backgroundColor: colors.bg,
+                                                borderColor: colors.border,
+                                                color: colors.textMain,
+                                                opacity: accounts.find((x: any) => x.id === newCallData.accountId)?.contacts?.length
+                                                    ? 1
+                                                    : 0.6,
+                                            }}
+                                        >
+                                            {(() => {
+                                                const acc = accounts.find((x: any) => x.id === newCallData.accountId);
+                                                const list = Array.isArray(acc?.contacts) ? acc.contacts : [];
+                                                if (!list.length) {
+                                                    return <option value="">No contacts yet — use + to add</option>;
+                                                }
+                                                return list.map((c: any, i: number) => (
+                                                    <option key={i} value={i}>
+                                                        {contactDisplayName(c) || '—'}
+                                                        {c?.position ? ` · ${c.position}` : ''}
+                                                    </option>
+                                                ));
+                                            })()}
+                                        </select>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowAddContactPersonModal(true)}
+                                            className="shrink-0 p-2 rounded-lg transition-transform hover:scale-110 active:scale-90 shadow-md"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                            title="Add contact person to this account"
+                                        >
+                                            <Plus size={20} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : null}
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
@@ -1064,8 +1299,139 @@ export default function CRM({
                             </div>
                         </div>
                         <div className="p-4 border-t flex gap-3" style={{ borderColor: colors.border }}>
-                            <button onClick={() => setShowAddCallModal(false)} className="flex-1 py-2.5 rounded-xl border font-bold text-sm hover:bg-white/5 transition-colors" style={{ borderColor: colors.border, color: colors.textMuted }}>Cancel</button>
+                            <button
+                                onClick={() => {
+                                    setShowAddContactPersonModal(false);
+                                    setShowAddCallModal(false);
+                                }}
+                                className="flex-1 py-2.5 rounded-xl border font-bold text-sm hover:bg-white/5 transition-colors"
+                                style={{ borderColor: colors.border, color: colors.textMuted }}
+                            >
+                                Cancel
+                            </button>
                             <button onClick={handleSaveCall} className="flex-1 py-2.5 rounded-xl font-bold text-sm hover:brightness-110 active:scale-95 transition-all" style={{ backgroundColor: colors.primary, color: '#000' }}>Save Sales Call</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showAddContactPersonModal && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                    <div
+                        className="w-full max-w-md p-6 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 border"
+                        style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}
+                    >
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>Add Contact Person</h3>
+                            <button
+                                type="button"
+                                onClick={() => setShowAddContactPersonModal(false)}
+                                className="hover:opacity-80 transition-opacity"
+                                style={{ color: colors.textMuted }}
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="space-y-4 text-left">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>First Name</label>
+                                    <input
+                                        type="text"
+                                        value={newContactPersonForm.firstName}
+                                        onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, firstName: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="First Name"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Last Name</label>
+                                    <input
+                                        type="text"
+                                        value={newContactPersonForm.lastName}
+                                        onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, lastName: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="Last Name"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Position</label>
+                                <input
+                                    type="text"
+                                    value={newContactPersonForm.position}
+                                    onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, position: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="Job Title"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Email</label>
+                                <input
+                                    type="email"
+                                    value={newContactPersonForm.email}
+                                    onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, email: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="email@example.com"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Phone</label>
+                                <input
+                                    type="text"
+                                    value={newContactPersonForm.phone}
+                                    onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, phone: e.target.value })}
+                                    className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    placeholder="+966 ..."
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>City</label>
+                                    <input
+                                        type="text"
+                                        value={newContactPersonForm.city}
+                                        onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, city: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="City"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Country</label>
+                                    <input
+                                        type="text"
+                                        value={newContactPersonForm.country}
+                                        onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, country: e.target.value })}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="Country"
+                                    />
+                                </div>
+                            </div>
+                            <div className="pt-4 flex gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAddContactPersonModal(false)}
+                                    className="flex-1 py-3 rounded-lg font-bold text-sm border transition-colors"
+                                    style={{ borderColor: colors.border, color: colors.textMuted }}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={saveNewContactPersonToAccount}
+                                    className="flex-1 py-3 rounded-lg font-bold text-black hover:opacity-90 transition-opacity"
+                                    style={{ backgroundColor: colors.primary }}
+                                >
+                                    Save Contact
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1243,5 +1609,67 @@ export default function CRM({
                 accountTypeOptions={accountTypeOptions}
             />
         </div>
+        {listMenuLeadId && crmMenuLead && crmMenuDropPos
+            ? createPortal(
+                  <div
+                      data-crm-list-menu
+                      className="min-w-[220px] rounded-xl border shadow-xl py-1"
+                      style={{
+                          position: 'fixed',
+                          top: crmMenuDropPos.top,
+                          right: crmMenuDropPos.right,
+                          zIndex: 100000,
+                          backgroundColor: colors.card,
+                          borderColor: colors.border,
+                      }}
+                  >
+                      {!crmReadOnly && (
+                          <button
+                              type="button"
+                              className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
+                              style={{ color: colors.textMain }}
+                              onClick={() => openEditSalesCallModal(crmMenuLead)}
+                          >
+                              <Edit size={14} /> Edit sales call
+                          </button>
+                      )}
+                      {!crmReadOnly && (
+                          <button
+                              type="button"
+                              className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
+                              style={{ color: colors.textMain }}
+                              onClick={() => duplicateSalesCallByLead(crmMenuLead)}
+                          >
+                              <Copy size={14} /> Duplicate sales call
+                          </button>
+                      )}
+                      <button
+                          type="button"
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
+                          style={{ color: colors.textMain }}
+                          onClick={() => {
+                              setListMenuLeadId(null);
+                              openLeadProfile(crmMenuLead);
+                          }}
+                      >
+                          <UserCircle size={14} /> Open account profile
+                      </button>
+                      {canDelSalesCalls && (
+                          <>
+                              <div className="my-1 h-px" style={{ backgroundColor: colors.border }} />
+                              <button
+                                  type="button"
+                                  className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium text-red-500 hover:bg-red-500/10"
+                                  onClick={() => deleteSalesCallByLead(crmMenuLead)}
+                              >
+                                  <Trash2 size={14} /> Delete sales call
+                              </button>
+                          </>
+                      )}
+                  </div>,
+                  document.body
+              )
+            : null}
+        </>
     );
 }

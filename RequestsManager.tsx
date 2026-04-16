@@ -68,11 +68,20 @@ interface RequestsManagerProps {
     setAccounts: React.Dispatch<React.SetStateAction<any[]>>;
     pendingOpenRequestId?: string | null;
     onConsumedPendingOpenRequest?: () => void;
+    /** Open the same OPTS modal as the list row (used from Events kanban, etc.). */
+    pendingOpenOptsRequestId?: string | null;
+    onConsumedPendingOpenOpts?: () => void;
     onAfterRequestsMutate?: () => void;
     /** When true, only the new-request wizard is shown (for modal overlay from Events page). */
     embedded?: boolean;
     onEmbeddedComplete?: () => void;
     onEmbeddedCancel?: () => void;
+    /** Render only request OPTS / related modals (fixed overlay); no list UI. Used from Events & Catering. */
+    optsHeadless?: boolean;
+    /** Fired when the user closes the small Options popover (backdrop or X), not when opening sub-modals. */
+    onOptsHeadlessDismiss?: () => void;
+    /** From headless OPTS: navigate main app to Requests edit wizard for this request id. */
+    onHeadlessModifyDetails?: (requestId: string) => void;
     /** Request segment choices for the active property (Settings). */
     segmentOptions?: string[];
     accountTypeOptions?: string[];
@@ -175,10 +184,15 @@ export default function RequestsManager({
     setAccounts,
     pendingOpenRequestId,
     onConsumedPendingOpenRequest,
+    pendingOpenOptsRequestId,
+    onConsumedPendingOpenOpts,
     onAfterRequestsMutate,
     embedded = false,
     onEmbeddedComplete,
     onEmbeddedCancel,
+    optsHeadless = false,
+    onOptsHeadlessDismiss,
+    onHeadlessModifyDetails,
     segmentOptions,
     accountTypeOptions,
     canDeleteRequest = false,
@@ -297,6 +311,19 @@ export default function RequestsManager({
     // Search and UI state
     const [accountSearch, setAccountSearch] = useState('');
     const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+    const accountComboRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!showAccountDropdown) return;
+        const onPointerDown = (e: PointerEvent) => {
+            const root = accountComboRef.current;
+            if (!root || root.contains(e.target as Node)) return;
+            setShowAccountDropdown(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown, true);
+        return () => document.removeEventListener('pointerdown', onPointerDown, true);
+    }, [showAccountDropdown]);
+
     const [showPaymentModal, setShowPaymentModal] = useState(false);
     const [paymentModalSource, setPaymentModalSource] = useState<'form' | 'opts'>('opts');
     const [newPayment, setNewPayment] = useState({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
@@ -388,7 +415,7 @@ export default function RequestsManager({
 
     // Reset workflow when entering new_request mode (only for fresh new requests)
     useEffect(() => {
-        if (embedded) return;
+        if (embedded || optsHeadless) return;
         if (readOnlyOperational && subView === 'new_request') {
             setIsEditing(false);
             setRequestType(null);
@@ -450,7 +477,7 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -614,6 +641,17 @@ export default function RequestsManager({
             onConsumedPendingOpenRequest?.();
         }
     }, [pendingOpenRequestId, requests, isLoading, onConsumedPendingOpenRequest]);
+
+    useEffect(() => {
+        if (!pendingOpenOptsRequestId || isLoading) return;
+        const idx = requests.findIndex((x: any) => String(x.id) === String(pendingOpenOptsRequestId));
+        if (idx !== -1) {
+            setActiveOptionsMenu(idx);
+            onConsumedPendingOpenOpts?.();
+        } else if (requests.length > 0) {
+            onConsumedPendingOpenOpts?.();
+        }
+    }, [pendingOpenOptsRequestId, requests, isLoading, onConsumedPendingOpenOpts]);
 
     /** When opening a request that has alerts, show the alerts modal shortly after the detail view mounts. */
     useEffect(() => {
@@ -986,12 +1024,12 @@ export default function RequestsManager({
 
     // Reset when subView changes to list
     useEffect(() => {
-        if (embedded) return;
+        if (embedded || optsHeadless) return;
         if (subView !== 'new_request') {
             setStep(1);
             setRequestType(null);
         }
-    }, [subView, embedded]);
+    }, [subView, embedded, optsHeadless]);
 
     const updateRequest = async (id: string, partialData: any) => {
         setIsLoading(true);
@@ -1696,7 +1734,7 @@ export default function RequestsManager({
                                 placeholder="e.g. VIP Delegation"
                             />
                         </div>
-                        <div className="relative">
+                        <div className="relative" ref={accountComboRef}>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Account Name</label>
                             <div className="flex gap-2">
                                 <div className="relative flex-1">
@@ -1711,9 +1749,10 @@ export default function RequestsManager({
                                             setShowAccountDropdown(true);
                                         }}
                                         onFocus={() => setShowAccountDropdown(true)}
+                                        autoComplete="off"
                                     />
                                     {showAccountDropdown && (
-                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto"
+                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto custom-scrollbar"
                                             style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                             {accounts.filter((a: any) => String(a.name || '').toLowerCase().includes((accountSearch || '').toLowerCase())).map((acc: any) => (
                                                 <button
@@ -2642,7 +2681,7 @@ export default function RequestsManager({
                                 placeholder="e.g. Annual Gala"
                             />
                         </div>
-                        <div className="relative">
+                        <div className="relative" ref={accountComboRef}>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Account / Lead</label>
                             <div className="flex gap-2">
                                 <div className="relative flex-1">
@@ -2657,9 +2696,10 @@ export default function RequestsManager({
                                             setShowAccountDropdown(true);
                                         }}
                                         onFocus={() => setShowAccountDropdown(true)}
+                                        autoComplete="off"
                                     />
                                     {showAccountDropdown && (
-                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto"
+                                        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-2xl z-50 max-h-48 overflow-y-auto custom-scrollbar"
                                             style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                             {accounts.filter((a: any) => String(a.name || '').toLowerCase().includes((accountSearch || '').toLowerCase())).map((acc: any) => (
                                                 <button
@@ -3070,17 +3110,19 @@ export default function RequestsManager({
                                 <table className="w-full text-left text-xs">
                                     <thead>
                                         <tr className="bg-black/20 text-[10px] font-bold uppercase opacity-40">
-                                            <th className="px-6 py-3">Room Type</th>
-                                            <th className="px-6 py-3">Occupancy</th>
-                                            <th className="px-6 py-3 text-center">Rooms</th>
-                                            <th className="px-6 py-3 text-right">Rate</th>
-                                            <th className="px-6 py-3 text-right">Subtotal</th>
+                                            <th className="px-4 py-3 whitespace-nowrap">Room Type</th>
+                                            <th className="px-4 py-3 whitespace-nowrap">Check-in</th>
+                                            <th className="px-4 py-3 whitespace-nowrap">Check-out</th>
+                                            <th className="px-4 py-3">Occupancy</th>
+                                            <th className="px-4 py-3 text-center whitespace-nowrap">Rooms</th>
+                                            <th className="px-4 py-3 text-right whitespace-nowrap">Rate</th>
+                                            <th className="px-4 py-3 text-right whitespace-nowrap">Subtotal</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-white/5">
                                         {(request.rooms || []).length === 0 ? (
                                             <tr>
-                                                <td colSpan={5} className="px-6 py-8 text-center opacity-40 italic">No rooms on this request</td>
+                                                <td colSpan={7} className="px-6 py-8 text-center opacity-40 italic">No rooms on this request</td>
                                             </tr>
                                         ) : (request.rooms || []).map((r: any, idx: number) => {
                                             let rNights = fin.nights;
@@ -3093,13 +3135,17 @@ export default function RequestsManager({
                                                     perRow > 0 ? perRow : a && Number.isFinite(manual) && manual > 0 ? manual : fin.nights;
                                             }
                                             const subtotal = Number(r.rate || 0) * Number(r.count || 0) * rNights;
+                                            const rowIn = String(r.arrival || '').trim().slice(0, 10) || String(request.checkIn || '').trim() || '—';
+                                            const rowOut = String(r.departure || '').trim().slice(0, 10) || String(request.checkOut || '').trim() || '—';
                                             return (
                                                 <tr key={idx}>
-                                                    <td className="px-6 py-4 font-bold">{r.type}</td>
-                                                    <td className="px-6 py-4 opacity-70">{r.occupancy}</td>
-                                                    <td className="px-6 py-4 text-center">{r.count}</td>
-                                                    <td className="px-6 py-4 text-right font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
-                                                    <td className="px-6 py-4 text-right font-bold text-primary">{formatMoney(subtotal, 0)}</td>
+                                                    <td className="px-4 py-4 font-bold whitespace-nowrap">{r.type}</td>
+                                                    <td className="px-4 py-4 font-mono text-[11px] whitespace-nowrap opacity-90">{rowIn}</td>
+                                                    <td className="px-4 py-4 font-mono text-[11px] whitespace-nowrap opacity-90">{rowOut}</td>
+                                                    <td className="px-4 py-4 opacity-70">{r.occupancy}</td>
+                                                    <td className="px-4 py-4 text-center">{r.count}</td>
+                                                    <td className="px-4 py-4 text-right font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
+                                                    <td className="px-4 py-4 text-right font-bold text-primary">{formatMoney(subtotal, 0)}</td>
                                                 </tr>
                                             );
                                         })}
@@ -3597,8 +3643,13 @@ export default function RequestsManager({
         return lines.filter((l) => l.roomCount > 0 && l.nights > 0);
     };
 
+    const closeOptsPopover = () => {
+        setActiveOptionsMenu(null);
+        if (optsHeadless) onOptsHeadlessDismiss?.();
+    };
+
     const optionsModal = activeOptionsMenu !== null && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4" onClick={() => setActiveOptionsMenu(null)}>
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4" onClick={closeOptsPopover}>
             <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
             <div className="relative w-full max-w-[260px] rounded-2xl border shadow-2xl overflow-hidden animate-in zoom-in duration-200"
                 style={{ backgroundColor: colors.card, borderColor: colors.border }}
@@ -3608,7 +3659,7 @@ export default function RequestsManager({
                     <div className="flex items-center gap-2">
                         <span className="font-bold text-[11px] uppercase tracking-wider opacity-60" style={{ color: colors.textMain }}>Options</span>
                     </div>
-                    <button onClick={() => setActiveOptionsMenu(null)} className="opacity-30 hover:opacity-100 transition-opacity" style={{ color: colors.textMain }}>
+                    <button onClick={closeOptsPopover} className="opacity-30 hover:opacity-100 transition-opacity" style={{ color: colors.textMain }}>
                         <X size={14} />
                     </button>
                 </div>
@@ -3644,6 +3695,11 @@ export default function RequestsManager({
                             onClick={() => {
                                 const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
                                 if (!req) return;
+                                if (optsHeadless && onHeadlessModifyDetails) {
+                                    setActiveOptionsMenu(null);
+                                    onHeadlessModifyDetails(String(req.id));
+                                    return;
+                                }
                                 openRequestForEdit(req);
                             }}
                             className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]" style={{ color: colors.textMain }}>
@@ -4547,6 +4603,15 @@ export default function RequestsManager({
         );
     };
 
+    if (optsHeadless) {
+        return (
+            <>
+                {optionsModal}
+                {renderGlobalModals()}
+            </>
+        );
+    }
+
     // Workflow Screens
     if (subView === 'new_request') {
         let formContent: any;
@@ -4606,18 +4671,54 @@ export default function RequestsManager({
         return colors[Math.abs(hash) % colors.length];
     };
 
+    /** Bright accent for status text, dots, and light cell overlays (matches classic grid legend). */
     const getStatusColor = (status: string) => {
-        switch (status) {
-            case 'Inquiry': return colors.textMuted;
-            case 'Accepted': return colors.yellow;
-            case 'Tentative': return colors.blue;
-            case 'Definite': return colors.green;
-            case 'Actual': return '#059669';
-            case 'Lost': 
-            case 'Cancelled': return colors.red;
-            default: return colors.primary;
+        const s = String(status || '').trim().toLowerCase();
+        switch (s) {
+            case 'inquiry':
+                return '#cbd5e1';
+            case 'accepted':
+                return '#facc15';
+            case 'tentative':
+                return colors.blue;
+            case 'definite':
+                return '#4ade80';
+            case 'actual':
+                return '#4ade80';
+            case 'lost':
+            case 'cancelled':
+                return colors.red;
+            default:
+                return colors.primary;
         }
     };
+
+    /**
+     * Solid fill for rooms grid: company, group, and day cells with room counts (legacy UI).
+     * Reference tones: Accepted `#63481D`, Actual `#163020`.
+     */
+    const getGridRoomsRowBackground = (status: string) => {
+        const s = String(status || '').trim().toLowerCase();
+        switch (s) {
+            case 'inquiry':
+                return '#2a3544';
+            case 'accepted':
+                return '#63481D';
+            case 'tentative':
+                return '#1e3a5f';
+            case 'definite':
+                return '#1a452d';
+            case 'actual':
+                return '#163020';
+            case 'lost':
+            case 'cancelled':
+                return '#3f1519';
+            default:
+                return '#2a3544';
+        }
+    };
+
+    const GRID_ROOMS_ROW_TEXT = '#f8fafc';
 
     const toShortPackage = (pkg: string) => {
         const p = String(pkg || '').toLowerCase().trim();
@@ -5289,45 +5390,59 @@ export default function RequestsManager({
                     {monthNames.map((monthName, monthIndex) => {
                         const daysInMonth = new Date(gridYear, monthIndex + 1, 0).getDate();
                         const monthRows = rowsByMonth.get(monthIndex) || [];
+                        const pinnedBg = colors.card;
+                        const pinnedHeadZ = 55;
+                        const pinnedBodyZ = 50;
+                        const dayCellZ = 1;
                         return (
-                            <div key={`${gridYear}-${monthIndex}`} className="rounded-xl border overflow-auto" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-                                <div className="px-3 py-2 border-b font-black text-sm" style={{ borderColor: colors.border, color: colors.textMain }}>
+                            <div
+                                key={`${gridYear}-${monthIndex}`}
+                                className="rounded-xl border flex flex-col min-w-0"
+                                style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                            >
+                                <div
+                                    className="shrink-0 px-3 py-2 border-b font-black text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: pinnedBg }}
+                                >
                                     {monthName} {gridYear}
                                 </div>
-                                <table className="w-full border-collapse text-[11px]">
+                                <div className="overflow-x-auto min-w-0">
+                                <table className="border-collapse text-[11px]" style={{ width: 'max-content', minWidth: '100%' }}>
                                     <thead>
-                                        <tr style={{ backgroundColor: colors.bg }}>
+                                        <tr style={{ backgroundColor: pinnedBg }}>
                                             <th
-                                                className="border px-2 py-1 text-left sticky left-0 z-30"
+                                                className="border px-2 py-1 text-left sticky left-0"
                                                 style={{
                                                     borderColor: colors.border,
-                                                    backgroundColor: colors.bg,
+                                                    backgroundColor: pinnedBg,
                                                     color: colors.textMain,
                                                     minWidth: companyColWidth,
                                                     width: companyColWidth,
                                                     maxWidth: companyColWidth,
-                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
                                                 }}
                                             >
                                                 Company Name
                                             </th>
                                             <th
-                                                className="border px-2 py-1 text-left sticky z-30"
+                                                className="border px-2 py-1 text-left sticky"
                                                 style={{
                                                     left: companyColWidth,
                                                     borderColor: colors.border,
-                                                    backgroundColor: colors.bg,
+                                                    backgroundColor: pinnedBg,
                                                     color: colors.textMain,
                                                     minWidth: groupColWidth,
                                                     width: groupColWidth,
                                                     maxWidth: groupColWidth,
-                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
                                                 }}
                                             >
                                                 Group Name
                                             </th>
                                             {Array.from({ length: daysInMonth }, (_, i) => (
-                                                <th key={`dow-${i + 1}`} className="border px-1 py-1 text-center min-w-[34px]" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                <th key={`dow-${i + 1}`} className="border px-1 py-1 text-center min-w-[34px] relative" style={{ borderColor: colors.border, color: colors.textMuted, zIndex: dayCellZ }}>
                                                     {GRID_WEEKDAY_CODES[new Date(gridYear, monthIndex, i + 1).getDay()]}
                                                 </th>
                                             ))}
@@ -5338,32 +5453,34 @@ export default function RequestsManager({
                                             <th className="border px-2 py-1 text-center min-w-[120px]" style={{ borderColor: colors.border, color: colors.textMain }}>Deposit</th>
                                             <th className="border px-2 py-1 text-center min-w-[120px]" style={{ borderColor: colors.border, color: colors.textMain }}>Full Payment</th>
                                         </tr>
-                                        <tr style={{ backgroundColor: colors.bg }}>
+                                        <tr style={{ backgroundColor: pinnedBg }}>
                                             <th
-                                                className="border px-2 py-1 text-left sticky left-0 z-30"
+                                                className="border px-2 py-1 text-left sticky left-0"
                                                 style={{
                                                     borderColor: colors.border,
-                                                    backgroundColor: colors.bg,
+                                                    backgroundColor: pinnedBg,
                                                     minWidth: companyColWidth,
                                                     width: companyColWidth,
                                                     maxWidth: companyColWidth,
-                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
                                                 }}
                                             />
                                             <th
-                                                className="border px-2 py-1 text-left sticky z-30"
+                                                className="border px-2 py-1 text-left sticky"
                                                 style={{
                                                     left: companyColWidth,
                                                     borderColor: colors.border,
-                                                    backgroundColor: colors.bg,
+                                                    backgroundColor: pinnedBg,
                                                     minWidth: groupColWidth,
                                                     width: groupColWidth,
                                                     maxWidth: groupColWidth,
-                                                    boxShadow: `2px 0 0 ${colors.border}`,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
                                                 }}
                                             />
                                             {Array.from({ length: daysInMonth }, (_, i) => (
-                                                <th key={`day-${i + 1}`} className="border px-1 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                <th key={`day-${i + 1}`} className="border px-1 py-1 text-center relative" style={{ borderColor: colors.border, color: colors.textMain, zIndex: dayCellZ }}>
                                                     {i + 1}
                                                 </th>
                                             ))}
@@ -5376,34 +5493,38 @@ export default function RequestsManager({
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {monthRows.map((row) => (
+                                        {monthRows.map((row) => {
+                                            const rowBg = getGridRoomsRowBackground(row.status);
+                                            return (
                                             <tr key={row.id} className="hover:brightness-105 transition-all">
                                                 <td
-                                                    className="border px-2 py-1 sticky left-0 z-20 truncate font-semibold"
+                                                    className="border px-2 py-1 sticky left-0 truncate font-semibold"
                                                     style={{
                                                         borderColor: colors.border,
-                                                        backgroundColor: `${getStatusColor(row.status)}20`,
-                                                        color: colors.textMain,
+                                                        backgroundColor: rowBg,
+                                                        color: GRID_ROOMS_ROW_TEXT,
                                                         minWidth: companyColWidth,
                                                         width: companyColWidth,
                                                         maxWidth: companyColWidth,
                                                         borderLeft: `3px solid ${getStatusColor(row.status)}`,
-                                                        boxShadow: `2px 0 0 ${colors.border}`,
+                                                        boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                        zIndex: pinnedBodyZ,
                                                     }}
                                                 >
                                                     {row.companyName}
                                                 </td>
                                                 <td
-                                                    className="border px-2 py-1 sticky z-20 truncate font-semibold"
+                                                    className="border px-2 py-1 sticky truncate font-semibold"
                                                     style={{
                                                         left: companyColWidth,
                                                         borderColor: colors.border,
-                                                        backgroundColor: `${getStatusColor(row.status)}20`,
-                                                        color: colors.textMain,
+                                                        backgroundColor: rowBg,
+                                                        color: GRID_ROOMS_ROW_TEXT,
                                                         minWidth: groupColWidth,
                                                         width: groupColWidth,
                                                         maxWidth: groupColWidth,
-                                                        boxShadow: `2px 0 0 ${colors.border}`,
+                                                        boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                        zIndex: pinnedBodyZ,
                                                     }}
                                                 >
                                                     {row.groupName}
@@ -5414,27 +5535,30 @@ export default function RequestsManager({
                                                     return (
                                                         <td
                                                             key={`${row.id}-d${day}`}
-                                                            className="border px-1 py-1 text-center"
+                                                            className="border px-1 py-1 text-center relative font-semibold"
                                                             style={{
                                                                 borderColor: colors.border,
-                                                                color: colors.textMain,
-                                                                backgroundColor: value > 0 ? `${getStatusColor(row.status)}18` : 'transparent',
+                                                                color: value > 0 ? GRID_ROOMS_ROW_TEXT : colors.textMuted,
+                                                                backgroundColor: value > 0 ? rowBg : colors.bg,
+                                                                zIndex: dayCellZ,
                                                             }}
                                                         >
                                                             {value > 0 ? value : ''}
                                                         </td>
                                                     );
                                                 })}
-                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: colors.primary, backgroundColor: `${getStatusColor(row.status)}14` }}>{row.totalRoomNights}</td>
-                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: getStatusColor(row.status), backgroundColor: `${getStatusColor(row.status)}14` }}>{row.status}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.paymentStatus}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.offerDeadline || '—'}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.depositDeadline || '—'}</td>
-                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: `${getStatusColor(row.status)}10` }}>{row.paymentDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.totalRoomNights}</td>
+                                                <td className="border px-2 py-1 text-center font-bold" style={{ borderColor: colors.border, color: getStatusColor(row.status), backgroundColor: rowBg }}>{row.status}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.paymentStatus}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.offerDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.depositDeadline || '—'}</td>
+                                                <td className="border px-2 py-1 text-center" style={{ borderColor: colors.border, color: GRID_ROOMS_ROW_TEXT, backgroundColor: rowBg }}>{row.paymentDeadline || '—'}</td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
+                                </div>
                             </div>
                         );
                     })}

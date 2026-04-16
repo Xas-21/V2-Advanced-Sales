@@ -7,7 +7,7 @@ USERNAME = "Abdullah"
 PASSWORD = "password123"
 PROPERTY_ID = "P5jj48x718"
 TIMEOUT = 30
-PIPELINE_BUCKETS = {"new", "qualified", "proposal", "negotiation", "won", "notInterested"}
+PIPELINE_BUCKETS = {"new", "waiting", "qualified", "proposal", "negotiation", "won", "notInterested"}
 
 
 def test_post_api_crm_state_persists_crm_payload():

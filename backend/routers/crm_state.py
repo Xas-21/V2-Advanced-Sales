@@ -7,6 +7,7 @@ router = APIRouter(prefix="/api", tags=["CRM"])
 
 DEFAULT_BUCKETS = {
     "new": [],
+    "waiting": [],
     "qualified": [],
     "proposal": [],
     "negotiation": [],

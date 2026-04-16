@@ -246,6 +246,7 @@ const crmLocalStorageKey = (propertyId: string) => `${CRM_BY_PROP_PREFIX}${prope
 
 const defaultCrmLeadBuckets = () => ({
     new: [] as any[],
+    waiting: [] as any[],
     qualified: [] as any[],
     proposal: [] as any[],
     negotiation: [] as any[],
@@ -847,6 +848,7 @@ function crmCalendarStageMeta(stageKey: string, c: any): { label: string; color:
     const k = String(stageKey || 'new').toLowerCase().replace(/\s+/g, '');
     const map: Record<string, { label: string; color: string }> = {
         new: { label: 'Upcoming Sales Calls', color: c.blue },
+        waiting: { label: 'Waiting list', color: '#94a3b8' },
         qualified: { label: 'QUALIFIED', color: c.cyan },
         proposal: { label: 'PROPOSAL', color: c.yellow },
         negotiation: { label: 'NEGOTIATION', color: c.orange },
@@ -921,6 +923,8 @@ function expandSalesCallCalendarEntries(leads: any[]): any[] {
             duration: 1,
             pax: 0,
             rev: '',
+            companyName: String(lead.company || '').trim(),
+            ownerName: String(lead.accountManager || lead.ownerUserId || '').trim() || '—',
         });
     });
     return out;
@@ -1017,6 +1021,7 @@ const CalendarView = ({
                                         {dayEvents.map((evt: any, idx: number) => {
                                             const style = getEventColor(evt.color);
                                             const st = calendarItemStatusStyle(evt, colors);
+                                            const isCrm = evt?.kind === 'crm';
                                             return (
                                                 <div
                                                     key={idx}
@@ -1037,7 +1042,21 @@ const CalendarView = ({
                                                     className="text-xs px-2 py-2 rounded cursor-pointer transition-all duration-300 hover:shadow-lg hover:shadow-current/20 hover:scale-105 hover:brightness-110 border-l-3"
                                                     style={{ backgroundColor: style.bg, borderLeftColor: style.border, borderLeftWidth: '3px', boxShadow: `0 0 0 ${style.border}00` }}
                                                 >
-                                                    <div className="font-bold truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                    {isCrm ? (
+                                                        <>
+                                                            <div className="flex items-center gap-1 min-w-0 font-bold leading-tight">
+                                                                <span className="truncate min-w-0" style={{ color: colors.textMain }}>{evt.title}</span>
+                                                                {evt.ownerName && evt.ownerName !== '—' ? (
+                                                                    <span className="shrink-0 text-[10px] font-semibold whitespace-nowrap" style={{ color: colors.textMuted }}>· {evt.ownerName}</span>
+                                                                ) : null}
+                                                            </div>
+                                                            {evt.companyName ? (
+                                                                <div className="text-[10px] font-medium truncate mt-0.5" style={{ color: colors.textMain }}>{evt.companyName}</div>
+                                                            ) : null}
+                                                        </>
+                                                    ) : (
+                                                        <div className="font-bold truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                    )}
                                                     <div className="text-[10px] mt-1" style={{ color: style.text }}>{evt.type}</div>
                                                     <div className="text-[10px] font-bold mt-0.5" style={{ color: st.color }}>{st.text}</div>
                                                 </div>
@@ -1087,6 +1106,7 @@ const CalendarView = ({
                             const style = getEventColor(evt.color);
                             const st = calendarItemStatusStyle(evt, colors);
                             const dateStr = evt.fullDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                            const isCrm = evt?.kind === 'crm';
                             return (
                                 <div
                                     key={idx}
@@ -1112,7 +1132,21 @@ const CalendarView = ({
                                         <div className="text-[10px] mt-1" style={{ color: colors.textMuted }}>{evt.duration} days</div>
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <div className="font-bold text-sm truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                        {isCrm ? (
+                                            <>
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                    <span className="font-bold text-sm truncate min-w-0" style={{ color: colors.textMain }}>{evt.title}</span>
+                                                    {evt.ownerName && evt.ownerName !== '—' ? (
+                                                        <span className="shrink-0 text-[11px] font-semibold whitespace-nowrap" style={{ color: colors.textMuted }}>· {evt.ownerName}</span>
+                                                    ) : null}
+                                                </div>
+                                                {evt.companyName ? (
+                                                    <div className="text-[11px] font-medium truncate mt-0.5" style={{ color: colors.textMain }}>{evt.companyName}</div>
+                                                ) : null}
+                                            </>
+                                        ) : (
+                                            <div className="font-bold text-sm truncate" style={{ color: colors.textMain }}>{evt.title}</div>
+                                        )}
                                         <div className="flex items-center gap-3 mt-1 text-xs" style={{ color: colors.textMuted }}>
                                             <span>{evt.type}</span>
                                             <span>•</span>
@@ -1159,11 +1193,14 @@ const CalendarView = ({
                         </div>
                     ))}
                 </div>
-                <div className="grid grid-cols-7 flex-1 auto-rows-fr">
+                <div
+                    className="grid grid-cols-7 flex-1 min-h-0"
+                    style={{ gridAutoRows: 'minmax(104px, 1fr)' }}
+                >
                     {Array.from({ length: firstWeekdayOfMonth }).map((_, i) => (
                         <div
                             key={`empty-start-${i}`}
-                            className={`border-r-2 border-b-2 min-h-[110px] ${i % 7 === 6 ? 'border-r-0' : ''}`}
+                            className={`border-r-2 border-b-2 min-h-0 h-full ${i % 7 === 6 ? 'border-r-0' : ''}`}
                             style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }}
                         />
                     ))}
@@ -1175,9 +1212,12 @@ const CalendarView = ({
                         const now = new Date();
                         const isToday = now.getFullYear() === year && now.getMonth() === month && now.getDate() === dayNum;
                         return (
-                            <div key={dayNum} className={`border-r-2 border-b-2 p-1.5 min-h-[110px] relative group hover:bg-white/5 transition-colors ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
-                                style={{ borderColor: colors.border }}>
-                                <div className="flex justify-between items-center mb-1">
+                            <div
+                                key={dayNum}
+                                className={`border-r-2 border-b-2 p-1.5 relative group hover:bg-white/5 transition-colors flex flex-col min-h-0 h-full ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
+                                style={{ borderColor: colors.border }}
+                            >
+                                <div className="flex justify-between items-center mb-1 shrink-0">
                                     <span className={`text-xs font-bold ${isToday ? 'bg-red-500 text-white w-5 h-5 flex items-center justify-center rounded-full text-[10px]' : ''}`}
                                         style={{ color: isToday ? '#fff' : colors.textMuted }}>
                                         {dayNum}
@@ -1191,10 +1231,13 @@ const CalendarView = ({
                                         </div>
                                     )}
                                 </div>
-                                <div className="space-y-0.5 overflow-hidden">
+                                <div
+                                    className={`min-h-0 flex-1 space-y-0.5 ${dayEvents.length > 0 ? 'overflow-y-auto overflow-x-hidden pr-0.5' : ''}`}
+                                >
                                     {dayEvents.map((evt: any, idx: number) => {
                                         const style = getEventColor(evt.color);
                                         const st = calendarItemStatusStyle(evt, colors);
+                                        const isCrm = evt?.kind === 'crm';
                                         return (
                                             <div
                                                 key={idx}
@@ -1215,7 +1258,21 @@ const CalendarView = ({
                                                 className="text-[9px] px-1.5 py-1 rounded cursor-pointer transition-all duration-200 hover:shadow-md hover:shadow-current/25 hover:scale-[1.03] hover:brightness-110 border-l-2"
                                                 style={{ backgroundColor: style.bg, borderLeftColor: style.border, boxShadow: `0 0 0 ${style.border}00` }}
                                             >
-                                                <div className="font-semibold truncate leading-tight" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                {isCrm ? (
+                                                    <>
+                                                        <div className="flex items-center gap-0.5 min-w-0 leading-tight">
+                                                            <span className="font-semibold truncate min-w-0" style={{ color: colors.textMain }}>{evt.title}</span>
+                                                            {evt.ownerName && evt.ownerName !== '—' ? (
+                                                                <span className="shrink-0 text-[8px] font-medium whitespace-nowrap" style={{ color: colors.textMuted }}>· {evt.ownerName}</span>
+                                                            ) : null}
+                                                        </div>
+                                                        {evt.companyName ? (
+                                                            <div className="text-[8px] font-medium truncate mt-0.5" style={{ color: colors.textMain }}>{evt.companyName}</div>
+                                                        ) : null}
+                                                    </>
+                                                ) : (
+                                                    <div className="font-semibold truncate leading-tight" style={{ color: colors.textMain }}>{evt.title}</div>
+                                                )}
                                                 <div className="flex items-center justify-between mt-0.5 text-[8px]">
                                                     <span className="truncate" style={{ color: style.text }}>{evt.type}</span>
                                                     <span className="font-bold ml-1 whitespace-nowrap" style={{ color: st.color }}>{st.text}</span>
@@ -1232,7 +1289,7 @@ const CalendarView = ({
                         return (
                             <div
                                 key={`empty-end-${i}`}
-                                className={`border-r-2 border-b-2 min-h-[110px] ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
+                                className={`border-r-2 border-b-2 min-h-0 h-full ${cellIndex % 7 === 6 ? 'border-r-0' : ''}`}
                                 style={{ borderColor: colors.border, backgroundColor: colors.bg + '30' }}
                             />
                         );
@@ -1251,6 +1308,7 @@ const EventsView = ({
     sharedRequests = [],
     onPatchRequestStatus,
     onOpenRequest,
+    onOpenRequestOpts,
     activeProperty,
     accounts = [],
     onRefreshRequests,
@@ -2343,9 +2401,21 @@ const EventsView = ({
                                         <span className="text-[10px] px-1.5 py-0.5 rounded border" style={{ borderColor: col.color + '40', color: col.color, backgroundColor: col.color + '10' }}>
                                             {event.type}
                                         </span>
-                                        <button className="opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: colors.textMuted }}>
-                                            <MoreHorizontal size={14} />
-                                        </button>
+                                        {!readOnly && onOpenRequestOpts ? (
+                                            <button
+                                                type="button"
+                                                title="Request options (same as Requests OPTS)"
+                                                className="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded-md hover:bg-white/10"
+                                                style={{ color: colors.textMuted }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const rid = event.requestId ?? event.id;
+                                                    if (rid) onOpenRequestOpts(String(rid));
+                                                }}
+                                            >
+                                                <MoreHorizontal size={14} />
+                                            </button>
+                                        ) : null}
                                     </div>
                                     <h4 className="font-bold text-sm mb-1 leading-snug" style={{ color: colors.textMain }}>{event.title}</h4>
                                     <p className="text-xs mb-3" style={{ color: colors.textMuted }}>{event.client}</p>
@@ -3476,6 +3546,14 @@ export default function AdvancedSalesDashboard() {
         localStorage.setItem('as_themeId', currentThemeId);
     }, [currentThemeId]);
 
+    /** Drive global CSS for native selects, scrollbars, and color-scheme (Luxury Dark + Cyber Pop). */
+    useEffect(() => {
+        const root = document.documentElement;
+        root.setAttribute('data-theme', currentThemeId);
+        const isDark = currentThemeId === 'luxury' || currentThemeId === 'colorful';
+        root.style.colorScheme = isDark ? 'dark' : 'light';
+    }, [currentThemeId]);
+
     useEffect(() => {
         localStorage.setItem('as_currentView', currentView);
     }, [currentView]);
@@ -3930,9 +4008,28 @@ export default function AdvancedSalesDashboard() {
     const [sharedRequests, setSharedRequests] = useState<any[]>([]);
     const [propertyFinancialKpis, setPropertyFinancialKpis] = useState<any[]>([]);
     const [pendingOpenRequestId, setPendingOpenRequestId] = useState<string | null>(null);
+    /** Headless RequestsManager on Events page for in-place OPTS (see eventsOptsBootstrapId). */
+    const [eventsOptsHostMounted, setEventsOptsHostMounted] = useState(false);
+    const [eventsOptsBootstrapId, setEventsOptsBootstrapId] = useState<string | null>(null);
+    const [eventsOptsSearchParams, setEventsOptsSearchParams] = useState({
+        type: 'all',
+        arrival: '',
+        departure: '',
+        account: '',
+        segment: '',
+        confNumber: '',
+        status: 'all',
+    });
     const [pendingCrmAccountId, setPendingCrmAccountId] = useState<string | null>(null);
     const [pendingOpenCrmLeadId, setPendingOpenCrmLeadId] = useState<string | null>(null);
     const [pendingContractsAccountId, setPendingContractsAccountId] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (currentView !== 'events') {
+            setEventsOptsHostMounted(false);
+            setEventsOptsBootstrapId(null);
+        }
+    }, [currentView]);
 
     const refreshSharedRequests = async () => {
         try {
@@ -5903,6 +6000,10 @@ export default function AdvancedSalesDashboard() {
                                 setRequestsSubView('list');
                                 setCurrentView('requests');
                             }}
+                            onOpenRequestOpts={(id: string) => {
+                                setEventsOptsHostMounted(true);
+                                setEventsOptsBootstrapId(String(id));
+                            }}
                             activeProperty={activeProperty}
                             accounts={accounts}
                             onRefreshRequests={refreshSharedRequests}
@@ -6712,6 +6813,44 @@ export default function AdvancedSalesDashboard() {
                 </div>
             )}
 
+            {/* Events & Catering: in-place request OPTS (same modal as Requests list) */}
+            {currentView === 'events' && eventsOptsHostMounted && (
+                <RequestsManager
+                    key="events-opts-headless"
+                    optsHeadless
+                    theme={theme}
+                    subView="list"
+                    searchParams={eventsOptsSearchParams}
+                    setSearchParams={(p: any) => setEventsOptsSearchParams((prev) => ({ ...prev, ...p }))}
+                    activeProperty={activeProperty}
+                    accounts={accounts}
+                    setAccounts={setAccounts}
+                    pendingOpenOptsRequestId={eventsOptsBootstrapId}
+                    onConsumedPendingOpenOpts={() => setEventsOptsBootstrapId(null)}
+                    onOptsHeadlessDismiss={() => setEventsOptsHostMounted(false)}
+                    onHeadlessModifyDetails={(requestId: string) => {
+                        setEventsOptsHostMounted(false);
+                        setEventsOptsBootstrapId(null);
+                        setRequestSearchParams((p: any) => ({
+                            ...(p || {}),
+                            subView: 'new_request',
+                            editRequestId: requestId,
+                        }));
+                        setRequestsSubView('new_request');
+                        setRequestsNavNonce((n) => n + 1);
+                        setCurrentView('requests');
+                    }}
+                    onAfterRequestsMutate={refreshSharedRequests}
+                    segmentOptions={propertySegmentLabels}
+                    accountTypeOptions={propertyAccountTypeLabels}
+                    canDeleteRequest={canDeleteRequests(currentUser)}
+                    canDeleteRequestPayments={canDeleteRequestPayments(currentUser)}
+                    readOnlyOperational={!canMutateOperational(currentUser)}
+                    currentUser={currentUser}
+                    currency={currentCurrency}
+                />
+            )}
+
             {/* New Event Modal */}
             {showNewEventModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
@@ -7104,6 +7243,7 @@ export default function AdvancedSalesDashboard() {
                 theme={theme}
                 stages={[
                     { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
+                    { id: 'waiting', title: 'Waiting list', color: '#94a3b8' },
                     { id: 'qualified', title: 'QUALIFIED', color: colors.cyan },
                     { id: 'proposal', title: 'PROPOSAL', color: colors.yellow },
                     { id: 'negotiation', title: 'NEGOTIATION', color: colors.orange },

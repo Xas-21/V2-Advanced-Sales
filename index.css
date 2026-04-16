@@ -6,4 +6,79 @@
     html {
         font-family: 'Outfit', sans-serif;
     }
+
+    /* Remove number spinners everywhere (avoids accidental changes when scrolling with wheel over a focused field). */
+    input[type='number']::-webkit-outer-spin-button,
+    input[type='number']::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+    input[type='number'] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+    }
+}
+
+/*
+  Theme hooks: `data-theme` on <html> is set from AS.tsx (`luxury` | `colorful` | `light` | `desert`).
+  Fixes light-grey native <select> option lists in dark themes and tones scrollbars for .custom-scrollbar.
+*/
+:root[data-theme='luxury'],
+:root[data-theme='colorful'] {
+    color-scheme: dark;
+}
+
+:root[data-theme='light'],
+:root[data-theme='desert'] {
+    color-scheme: light;
+}
+
+/* !important: win over utility classes like bg-black/20 on <select> in TSX */
+:root[data-theme='luxury'] select {
+    background-color: #1e1e1e !important;
+    color: #ffffff !important;
+}
+
+:root[data-theme='luxury'] option {
+    background-color: #1e1e1e !important;
+    color: #ffffff !important;
+}
+
+:root[data-theme='colorful'] select {
+    background-color: #1e293b !important;
+    color: #f8fafc !important;
+}
+
+:root[data-theme='colorful'] option {
+    background-color: #1e293b !important;
+    color: #f8fafc !important;
+}
+
+:root[data-theme='luxury'] .custom-scrollbar,
+:root[data-theme='colorful'] .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.22) rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme='luxury'] .custom-scrollbar::-webkit-scrollbar,
+:root[data-theme='colorful'] .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+:root[data-theme='luxury'] .custom-scrollbar::-webkit-scrollbar-track,
+:root[data-theme='colorful'] .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+}
+
+:root[data-theme='luxury'] .custom-scrollbar::-webkit-scrollbar-thumb,
+:root[data-theme='colorful'] .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+:root[data-theme='luxury'] .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+:root[data-theme='colorful'] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.32);
 }

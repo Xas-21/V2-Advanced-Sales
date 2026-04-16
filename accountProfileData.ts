@@ -24,31 +24,57 @@ export function filterOpenBookingRequests(requestsForAccount: any[]): any[] {
 export function computeAccountMetrics(requestsForAccount: any[]): {
     totalRequests: number;
     totalSpend: number;
+    /** % of all linked requests in Definite or Actual status. */
     winRate: number;
+    /** % of all linked requests in Cancelled or Lost status. */
+    cancellationRate: number;
     openPipelineCount: number;
+    wonCount: number;
+    cancelledCount: number;
+    otherCount: number;
 } {
     if (!requestsForAccount.length) {
-        return { totalRequests: 0, totalSpend: 0, winRate: 0, openPipelineCount: 0 };
+        return {
+            totalRequests: 0,
+            totalSpend: 0,
+            winRate: 0,
+            cancellationRate: 0,
+            openPipelineCount: 0,
+            wonCount: 0,
+            cancelledCount: 0,
+            otherCount: 0,
+        };
     }
     let totalSpend = 0;
-    let won = 0;
-    let eligible = 0;
+    let wonCount = 0;
+    let cancelledCount = 0;
+    let otherCount = 0;
     let openCount = 0;
+    const total = requestsForAccount.length;
     for (const r of requestsForAccount) {
         const paid = parseFloat(String(r.paidAmount || '0').replace(/,/g, '')) || 0;
         totalSpend += paid;
         const st = String(r.status || '').toLowerCase();
-        if (st === 'cancelled' || st === 'lost') continue;
-        eligible += 1;
-        if (WON.has(st)) won += 1;
+        if (WON.has(st)) {
+            wonCount += 1;
+        } else if (st === 'cancelled' || st === 'lost') {
+            cancelledCount += 1;
+        } else {
+            otherCount += 1;
+        }
         if (OPEN.has(st)) openCount += 1;
     }
-    const winRate = eligible > 0 ? Math.round((won / eligible) * 100) : 0;
+    const winRate = total > 0 ? Math.round((wonCount / total) * 100) : 0;
+    const cancellationRate = total > 0 ? Math.round((cancelledCount / total) * 100) : 0;
     return {
-        totalRequests: requestsForAccount.length,
+        totalRequests: total,
         totalSpend,
         winRate,
-        openPipelineCount: openCount
+        cancellationRate,
+        openPipelineCount: openCount,
+        wonCount,
+        cancelledCount,
+        otherCount,
     };
 }
 
@@ -96,7 +122,7 @@ export function filterSalesCallsForAccount(
     });
 }
 
-const STAGE_OPPORTUNITY = new Set(['new', 'qualified', 'proposal', 'negotiation']);
+const STAGE_OPPORTUNITY = new Set(['new', 'waiting', 'qualified', 'proposal', 'negotiation']);
 
 export function filterOpenOpportunityLeads(flatLeads: any[], accountId: string | undefined, accountName: string | undefined): any[] {
     return filterSalesCallsForAccount(flatLeads, accountId, accountName).filter((l) =>

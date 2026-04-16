@@ -184,7 +184,24 @@ export default function Reports({
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
         MICE: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount'],
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
-        'Sales Calls': ['ID', 'Date', 'Location', 'Address', 'Name', 'Position', 'Subject', 'Company', 'Stage', 'Outcome', 'Follow-up', 'Next Step', 'Expected Revenue', 'Owner'],
+        'Sales Calls': [
+            'ID',
+            'Date',
+            'Location',
+            'Address',
+            'Name',
+            'Position',
+            'Contact email',
+            'Contact phone',
+            'Subject',
+            'Company',
+            'Stage',
+            'Outcome',
+            'Follow-up',
+            'Next Step',
+            'Expected Revenue',
+            'Owner',
+        ],
     };
 
     useEffect(() => {
@@ -198,7 +215,7 @@ export default function Reports({
     }, [currentUser, selectedEntity]);
 
     const statusOptions = selectedEntity === 'Sales Calls'
-        ? ['Upcoming Sales Calls', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
+        ? ['Upcoming Sales Calls', 'Waiting list', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
         : ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'];
 
     const handleEntityChange = (entity: ReportEntity) => {
@@ -294,6 +311,7 @@ export default function Reports({
             const stageLabel = (raw: string) => {
                 const s = String(raw || '').toLowerCase().trim();
                 if (s === 'new') return 'Upcoming Sales Calls';
+                if (s === 'waiting') return 'Waiting list';
                 if (s === 'qualified') return 'QUALIFIED';
                 if (s === 'proposal') return 'PROPOSAL';
                 if (s === 'negotiation') return 'NEGOTIATION';
@@ -325,6 +343,8 @@ export default function Reports({
                         Address: address || '—',
                         Name: String(lead?.contact || '—'),
                         Position: String(lead?.position || '—'),
+                        'Contact email': String(lead?.email || '').trim() || '—',
+                        'Contact phone': String(lead?.phone || '').trim() || '—',
                         Subject: String(lead?.subject || '—'),
                         Company: String(lead?.company || '—'),
                         Stage: stage,
@@ -341,7 +361,9 @@ export default function Reports({
                 summary: {
                     'Total sales calls': rows.length,
                     'With follow-up': rows.filter((r: any) => String(r['Follow-up']) !== 'No follow-up').length,
-                    'Open opportunities': rows.filter((r: any) => ['Upcoming Sales Calls', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION'].includes(String(r.Stage))).length,
+                    'Open opportunities': rows.filter((r: any) =>
+                        ['Upcoming Sales Calls', 'Waiting list', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION'].includes(String(r.Stage))
+                    ).length,
                     'Expected revenue': formatSar(
                         rows.reduce((sum: number, r: any) => sum + (parseFloat(String(r['Expected Revenue']).replace(/[^\d.-]/g, '')) || 0), 0),
                         selectedCurrency

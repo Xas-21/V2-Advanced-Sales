@@ -3305,20 +3305,21 @@ export default function Settings({
 
             {/* Admin Action Modal */}
             {showModal && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+                <div className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+                    <div className="flex min-h-full items-center justify-center p-4 py-6">
                     <div
-                        className={`w-full rounded-3xl border shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300 ${modalType === 'user' ? 'max-w-3xl' : 'max-w-2xl'}`}
+                        className={`my-auto w-full rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[min(88vh,100dvh-2.5rem)] animate-in zoom-in-95 duration-300 ${modalType === 'user' ? 'max-w-3xl' : 'max-w-2xl'}`}
                         style={{ backgroundColor: colors.card, borderColor: colors.border }}
                     >
-                        <div className="p-6 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
-                            <h3 className="text-xl font-bold font-mono tracking-tighter" style={{ color: colors.primary }}>
+                        <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b flex items-center justify-between gap-3" style={{ borderColor: colors.border }}>
+                            <h3 className="text-lg sm:text-xl font-bold font-mono tracking-tighter" style={{ color: colors.primary }}>
                                 {editingItem ? 'EDIT' : 'ADD'} {modalType?.toUpperCase()}
                             </h3>
-                            <button onClick={() => setShowModal(false)} className="p-2 rounded-xl hover:bg-white/10" style={{ color: colors.textMuted }}>
-                                <X size={24} />
+                            <button onClick={() => setShowModal(false)} className="p-2 rounded-xl hover:bg-white/10 shrink-0" style={{ color: colors.textMuted }}>
+                                <X size={22} />
                             </button>
                         </div>
-                        <div className="p-6 space-y-4">
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar px-4 py-3 sm:px-5 sm:py-4 space-y-3 sm:space-y-4">
                             {modalType === 'property' && (
                                 <>
                                     <div className="grid grid-cols-2 gap-4">
@@ -3540,36 +3541,36 @@ export default function Settings({
                                 </div>
                             )}
                             {modalType === 'user' && (
-                                <div className="space-y-4">
-                                    <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-3">
+                                    <div className="grid grid-cols-2 gap-3">
                                         <div>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Full Name</label>
-                                            <input type="text" placeholder="John Doe" className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Full Name</label>
+                                            <input type="text" placeholder="John Doe" className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.name || ''} onChange={e => setModalFormData({ ...modalFormData, name: e.target.value })} />
                                         </div>
                                         <div>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Username</label>
-                                            <input type="text" placeholder="johndoe" className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Username</label>
+                                            <input type="text" placeholder="johndoe" className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.username || ''} onChange={e => setModalFormData({ ...modalFormData, username: e.target.value })} />
                                         </div>
                                     </div>
                                     <div>
-                                        <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Email Address</label>
-                                        <input type="email" placeholder="john@advancedsales.com" className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                        <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Email Address</label>
+                                        <input type="email" placeholder="john@advancedsales.com" className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                             value={modalFormData.email || ''} onChange={e => setModalFormData({ ...modalFormData, email: e.target.value })} />
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-2 gap-3">
                                         <div>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Property Assignment</label>
-                                            <select className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Property Assignment</label>
+                                            <select className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.propertyId || ''} onChange={e => setModalFormData({ ...modalFormData, propertyId: e.target.value })}>
                                                 <option value="" className="bg-black">Unassigned</option>
                                                 {properties.map(p => <option key={p.id} value={p.id} className="bg-black">{p.name}</option>)}
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">User type / role</label>
-                                            <select className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">User type / role</label>
+                                            <select className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.role || 'Sales Executive'}
                                                 onChange={(e) =>
                                                     setModalFormData({
@@ -3587,19 +3588,19 @@ export default function Settings({
                                     </div>
 
                                     {normalizeUserRole({ role: modalFormData.role }) === 'Admin' ? (
-                                        <p className="text-sm rounded-xl border p-3" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                        <p className="text-xs rounded-lg border p-2.5 leading-snug" style={{ borderColor: colors.border, color: colors.textMuted }}>
                                             Administrators have full access including Global Staff Management and all settings. Individual permission toggles do not apply.
                                         </p>
                                     ) : (
-                                        <div className="space-y-2 rounded-xl border p-4" style={{ borderColor: colors.border }}>
+                                        <div className="space-y-1.5 rounded-lg border p-3" style={{ borderColor: colors.border }}>
                                             <label
-                                                className="text-[10px] uppercase font-bold tracking-widest block opacity-60"
+                                                className="text-[9px] uppercase font-bold tracking-widest block opacity-60 leading-tight"
                                                 style={{ color: colors.textMain }}
                                             >
                                                 Permissions (defaults for this role; pick a section, then toggle)
                                             </label>
                                             <div
-                                                className="flex flex-wrap gap-1.5 pb-2 border-b max-h-24 overflow-y-auto custom-scrollbar"
+                                                className="flex flex-wrap gap-1 pb-1.5 border-b max-h-[4.5rem] overflow-y-auto custom-scrollbar"
                                                 style={{ borderColor: colors.border }}
                                             >
                                                 {USER_MODAL_SECTIONS.map((sec) => (
@@ -3607,7 +3608,7 @@ export default function Settings({
                                                         key={sec.id}
                                                         type="button"
                                                         onClick={() => setUserModalPermSection(sec.id)}
-                                                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-all ${
+                                                        className={`px-2 py-1 rounded-md text-[9px] font-bold uppercase tracking-wide border transition-all ${
                                                             userModalPermSection === sec.id ? 'border-2' : 'opacity-75 hover:opacity-100'
                                                         }`}
                                                         style={{
@@ -3622,11 +3623,11 @@ export default function Settings({
                                                     </button>
                                                 ))}
                                             </div>
-                                            <div className="space-y-2 max-h-52 overflow-y-auto custom-scrollbar pr-1 pt-2 min-h-[4.5rem]">
+                                            <div className="space-y-1 max-h-[min(32vh,14rem)] overflow-y-auto custom-scrollbar pr-1 pt-1 min-h-[3rem]">
                                                 {USER_MODAL_SECTIONS.filter((s) => s.id === userModalPermSection).map((sec) => (
                                                     <div key={sec.id}>
                                                         {sec.description ? (
-                                                            <p className="text-xs mb-3 leading-relaxed" style={{ color: colors.textMuted }}>
+                                                            <p className="text-[11px] mb-2 leading-snug" style={{ color: colors.textMuted }}>
                                                                 {sec.description}
                                                             </p>
                                                         ) : null}
@@ -3644,17 +3645,17 @@ export default function Settings({
                                                             return (
                                                                 <label
                                                                     key={perm}
-                                                                    className="flex items-start gap-3 cursor-pointer text-xs py-1"
+                                                                    className="flex items-start gap-2 cursor-pointer text-[11px] py-0.5"
                                                                     style={{ color: colors.textMain }}
                                                                 >
                                                                     <input
                                                                         type="checkbox"
                                                                         checked={checked}
                                                                         onChange={() => toggleUserPermission(perm)}
-                                                                        className="mt-0.5 rounded border"
+                                                                        className="mt-0.5 rounded border shrink-0"
                                                                         style={{ borderColor: colors.border }}
                                                                     />
-                                                                    <span>{PERMISSION_LABELS[perm]}</span>
+                                                                    <span className="leading-snug">{PERMISSION_LABELS[perm]}</span>
                                                                 </label>
                                                             );
                                                         })}
@@ -3665,9 +3666,9 @@ export default function Settings({
                                     )}
 
                                     {/* Yearly Sales Targets */}
-                                    <div className="space-y-3 pt-4 border-t" style={{ borderColor: colors.border }}>
-                                        <div className="flex justify-between items-center">
-                                            <label className="text-[10px] uppercase font-bold tracking-widest opacity-50" style={{ color: colors.textMain }}>Yearly Sales Calls Targets</label>
+                                    <div className="space-y-2 pt-3 border-t" style={{ borderColor: colors.border }}>
+                                        <div className="flex justify-between items-center gap-2">
+                                            <label className="text-[9px] uppercase font-bold tracking-widest opacity-50" style={{ color: colors.textMain }}>Yearly Sales Calls Targets</label>
                                             <button
                                                 onClick={() => {
                                                     const currentYear = new Date().getFullYear();
@@ -3685,7 +3686,7 @@ export default function Settings({
                                                 }}
                                                 className="text-[10px] font-bold text-primary hover:underline">+ Add Target for Next Year</button>
                                         </div>
-                                        <div className="grid grid-cols-2 gap-3 max-h-40 overflow-auto pr-2 custom-scrollbar">
+                                        <div className="grid grid-cols-2 gap-2 max-h-28 overflow-auto pr-1 custom-scrollbar">
                                             {Object.entries(modalFormData.stats?.yearlyTargets || {}).map(([year, target]: [string, any]) => (
                                                 <div key={year} className="flex gap-2 items-center bg-black/10 p-2 rounded-xl border border-white/5">
                                                     <span className="text-[10px] font-black italic w-12" style={{ color: colors.primary }}>{year}</span>
@@ -3715,16 +3716,16 @@ export default function Settings({
 
                                     {!editingItem ? (
                                         <div>
-                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Initial Password</label>
-                                            <input type="password" placeholder="••••••••" className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
+                                            <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Initial Password</label>
+                                            <input type="password" placeholder="••••••••" className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
                                                 value={modalFormData.password || ''} onChange={e => setModalFormData({ ...modalFormData, password: e.target.value })} />
                                         </div>
                                     ) : (
-                                        <div className="pt-4 border-t" style={{ borderColor: colors.border }}>
+                                        <div className="pt-3 border-t" style={{ borderColor: colors.border }}>
                                             {!modalFormData.showReset ? (
                                                 <button
                                                     onClick={() => setModalFormData({ ...modalFormData, showReset: true })}
-                                                    className="w-full py-3 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 transition-all font-bold text-xs"
+                                                    className="w-full py-2.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-all font-bold text-[11px]"
                                                 >
                                                     Reset Security Credentials
                                                 </button>
@@ -3832,12 +3833,13 @@ export default function Settings({
                                 </div>
                             )}
                         </div>
-                        <div className="p-6 border-t flex justify-end gap-3" style={{ borderColor: colors.border }}>
-                            <button onClick={() => setShowModal(false)} className="px-6 py-2 rounded-xl text-sm font-bold border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>Cancel</button>
-                            <button onClick={handleSave} className="px-8 py-2 rounded-xl bg-primary text-black font-bold hover:opacity-90 transition-all shadow-lg shadow-primary/20">
+                        <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-t flex justify-end gap-2 sm:gap-3" style={{ borderColor: colors.border }}>
+                            <button onClick={() => setShowModal(false)} className="px-4 sm:px-6 py-2 rounded-xl text-sm font-bold border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>Cancel</button>
+                            <button onClick={handleSave} className="px-5 sm:px-8 py-2 rounded-xl bg-primary text-black text-sm font-bold hover:opacity-90 transition-all shadow-lg shadow-primary/20">
                                 {editingItem ? 'Update' : 'Create'} {modalType}
                             </button>
                         </div>
+                    </div>
                     </div>
                 </div>
             )}

@@ -52,6 +52,7 @@ export interface CRMProfileViewProps {
 
 const STAGE_LABELS: Record<string, string> = {
     new: 'Upcoming',
+    waiting: 'Waiting list',
     qualified: 'Qualified',
     proposal: 'Proposal',
     negotiation: 'Negotiation',
@@ -130,8 +131,12 @@ export default function CRMProfileView({
         [linkedRequests, salesCalls, lead.activities]
     );
     const winRate = metrics.winRate;
+    const cancellationRate = metrics.cancellationRate;
     const totalSpend = metrics.totalSpend;
     const totalRequests = metrics.totalRequests;
+    const winBarPct = totalRequests > 0 ? (metrics.wonCount / totalRequests) * 100 : 0;
+    const cancelBarPct = totalRequests > 0 ? (metrics.cancelledCount / totalRequests) * 100 : 0;
+    const otherBarPct = totalRequests > 0 ? (metrics.otherCount / totalRequests) * 100 : 0;
     const preferredBusiness = useMemo(() => {
         const counts: Record<string, number> = {
             Group: 0,
@@ -590,21 +595,33 @@ export default function CRMProfileView({
                             <h3
                                 className="text-xs font-bold uppercase tracking-wider mb-4"
                                 style={{ color: colors.textMuted }}
-                                title="Win rate = definite or actual requests ÷ all requests excluding cancelled or lost. Spend = sum of paid amounts on linked requests."
+                                title="Win rate = Definite or Actual ÷ all linked requests. Cancellation rate = Cancelled or Lost ÷ all linked requests. Spend = sum of paid amounts on linked requests."
                             >
                                 Performance
                             </h3>
                             <div className="space-y-4">
                                 <div>
-                                    <div className="flex justify-between items-center mb-2">
-                                        <span className="text-xs" style={{ color: colors.textMuted }}>Win rate</span>
-                                        <span className="text-sm font-bold" style={{ color: colors.green }}>{winRate}%</span>
+                                    <div className="flex justify-between items-center gap-2 mb-1">
+                                        <span className="text-xs" style={{ color: colors.textMuted }}>Win rate (Definite / Actual)</span>
+                                        <span className="text-sm font-bold tabular-nums shrink-0" style={{ color: colors.green }}>{winRate}%</span>
                                     </div>
-                                    <div className="h-2 rounded-full bg-black/20 overflow-hidden">
-                                        <div className="h-full rounded-full" style={{ width: `${Math.min(winRate, 100)}%`, backgroundColor: colors.green }}></div>
+                                    <div className="flex justify-between items-center gap-2 mb-2">
+                                        <span className="text-xs" style={{ color: colors.textMuted }}>Cancellation rate</span>
+                                        <span className="text-sm font-bold tabular-nums shrink-0" style={{ color: colors.red }}>{cancellationRate}%</span>
                                     </div>
-                                    <p className="text-[10px] mt-1 opacity-70" style={{ color: colors.textMuted }}>
-                                        % of non-cancelled / non-lost requests in definite or actual status
+                                    <div className="h-2.5 rounded-full bg-black/25 overflow-hidden flex w-full" title="Green = Definite/Actual, red = Cancelled/Lost, muted = other statuses (e.g. pipeline).">
+                                        {winBarPct > 0 && (
+                                            <div className="h-full shrink-0" style={{ width: `${winBarPct}%`, backgroundColor: colors.green }} />
+                                        )}
+                                        {cancelBarPct > 0 && (
+                                            <div className="h-full shrink-0" style={{ width: `${cancelBarPct}%`, backgroundColor: colors.red }} />
+                                        )}
+                                        {otherBarPct > 0 && (
+                                            <div className="h-full shrink-0" style={{ width: `${otherBarPct}%`, backgroundColor: `${colors.textMuted}45` }} />
+                                        )}
+                                    </div>
+                                    <p className="text-[10px] mt-1.5 opacity-70 leading-snug" style={{ color: colors.textMuted }}>
+                                        Each linked request counts once. Win = Definite or Actual; cancellation = Cancelled or Lost; other = Inquiry, Tentative, Accepted, Draft, etc.
                                     </p>
                                 </div>
                                 <div>

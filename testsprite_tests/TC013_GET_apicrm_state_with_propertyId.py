@@ -35,7 +35,7 @@ def test_tc013_get_crm_state_with_propertyId():
         leads = data["leads"]
         assert isinstance(leads, dict), "'leads' is not a object/dict"
 
-        expected_buckets = {"new", "qualified", "proposal", "negotiation", "won", "notInterested"}
+        expected_buckets = {"new", "waiting", "qualified", "proposal", "negotiation", "won", "notInterested"}
         buckets_keys = set(leads.keys())
         assert buckets_keys.issubset(expected_buckets), f"Unexpected keys in leads: {buckets_keys - expected_buckets}"
 
