@@ -68,10 +68,137 @@ function inDateRangeYMD(dateStr: string, start: string, end: string): boolean {
     return d >= start && d <= end;
 }
 
+/** Earliest agenda start and latest agenda end (YYYY-MM-DD). */
+function agendaSpanFromRequest(r: any): { start: string; end: string } {
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    let minS = '';
+    let maxE = '';
+    for (const row of agenda) {
+        const s = parseYmdAgenda(row?.startDate);
+        const e = parseYmdAgenda(row?.endDate || row?.startDate) || s;
+        if (s && (!minS || s < minS)) minS = s;
+        if (e && (!maxE || e > maxE)) maxE = e;
+    }
+    return { start: minS, end: maxE || minS };
+}
+
+function rangesOverlapYmd(aStart: string, aEnd: string, filterStart: string, filterEnd: string): boolean {
+    if (!filterStart || !filterEnd) return true;
+    const as = aStart || aEnd;
+    const ae = aEnd || aStart;
+    if (!as && !ae) return false;
+    return !(ae < filterStart || as > filterEnd);
+}
+
+function inclusiveAgendaDayCount(startYmd: string, endYmd: string): number {
+    if (!startYmd || !endYmd) return 0;
+    const a = new Date(`${startYmd}T00:00:00`).getTime();
+    const b = new Date(`${endYmd}T00:00:00`).getTime();
+    if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+    return Math.max(1, Math.floor((b - a) / 86400000) + 1);
+}
+
+function parseYmdAgenda(v: any): string {
+    const raw = String(v || '').trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) return '';
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
 function calculateNights(inDate: string, outDate: string) {
     if (!inDate || !outDate) return 0;
     const diff = new Date(outDate).getTime() - new Date(inDate).getTime();
     return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+}
+
+function asNumberReport(v: any): number {
+    return parseFloat(String(v ?? 0).replace(/,/g, '')) || 0;
+}
+
+/**
+ * Rooms + event + transport line revenue without tax (same rules as operational dashboard).
+ * When lines are empty but a stored no-tax total exists: MICE-like types attribute to event;
+ * other types attribute the full stored amount to rooms.
+ */
+function computeRequestRevenueBreakdownNoTax(r: any): {
+    roomsRevenue: number;
+    eventRevenue: number;
+    transportRevenue: number;
+    totalLineNoTax: number;
+} {
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    const transport = Array.isArray(r?.transportation) ? r.transportation : [];
+    const reqNights = (() => {
+        const inDate = parseYmdAgenda(r?.checkIn);
+        const outDate = parseYmdAgenda(r?.checkOut);
+        if (!inDate || !outDate) return 0;
+        const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
+        if (Number.isNaN(ms)) return 0;
+        return Math.max(0, Math.ceil(ms / 86400000));
+    })();
+    const roomsRevenue = rooms.reduce((sum: number, row: any) => {
+        const count = Number(row?.count || 0);
+        const rate = Number(row?.rate || 0);
+        const inDate = parseYmdAgenda(row?.arrival || r?.checkIn);
+        const outDate = parseYmdAgenda(row?.departure || r?.checkOut);
+        let nights = reqNights;
+        if (inDate && outDate) {
+            const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) nights = Math.max(0, Math.ceil(ms / 86400000));
+        }
+        return sum + count * rate * nights;
+    }, 0);
+    let eventRevenue = agenda.reduce((sum: number, item: any) => {
+        const start = parseYmdAgenda(item?.startDate);
+        const end = parseYmdAgenda(item?.endDate || item?.startDate);
+        let rowDays = 1;
+        if (start && end) {
+            const ms = new Date(`${end}T00:00:00`).getTime() - new Date(`${start}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        }
+        const rowCost = (Number(item?.rate || 0) * Number(item?.pax || 0)) + Number(item?.rental || 0);
+        return sum + rowCost * rowDays;
+    }, 0);
+    const transportRevenue = transport.reduce((sum: number, row: any) => sum + Number(row?.costPerWay || 0), 0);
+    let lineSum = roomsRevenue + eventRevenue + transportRevenue;
+    const storedNoTax = asNumberReport(
+        r?.grandTotalNoTax ?? r?.totalCostNoTax ?? r?.totalCost ?? r?.grandTotal ?? r?.totalAmount ?? 0
+    );
+    if (lineSum <= 0 && storedNoTax > 0) {
+        const t = String(r?.requestType || '').toLowerCase();
+        const miceLike =
+            t === 'event' ||
+            t === 'event_rooms' ||
+            t.includes('series') ||
+            t.includes('event with');
+        if (miceLike) {
+            eventRevenue = storedNoTax;
+            lineSum = roomsRevenue + eventRevenue + transportRevenue;
+        } else {
+            return {
+                roomsRevenue: storedNoTax,
+                eventRevenue: 0,
+                transportRevenue: 0,
+                totalLineNoTax: storedNoTax,
+            };
+        }
+    }
+    return {
+        roomsRevenue,
+        eventRevenue,
+        transportRevenue,
+        totalLineNoTax: lineSum,
+    };
+}
+
+function isEventOrEventRoomsType(r: any): boolean {
+    const k = normalizeRequestTypeKey(r?.requestType);
+    return k === 'event' || k === 'event_rooms';
 }
 
 function matchesStatusFilter(selected: string[], rawStatus: string): boolean {
@@ -180,9 +307,44 @@ export default function Reports({
     const canPreviewRows = canReportsPreviewSourceRows(currentUser);
 
     const availableColumns: Record<ReportEntity, string[]> = {
-        Requests: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Nights', 'Room Nights', 'PAX', 'DDR', 'AVG ADR', 'Paid Amount', 'Unpaid Amount', 'Amount'],
+        Requests: [
+            'Request ID',
+            'Line',
+            'Client',
+            'Request Type',
+            'Date',
+            'Status',
+            'Payment Status',
+            'Nights',
+            'Room Nights',
+            'PAX',
+            'DDR',
+            'AVG ADR',
+            'Paid Amount',
+            'Unpaid Amount',
+            'Event Revenue (no tax)',
+            'Rooms Revenue (no tax)',
+            'Rooms + Event (no tax)',
+            'Amount',
+        ],
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
-        MICE: ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount'],
+        MICE: [
+            'Request ID',
+            'Line',
+            'Client',
+            'Request Type',
+            'Agenda start',
+            'Agenda end',
+            'Agenda days',
+            'Status',
+            'Payment Status',
+            'PAX',
+            'DDR',
+            'Event Revenue',
+            'Paid Amount',
+            'Unpaid Amount',
+            'Amount',
+        ],
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
         'Sales Calls': [
             'ID',
@@ -251,13 +413,18 @@ export default function Reports({
         const vmax = Number(filters.valueRange?.max) || Number.MAX_SAFE_INTEGER;
 
         const passRequestFilters = (r: any, miceOnly: boolean) => {
-            const k = normalizeRequestTypeKey(r.requestType);
             const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
             if (miceOnly && agenda.length === 0) return false;
             if (!matchesStatusFilter(st, r.status)) return false;
             const amt = requestTotalValue(r);
             if (amt < vmin || amt > vmax) return false;
-            if (!inDateRangeYMD(requestPrimaryDate(r), start, end)) return false;
+            if (miceOnly) {
+                const span = agendaSpanFromRequest(r);
+                if (!span.start) return false;
+                if (!rangesOverlapYmd(span.start, span.end, start, end)) return false;
+            } else if (!inDateRangeYMD(requestPrimaryDate(r), start, end)) {
+                return false;
+            }
             return true;
         };
 
@@ -287,10 +454,27 @@ export default function Reports({
             const agenda = Array.isArray(r.agenda) ? r.agenda : [];
             const pax = agenda.reduce((sum: number, row: any) => sum + (Number(row?.pax || 0) || 0), 0);
             const eventRevenue = agenda.reduce((sum: number, row: any) => {
-                return sum + (Number(row?.rate || 0) * Number(row?.pax || 0)) + Number(row?.rental || 0);
+                const sd = parseYmdAgenda(row?.startDate);
+                const ed = parseYmdAgenda(row?.endDate || row?.startDate);
+                let rowDays = 1;
+                if (sd && ed) {
+                    const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
+                    if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+                }
+                const rowCost = (Number(row?.rate || 0) * Number(row?.pax || 0)) + Number(row?.rental || 0);
+                return sum + rowCost * rowDays;
             }, 0);
             const ddr = pax > 0 ? eventRevenue / pax : 0;
-            return { pax, eventRevenue, ddr };
+            const span = agendaSpanFromRequest(r);
+            const agendaDays = inclusiveAgendaDayCount(span.start, span.end);
+            return {
+                pax,
+                eventRevenue,
+                ddr,
+                agendaStart: span.start,
+                agendaEnd: span.end,
+                agendaDays,
+            };
         };
 
         const paymentBlock = (r: any) => {
@@ -384,6 +568,8 @@ export default function Reports({
             let totalPaid = 0;
             let totalUnpaid = 0;
             let totalEventRevenue = 0;
+            let totalMiceEventRevNoTax = 0;
+            let totalMiceRoomsRevNoTax = 0;
             let requestCount = 0;
             const typeCounter: Record<string, number> = {
                 accommodation: 0,
@@ -397,7 +583,6 @@ export default function Reports({
                 const typeKey = normalizeRequestTypeKey(r.requestType);
                 typeCounter[typeKey] = (typeCounter[typeKey] || 0) + 1;
 
-                const date = requestPrimaryDate(r) || '—';
                 const status = r.status || '—';
                 const client = r.account || r.accountName || '—';
                 const total = requestTotalValue(r);
@@ -413,24 +598,54 @@ export default function Reports({
                 totalPaid += pay.paid;
                 totalUnpaid += pay.unpaid;
 
-                rows.push({
-                    'Request ID': r.id || '—',
-                    Line: 'Single',
-                    Client: client,
-                    'Request Type': requestTypeLabel(r.requestType),
-                    Date: date,
-                    Status: status,
-                    'Payment Status': pay.status,
-                    Nights: roomBlock.reqNights || 0,
-                    'Room Nights': roomBlock.roomNights || 0,
-                    PAX: eventBlock.pax || 0,
-                    DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
-                    'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
-                    'Event Revenue': eventBlock.eventRevenue ? formatSar(eventBlock.eventRevenue, selectedCurrency) : '—',
-                    'Paid Amount': formatSar(pay.paid, selectedCurrency),
-                    'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
-                    Amount: formatSar(total, selectedCurrency),
-                });
+                if (selectedEntity === 'MICE') {
+                    const revNoTax = computeRequestRevenueBreakdownNoTax(r);
+                    totalMiceEventRevNoTax += revNoTax.eventRevenue;
+                    totalMiceRoomsRevNoTax += revNoTax.roomsRevenue;
+                    rows.push({
+                        'Request ID': r.id || '—',
+                        Line: 'Single',
+                        Client: client,
+                        'Request Type': requestTypeLabel(r.requestType),
+                        'Agenda start': eventBlock.agendaStart || '—',
+                        'Agenda end': eventBlock.agendaEnd || '—',
+                        'Agenda days': eventBlock.agendaDays || 0,
+                        Status: status,
+                        'Payment Status': pay.status,
+                        PAX: eventBlock.pax || 0,
+                        DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
+                        'Event Revenue': eventBlock.eventRevenue ? formatSar(eventBlock.eventRevenue, selectedCurrency) : '—',
+                        'Paid Amount': formatSar(pay.paid, selectedCurrency),
+                        'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
+                        Amount: formatSar(total, selectedCurrency),
+                    });
+                } else {
+                    const date = requestPrimaryDate(r) || '—';
+                    const revNoTax = computeRequestRevenueBreakdownNoTax(r);
+                    const isEv = isEventOrEventRoomsType(r);
+                    const fmtNoTax = (n: number) => formatSar(Number(n) || 0, selectedCurrency);
+                    const roomsEvSum = (Number(revNoTax.roomsRevenue) || 0) + (Number(revNoTax.eventRevenue) || 0);
+                    rows.push({
+                        'Request ID': r.id || '—',
+                        Line: 'Single',
+                        Client: client,
+                        'Request Type': requestTypeLabel(r.requestType),
+                        Date: date,
+                        Status: status,
+                        'Payment Status': pay.status,
+                        Nights: roomBlock.reqNights || 0,
+                        'Room Nights': roomBlock.roomNights || 0,
+                        PAX: eventBlock.pax || 0,
+                        DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
+                        'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
+                        'Paid Amount': formatSar(pay.paid, selectedCurrency),
+                        'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
+                        'Event Revenue (no tax)': isEv ? fmtNoTax(revNoTax.eventRevenue) : '—',
+                        'Rooms Revenue (no tax)': fmtNoTax(revNoTax.roomsRevenue),
+                        'Rooms + Event (no tax)': isEv ? fmtNoTax(roomsEvSum) : '—',
+                        Amount: formatSar(total, selectedCurrency),
+                    });
+                }
             }
 
             const avgAdr = totalRoomNights > 0 ? weightedAdrSum / totalRoomNights : 0;
@@ -446,6 +661,11 @@ export default function Reports({
                 'Total paid': formatSar(totalPaid, selectedCurrency),
                 'Total unpaid': formatSar(totalUnpaid, selectedCurrency),
             };
+            if (selectedEntity === 'MICE') {
+                baseSummary['Event Revenue (no tax)'] = formatSar(totalMiceEventRevNoTax, selectedCurrency);
+                baseSummary['Rooms Revenue (no tax)'] = formatSar(totalMiceRoomsRevNoTax, selectedCurrency);
+                baseSummary['MICE (NO TAX)'] = formatSar(totalMiceEventRevNoTax + totalMiceRoomsRevNoTax, selectedCurrency);
+            }
             if (selectedEntity === 'Requests') {
                 baseSummary['AVG ADR'] = formatSar(avgAdr, selectedCurrency);
                 baseSummary.Accommodation = typeCounter.accommodation || 0;
@@ -457,8 +677,43 @@ export default function Reports({
                 rows,
                 summary: baseSummary,
                 exportColumns: selectedEntity === 'MICE'
-                    ? ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'PAX', 'DDR', 'Event Revenue', 'Paid Amount', 'Unpaid Amount', 'Amount']
-                    : ['Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Nights', 'Room Nights', 'PAX', 'DDR', 'AVG ADR', 'Paid Amount', 'Unpaid Amount', 'Amount'],
+                    ? [
+                          'Request ID',
+                          'Line',
+                          'Client',
+                          'Request Type',
+                          'Agenda start',
+                          'Agenda end',
+                          'Agenda days',
+                          'Status',
+                          'Payment Status',
+                          'PAX',
+                          'DDR',
+                          'Event Revenue',
+                          'Paid Amount',
+                          'Unpaid Amount',
+                          'Amount',
+                      ]
+                    : [
+                          'Request ID',
+                          'Line',
+                          'Client',
+                          'Request Type',
+                          'Date',
+                          'Status',
+                          'Payment Status',
+                          'Nights',
+                          'Room Nights',
+                          'PAX',
+                          'DDR',
+                          'AVG ADR',
+                          'Paid Amount',
+                          'Unpaid Amount',
+                          'Event Revenue (no tax)',
+                          'Rooms Revenue (no tax)',
+                          'Rooms + Event (no tax)',
+                          'Amount',
+                      ],
             };
         }
 

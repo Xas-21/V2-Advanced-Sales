@@ -4783,22 +4783,32 @@ export default function AdvancedSalesDashboard() {
             if (!skipPerf && isEventsCateringEligibleRequest(req)) {
                 const ev = Number(breakdown.eventRevenue || 0);
                 const miceDays = getMiceAttributionDatesInRange(req, dashboardCurrentRange);
-                if (miceDays.length > 0 && ev > 0) {
-                    const mShare = ev / miceDays.length;
+                if (miceDays.length > 0) {
+                    const dayCount = miceDays.length;
+                    const daysByMonth = new Map<string, number>();
                     for (const d of miceDays) {
-                        const mr = byMonth.get(keyFor(d));
+                        const mk = keyFor(d);
+                        daysByMonth.set(mk, (daysByMonth.get(mk) || 0) + 1);
+                    }
+                    for (const [mk, n] of daysByMonth) {
+                        const mr = byMonth.get(mk);
                         if (mr) {
-                            mr.miceRevenue += mShare;
                             mr.miceRequests += 1;
+                            if (ev > 0) mr.miceRevenue += ev * (n / dayCount);
                         }
                     }
                 } else if (countDatesInRange.length > 0) {
-                    const mShare = ev / countDatesInRange.length;
+                    const total = countDatesInRange.length;
+                    const daysByMonth = new Map<string, number>();
                     for (const d of countDatesInRange) {
-                        const mr = byMonth.get(keyFor(d));
+                        const mk = keyFor(d);
+                        daysByMonth.set(mk, (daysByMonth.get(mk) || 0) + 1);
+                    }
+                    for (const [mk, n] of daysByMonth) {
+                        const mr = byMonth.get(mk);
                         if (mr) {
-                            mr.miceRevenue += mShare;
                             mr.miceRequests += 1;
+                            if (ev > 0) mr.miceRevenue += ev * (n / total);
                         }
                     }
                 } else {
