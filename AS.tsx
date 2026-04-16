@@ -240,6 +240,21 @@ const THEMES = {
     }
 };
 
+/** Recharts default tooltip renders name/value in black; align label + items with theme foreground. */
+function rechartsTooltipThemeProps(colors: any, contentStylePatch?: Record<string, any>) {
+    return {
+        contentStyle: {
+            backgroundColor: colors.tooltip,
+            borderColor: colors.border,
+            borderRadius: 8,
+            color: colors.textMain,
+            ...(contentStylePatch || {}),
+        },
+        labelStyle: { color: colors.textMain, fontWeight: 700 },
+        itemStyle: { color: colors.textMain },
+    };
+}
+
 const CRM_BY_PROP_PREFIX = 'visatour_crm_leads_by_prop_v1::';
 const ACTIVE_PROPERTY_STORAGE_KEY = 'visatour_active_property_id_v1';
 const crmLocalStorageKey = (propertyId: string) => `${CRM_BY_PROP_PREFIX}${propertyId}`;
@@ -288,7 +303,7 @@ function filterCrmBucketsForPropertyContext(
     return out;
 }
 
-const DASHBOARD_PERIOD_MODES = ['autoCurrentYear', 'custom', 'mtd', 'qtd', 'ytd'] as const;
+const DASHBOARD_PERIOD_MODES = ['autoCurrentYear', 'custom', 'mtd', 'ytd'] as const;
 type DashboardPeriodMode = (typeof DASHBOARD_PERIOD_MODES)[number];
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const KPI_STATUS_ORDER = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'] as const;
@@ -328,6 +343,25 @@ const isDashboardExcludedRequest = (req: any) => normalizeStatus(req?.status) ==
 
 const isSeriesRequest = (req: any) => String(req?.requestType || '').toLowerCase().includes('series');
 
+function isMiceRequest(req: any) {
+    const t = String(req?.requestType || '').toLowerCase();
+    if (t === 'event') return true;
+    if (t === 'event_rooms') return true;
+    if (t === 'series' || t.includes('series')) return true;
+    if (t.includes('event with')) return true;
+    return false;
+}
+
+/** Events & Catering kanban + dashboard MICE tab: Event, Event+Rooms, and similar — excludes Series / group-series stays. */
+function isEventsCateringEligibleRequest(req: any): boolean {
+    if (isSeriesRequest(req)) return false;
+    const t = String(req?.requestType || '').toLowerCase();
+    if (t === 'event') return true;
+    if (t === 'event_rooms') return true;
+    if (t.includes('event with')) return true;
+    return false;
+}
+
 const getPrimaryOperationalDate = (req: any): string => {
     const checkIn = parseYmd(req?.checkIn);
     const eventStart = parseYmd(req?.eventStart);
@@ -344,17 +378,88 @@ const getPrimaryOperationalDate = (req: any): string => {
 };
 
 const getRequestCountDates = (req: any): string[] => {
-    if (!isSeriesRequest(req)) {
+    if (isSeriesRequest(req)) {
+        const rows = Array.isArray(req?.rooms) ? req.rooms : [];
+        const dates = rows
+            .map((r: any) => parseYmd(r?.arrival || r?.checkIn))
+            .filter(Boolean) as string[];
+        if (dates.length) return dates;
         const primary = getPrimaryOperationalDate(req);
         return primary ? [primary] : [];
     }
-    const rows = Array.isArray(req?.rooms) ? req.rooms : [];
-    const dates = rows
-        .map((r: any) => parseYmd(r?.arrival || r?.checkIn))
-        .filter(Boolean);
-    if (dates.length) return dates;
+    if (isEventsCateringEligibleRequest(req)) {
+        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+        const starts = agenda
+            .map((row: any) => parseYmd(row?.startDate || row?.endDate))
+            .filter(Boolean) as string[];
+        if (starts.length) return [...new Set(starts)].sort();
+    }
     const primary = getPrimaryOperationalDate(req);
     return primary ? [primary] : [];
+};
+
+/** True if any operational slice of the request (count dates, stay nights, agenda days, or primary) intersects the range. */
+const requestTouchesOperationalRange = (req: any, range: { start: string; end: string }): boolean => {
+    for (const d of getRequestCountDates(req)) {
+        if (d && isIsoInRange(d, range)) return true;
+    }
+    const pd = getPrimaryOperationalDate(req);
+    if (pd && isIsoInRange(pd, range)) return true;
+    const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+    for (const rr of rooms) {
+        const a = parseYmd(rr?.arrival || req?.checkIn);
+        const b = parseYmd(rr?.departure || req?.checkOut);
+        if (a && b) {
+            const cur = new Date(`${a}T00:00:00`);
+            const endMs = new Date(`${b}T00:00:00`).getTime();
+            let c = cur.getTime();
+            while (c < endMs) {
+                const iso = toYmd(new Date(c));
+                if (isIsoInRange(iso, range)) return true;
+                c += 86400000;
+            }
+        } else if (a && isIsoInRange(a, range)) return true;
+    }
+    for (const item of Array.isArray(req?.agenda) ? req.agenda : []) {
+        const s = parseYmd(item?.startDate);
+        const e = parseYmd(item?.endDate || item?.startDate);
+        if (!s) continue;
+        let c = new Date(`${s}T00:00:00`).getTime();
+        const endAt = new Date(`${e || s}T00:00:00`).getTime();
+        while (c <= endAt) {
+            if (isIsoInRange(toYmd(new Date(c)), range)) return true;
+            c += 86400000;
+        }
+    }
+    return false;
+};
+
+/** Calendar days in range for MICE event/agenda attribution (dashboard charts). */
+const getMiceAttributionDatesInRange = (req: any, range: { start: string; end: string }): string[] => {
+    if (!isEventsCateringEligibleRequest(req)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const pushDay = (iso: string) => {
+        if (!iso || !isIsoInRange(iso, range) || seen.has(iso)) return;
+        seen.add(iso);
+        out.push(iso);
+    };
+    for (const item of Array.isArray(req?.agenda) ? req.agenda : []) {
+        const s = parseYmd(item?.startDate);
+        const e = parseYmd(item?.endDate || item?.startDate);
+        if (!s) continue;
+        let c = new Date(`${s}T00:00:00`).getTime();
+        const endAt = new Date(`${e || s}T00:00:00`).getTime();
+        while (c <= endAt) {
+            pushDay(toYmd(new Date(c)));
+            c += 86400000;
+        }
+    }
+    if (out.length) return out.sort();
+    for (const d of getRequestCountDates(req)) {
+        if (d && isIsoInRange(d, range)) pushDay(d);
+    }
+    return out.sort();
 };
 
 const getCurrentYearRange = () => {
@@ -366,30 +471,21 @@ const getCurrentYearRange = () => {
     };
 };
 
-const getMtdRange = () => {
-    const now = new Date();
+/** Month-to-date through the anchor day (local calendar). */
+const getMtdRange = (anchor: Date) => {
+    const y = anchor.getFullYear();
+    const m = anchor.getMonth() + 1;
     return {
-        start: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`,
-        end: toYmd(now),
+        start: `${y}-${String(m).padStart(2, '0')}-01`,
+        end: toYmd(anchor),
     };
 };
 
-const getQtdRange = () => {
-    const now = new Date();
-    const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
-    return {
-        start: `${now.getFullYear()}-${String(qStartMonth + 1).padStart(2, '0')}-01`,
-        end: toYmd(now),
-    };
-};
-
-const getYtdRange = () => {
-    const now = new Date();
-    return {
-        start: `${now.getFullYear()}-01-01`,
-        end: toYmd(now),
-    };
-};
+/** Calendar year-to-date: Jan 1 of anchor’s year through anchor day (local). */
+const getYtdRange = (anchor: Date) => ({
+    start: `${anchor.getFullYear()}-01-01`,
+    end: toYmd(anchor),
+});
 
 const shiftRangeByYears = (range: { start: string; end: string }, years: number) => {
     const s = parseYmd(range.start);
@@ -706,8 +802,8 @@ function computeRequestCostBreakdown(req: any) {
     };
 }
 
-function requestToKanbanCard(req: any, taxes: any[] = []) {
-    const total = computeRequestTotalWithTax(req, taxes);
+function requestToKanbanCard(req: any, _taxes: any[] = []) {
+    const eventRevenueOnly = computeRequestCostBreakdown(req).eventRevenue;
     const agenda = Array.isArray(req.agenda) && req.agenda.length ? req.agenda[0] : null;
     const pax = Number(agenda?.pax || req.totalEventPax || 0) || 0;
     const dateRaw = req.eventStart || req.checkIn || agenda?.startDate || req.requestDate || '';
@@ -718,19 +814,11 @@ function requestToKanbanCard(req: any, taxes: any[] = []) {
         title: req.requestName || req.confirmationNo || String(req.id),
         client: req.account || req.accountName || '—',
         pax,
-        budget: Number(total || 0),
+        /** Events & Catering: show event/agenda revenue only (not rooms/series accommodation). */
+        budget: Number(eventRevenueOnly || 0),
         date,
         type: req.requestType || 'Event',
     };
-}
-
-function isMiceRequest(req: any) {
-    const t = String(req?.requestType || '').toLowerCase();
-    if (t === 'event') return true;
-    if (t === 'event_rooms') return true;
-    if (t === 'series' || t.includes('series')) return true;
-    if (t.includes('event with')) return true;
-    return false;
 }
 
 // --- Helper Components ---
@@ -1345,7 +1433,9 @@ const EventsView = ({
     const [beoNotesDraft, setBeoNotesDraft] = useState('');
 
     const miceRequests = useMemo(() => {
-        return (sharedRequests || []).filter(isMiceRequest).filter((r: any) => requestInEventDateRange(r, filterRange));
+        return (sharedRequests || [])
+            .filter(isEventsCateringEligibleRequest)
+            .filter((r: any) => requestInEventDateRange(r, filterRange));
     }, [sharedRequests, filterRange]);
 
     const kanbanData = useMemo(() => {
@@ -1402,7 +1492,7 @@ const EventsView = ({
             const name = r.account || r.accountName || 'Unknown';
             if (!byAcc[name]) byAcc[name] = { name, events: [], total: 0, pax: 0 };
             byAcc[name].events.push(r);
-            byAcc[name].total += parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0;
+            byAcc[name].total += computeRequestCostBreakdown(r).eventRevenue;
             const ag = Array.isArray(r.agenda) && r.agenda[0];
             byAcc[name].pax += Number(ag?.pax || r.totalEventPax || 0) || 0;
         }
@@ -1415,7 +1505,7 @@ const EventsView = ({
                 details: a.events.map((req: any) => {
                     const ag = Array.isArray(req.agenda) && req.agenda[0];
                     const date = String(req.eventStart || ag?.startDate || req.checkIn || '').slice(0, 10);
-                    const val = parseFloat(String(req.totalCost ?? 0).replace(/,/g, '')) || 0;
+                    const val = computeRequestCostBreakdown(req).eventRevenue;
                     const valStr = formatMoneyCompact(val);
                     return {
                         date: date || '—',
@@ -1431,13 +1521,13 @@ const EventsView = ({
     const pipelineValueKpi = useMemo(() => {
         const t = miceRequests
             .filter((r: any) => ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Draft'].includes(String(r.status || '')))
-            .reduce((s: number, r: any) => s + (parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0), 0);
+            .reduce((s: number, r: any) => s + computeRequestCostBreakdown(r).eventRevenue, 0);
         return formatMoneyCompact(t);
     }, [miceRequests, formatMoneyCompact]);
 
     const avgEventValueKpi = useMemo(() => {
         if (!miceRequests.length) return formatMoneyCompact(0);
-        const sum = miceRequests.reduce((s: number, r: any) => s + (parseFloat(String(r.totalCost ?? 0).replace(/,/g, '')) || 0), 0);
+        const sum = miceRequests.reduce((s: number, r: any) => s + computeRequestCostBreakdown(r).eventRevenue, 0);
         const avg = sum / miceRequests.length;
         return formatMoneyCompact(avg);
     }, [miceRequests, formatMoneyCompact]);
@@ -1570,7 +1660,7 @@ const EventsView = ({
         return { label: 'Tentative / In pipeline', tone: 'tentative' as const, requestTitle: lastTitle };
     };
 
-    const allMiceRequests = useMemo(() => (sharedRequests || []).filter(isMiceRequest), [sharedRequests]);
+    const allMiceRequests = useMemo(() => (sharedRequests || []).filter(isEventsCateringEligibleRequest), [sharedRequests]);
 
     const beoCandidates = useMemo(() => {
         return allMiceRequests.filter((r: any) => {
@@ -2270,7 +2360,7 @@ const EventsView = ({
                                 <BarChart layout="vertical" data={barData} margin={{ top: 0, right: 30, left: 8, bottom: 5 }}>
                                     <XAxis type="number" hide />
                                     <YAxis dataKey="name" type="category" width={120} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
-                                    <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                    <Tooltip cursor={{ fill: 'transparent' }} {...rechartsTooltipThemeProps(colors)} />
                                     <Bar dataKey="value" fill={colors.purple} barSize={18} radius={[0, 4, 4, 0]} />
                                 </BarChart>
                             </ResponsiveContainer>
@@ -2286,7 +2376,7 @@ const EventsView = ({
                                             <Cell key={i} fill={piePalette[i % piePalette.length]} />
                                         ))}
                                     </Pie>
-                                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                    <Tooltip {...rechartsTooltipThemeProps(colors)} />
                                     <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', color: colors.textMuted }} />
                                 </PieChart>
                             </ResponsiveContainer>
@@ -2601,11 +2691,23 @@ const RequestsView = ({ theme, subView, setSubView, searchParams, setSearchParam
 
 // --- Extracted Components (Memoization Optimization) ---
 
-const Card = ({ children, className = "", title, tabs, activeTab, onTabChange, actionIcon: ActionIcon, extraHeaderAction, colors }: any) => (
+const Card = ({
+    children,
+    className = '',
+    title,
+    tabs,
+    activeTab,
+    onTabChange,
+    actionIcon: ActionIcon,
+    onActionIconClick,
+    headerSearch,
+    extraHeaderAction,
+    colors,
+}: any) => (
     <div className={`flex flex-col overflow-hidden rounded-xl shadow-lg border transition-all duration-500 hover:shadow-2xl hover:-translate-y-1 animate-in fade-in slide-in-from-bottom-6 ${className}`}
         style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-            <div className="flex items-center gap-4 overflow-x-auto scrollbar-none w-full md:w-auto">
+        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+            <div className="flex items-center gap-4 overflow-x-auto scrollbar-none w-full md:w-auto min-w-0">
                 {title && <h3 className="text-[10px] uppercase tracking-[0.15em] font-semibold whitespace-nowrap" style={{ color: colors.textMuted }}>{title}</h3>}
                 {tabs && (
                     <div className="flex gap-1">
@@ -2629,9 +2731,33 @@ const Card = ({ children, className = "", title, tabs, activeTab, onTabChange, a
                     </div>
                 )}
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 shrink-0">
+                {headerSearch?.open && (
+                    <input
+                        type="search"
+                        value={headerSearch.value}
+                        onChange={(e) => headerSearch.onChange(e.target.value)}
+                        placeholder={headerSearch.placeholder || 'Search…'}
+                        className="text-[10px] px-2 py-1 rounded border max-w-[140px] sm:max-w-[200px] md:max-w-[240px] min-w-0"
+                        style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                        autoComplete="off"
+                        aria-label={headerSearch.placeholder || 'Search'}
+                    />
+                )}
                 {extraHeaderAction}
-                {ActionIcon && <ActionIcon size={14} style={{ color: colors.textMuted }} className="hover:opacity-80 cursor-pointer transition-colors hidden md:block" />}
+                {ActionIcon && (onActionIconClick ? (
+                    <button
+                        type="button"
+                        onClick={onActionIconClick}
+                        className="p-0.5 rounded transition-opacity hover:opacity-90 cursor-pointer"
+                        style={{ color: colors.textMuted }}
+                        aria-label="Search"
+                    >
+                        <ActionIcon size={14} className="block" />
+                    </button>
+                ) : (
+                    <ActionIcon size={14} style={{ color: colors.textMuted }} className="hover:opacity-80 hidden md:block" />
+                ))}
             </div>
         </div>
         <div className="flex-1 min-h-0 relative">
@@ -2866,10 +2992,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
                     <YAxis axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
-                    <Tooltip
-                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
-                        formatter={moneyTooltipFormatter}
-                    />
+                    <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Area type="monotone" dataKey="revenue" stroke={colors.green} fill="url(#colorRev)" />
                 </AreaChart>
             ) : chartTab === 'Requests' ? (
@@ -2883,7 +3006,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                         allowDecimals={false}
                         domain={[0, 'dataMax']}
                     />
-                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} cursor={{ fill: colors.border }} />
+                    <Tooltip {...rechartsTooltipThemeProps(colors)} cursor={{ fill: colors.border }} />
                     <Bar dataKey="totalRequests" name="Total Requests" fill={colors.blue} radius={[4, 4, 0, 0]} barSize={20} />
                 </BarChart>
             ) : chartTab === 'Rooms' ? (
@@ -2906,10 +3029,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                         tick={{ fill: colors.textMuted, fontSize: 10 }}
                         tickFormatter={moneyTickFormatter}
                     />
-                    <Tooltip
-                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
-                        formatter={moneyTooltipFormatter}
-                    />
+                    <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
                     <Bar yAxisId="left" dataKey="rooms" name="Rooms" fill={colors.cyan} radius={[4, 4, 0, 0]} barSize={16} />
                     <Line yAxisId="left" type="monotone" dataKey="roomNights" name="Room Nights" stroke={colors.blue} strokeWidth={2} dot={{ r: 2 }} />
@@ -2928,10 +3048,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                         domain={[0, 'dataMax']}
                     />
                     <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
-                    <Tooltip
-                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
-                        formatter={moneyTooltipFormatter}
-                    />
+                    <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
                     <Bar yAxisId="left" dataKey="miceRequests" name="MICE Requests" fill={colors.purple} radius={[4, 4, 0, 0]} barSize={20} />
                     <Line yAxisId="right" type="monotone" dataKey="miceRevenue" name="Event Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
@@ -3149,7 +3266,7 @@ const ToDoView = ({
                                         >
                                             {[0, 1, 2].map((i) => <Cell key={i} />)}
                                         </Pie>
-                                        <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderRadius: '12px', borderColor: colors.border }} />
+                                        <Tooltip {...rechartsTooltipThemeProps(colors, { borderRadius: '12px' })} />
                                     </PieChart>
                                 </ResponsiveContainer>
                             </div>
@@ -3165,7 +3282,7 @@ const ToDoView = ({
                                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={colors.border} />
                                         <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: colors.textMuted }} />
                                         <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: colors.textMuted }} />
-                                        <Tooltip cursor={{ fill: 'white', opacity: 0.05 }} contentStyle={{ backgroundColor: colors.tooltip, borderRadius: '12px', borderColor: colors.border }} />
+                                        <Tooltip cursor={{ fill: 'white', opacity: 0.05 }} {...rechartsTooltipThemeProps(colors, { borderRadius: '12px' })} />
                                         <Bar dataKey="count" radius={[10, 10, 0, 0]} barSize={30}>
                                             {TASK_CATEGORIES.map((_, i) => (
                                                 <Cell key={i} fill={[colors.primary, colors.blue, colors.purple, colors.cyan, colors.orange][i % 5]} />
@@ -3283,7 +3400,7 @@ const DistributionChart = ({ distTab, segmentData, accountTypeData, colors }: an
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} horizontal={false} />
                     <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
                     <YAxis dataKey="name" type="category" width={80} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
-                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} cursor={{ fill: colors.border, fillOpacity: 0.1 }} />
+                    <Tooltip {...rechartsTooltipThemeProps(colors)} cursor={{ fill: colors.border, fillOpacity: 0.1 }} />
                     <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={12}>
                         {(segmentData || []).map((entry: any, index: number) => (
                             <Cell key={`${entry.name}-${index}`} fill={barFills[index % barFills.length]} />
@@ -3307,7 +3424,7 @@ const DistributionChart = ({ distTab, segmentData, accountTypeData, colors }: an
                         ))}
                     </Pie>
                     <Tooltip
-                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                        {...rechartsTooltipThemeProps(colors)}
                         formatter={(value: any, _n: any, item: any) => [
                             `${value} account${value === 1 ? '' : 's'}`,
                             item?.payload?.name ?? 'Type',
@@ -3601,6 +3718,8 @@ export default function AdvancedSalesDashboard() {
     const [chartTab, setChartTab] = useState('Performance');
     const [distTab, setDistTab] = useState('Segments');
     const [feedTab, setFeedTab] = useState('Requests');
+    const [dashboardFeedSearchOpen, setDashboardFeedSearchOpen] = useState(false);
+    const [dashboardFeedSearchQuery, setDashboardFeedSearchQuery] = useState('');
     const [tableTab, setTableTab] = useState('Status');
     const [isSideNavOpen, setIsSideNavOpen] = useState(false);
 
@@ -4324,15 +4443,15 @@ export default function AdvancedSalesDashboard() {
     }, [sharedRequests, activeProperty?.id, currentThemeId]);
 
     const dashboardCurrentRange = useMemo(() => {
+        const anchor = new Date(dashboardNowAnchor);
         if (dashboardPeriodMode === 'custom') {
             const start = parseYmd(customDates.start);
             const end = parseYmd(customDates.end);
             if (!start || !end || start > end) return getCurrentYearRange();
             return { start, end };
         }
-        if (dashboardPeriodMode === 'mtd') return getMtdRange();
-        if (dashboardPeriodMode === 'qtd') return getQtdRange();
-        if (dashboardPeriodMode === 'ytd') return getYtdRange();
+        if (dashboardPeriodMode === 'mtd') return getMtdRange(anchor);
+        if (dashboardPeriodMode === 'ytd') return getYtdRange(anchor);
         return getCurrentYearRange();
     }, [dashboardPeriodMode, customDates.start, customDates.end, dashboardNowAnchor]);
 
@@ -4487,6 +4606,9 @@ export default function AdvancedSalesDashboard() {
         let totalRevenue = 0;
         let paidRevenue = 0;
         let cancelledRevenue = 0;
+        /** Unique non-cancelled requests touching the range (KPI "Total Requests"). */
+        let requestCount = 0;
+        /** In-range operational count dates (series segments, etc.) — for charts, not the headline count. */
         let requestUnits = 0;
         const callsCount = flattenCrmLeads(crmLeads).filter((lead: any) => {
             const dt = parseYmd(lead?.lastContact || lead?.date);
@@ -4494,8 +4616,7 @@ export default function AdvancedSalesDashboard() {
         }).length;
 
         for (const req of scopedRequests) {
-            const primaryDate = getPrimaryOperationalDate(req);
-            if (!primaryDate || !isIsoInRange(primaryDate, range)) continue;
+            if (!requestTouchesOperationalRange(req, range)) continue;
             const breakdown = computeRequestCostBreakdown(req);
             const st = normalizeStatus(req?.status);
             if (st) {
@@ -4503,14 +4624,16 @@ export default function AdvancedSalesDashboard() {
                 if (st === 'Cancelled') cancelledRevenue += breakdown.totalRevenue;
             }
             if (isDashboardExcludedRequest(req)) continue;
+            requestCount += 1;
             totalRevenue += breakdown.totalRevenue;
             paidRevenue += asNumber(req?.paidAmount || 0);
             const unitDates = getRequestCountDates(req).filter((d) => isIsoInRange(d, range));
-            requestUnits += unitDates.length || 1;
+            requestUnits += unitDates.length > 0 ? unitDates.length : 1;
         }
 
-        const avgValue = requestUnits > 0 ? totalRevenue / requestUnits : 0;
+        const avgValue = requestCount > 0 ? totalRevenue / requestCount : 0;
         return {
+            requestCount,
             requestUnits,
             totalRevenue,
             avgValue,
@@ -4540,12 +4663,12 @@ export default function AdvancedSalesDashboard() {
     const dashboardStats = useMemo(() => {
         const status = currentRangeSummary.statusCounts;
         return {
-            requests: String(currentRangeSummary.requestUnits),
+            requests: String(currentRangeSummary.requestCount),
             revenue: formatMoneyCompact(currentRangeSummary.totalRevenue),
-            avgValue: currentRangeSummary.requestUnits ? formatMoneyCompact(currentRangeSummary.avgValue) : formatMoneyCompact(0),
+            avgValue: currentRangeSummary.requestCount ? formatMoneyCompact(currentRangeSummary.avgValue) : formatMoneyCompact(0),
             accounts: String((accounts || []).length),
             trend: pctVsLyLabel(currentRangeSummary.totalRevenue, lyRangeSummary.totalRevenue),
-            requestsSubtext: pctVsLyLabel(currentRangeSummary.requestUnits, lyRangeSummary.requestUnits),
+            requestsSubtext: pctVsLyLabel(currentRangeSummary.requestCount, lyRangeSummary.requestCount),
             avgSubtext: pctVsLyLabel(currentRangeSummary.avgValue, lyRangeSummary.avgValue),
             status: {
                 act: String(status.Actual || 0),
@@ -4593,36 +4716,101 @@ export default function AdvancedSalesDashboard() {
         );
 
         for (const req of scopedRequests) {
-            const primaryDate = getPrimaryOperationalDate(req);
-            if (!primaryDate || !isIsoInRange(primaryDate, dashboardCurrentRange)) continue;
-            const monthKey = keyFor(primaryDate);
-            const row = byMonth.get(monthKey);
-            if (!row) continue;
+            if (!requestTouchesOperationalRange(req, dashboardCurrentRange)) continue;
 
             const breakdown = computeRequestCostBreakdown(req);
             const skipPerf = isDashboardExcludedRequest(req);
+            const unitDates = getRequestCountDates(req);
+            const countDatesInRange = unitDates.filter((d) => isIsoInRange(d, dashboardCurrentRange));
 
             if (!skipPerf) {
-                row.revenue += breakdown.totalRevenue;
+                if (countDatesInRange.length > 0) {
+                    const revShare = breakdown.totalRevenue / countDatesInRange.length;
+                    for (const d of countDatesInRange) {
+                        const mr = byMonth.get(keyFor(d));
+                        if (mr) mr.revenue += revShare;
+                    }
+                } else {
+                    const pd = getPrimaryOperationalDate(req);
+                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
+                        const mr = byMonth.get(keyFor(pd));
+                        if (mr) mr.revenue += breakdown.totalRevenue;
+                    }
+                }
             }
 
-            const unitDates = getRequestCountDates(req);
             if (!skipPerf) {
+                let addedRequestUnit = false;
                 for (const unitDate of unitDates) {
                     if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
                     const unitRow = byMonth.get(keyFor(unitDate));
-                    if (unitRow) unitRow.totalRequests += 1;
+                    if (unitRow) {
+                        unitRow.totalRequests += 1;
+                        addedRequestUnit = true;
+                    }
+                }
+                if (!addedRequestUnit) {
+                    const pd = getPrimaryOperationalDate(req);
+                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
+                        const unitRow = byMonth.get(keyFor(pd));
+                        if (unitRow) unitRow.totalRequests += 1;
+                    }
                 }
             }
 
             const status = normalizeStatus(req?.status).toLowerCase();
-            if (status && Object.prototype.hasOwnProperty.call(row, status)) {
-                row[status] += 1;
+            if (status) {
+                let addedStatus = false;
+                for (const unitDate of unitDates) {
+                    if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
+                    const unitRow = byMonth.get(keyFor(unitDate));
+                    if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
+                        unitRow[status] += 1;
+                        addedStatus = true;
+                    }
+                }
+                if (!addedStatus) {
+                    const pd = getPrimaryOperationalDate(req);
+                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
+                        const unitRow = byMonth.get(keyFor(pd));
+                        if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
+                            unitRow[status] += 1;
+                        }
+                    }
+                }
             }
 
-            if (!skipPerf && isMiceRequest(req)) {
-                row.miceRequests += 1;
-                row.miceRevenue += breakdown.eventRevenue;
+            if (!skipPerf && isEventsCateringEligibleRequest(req)) {
+                const ev = Number(breakdown.eventRevenue || 0);
+                const miceDays = getMiceAttributionDatesInRange(req, dashboardCurrentRange);
+                if (miceDays.length > 0 && ev > 0) {
+                    const mShare = ev / miceDays.length;
+                    for (const d of miceDays) {
+                        const mr = byMonth.get(keyFor(d));
+                        if (mr) {
+                            mr.miceRevenue += mShare;
+                            mr.miceRequests += 1;
+                        }
+                    }
+                } else if (countDatesInRange.length > 0) {
+                    const mShare = ev / countDatesInRange.length;
+                    for (const d of countDatesInRange) {
+                        const mr = byMonth.get(keyFor(d));
+                        if (mr) {
+                            mr.miceRevenue += mShare;
+                            mr.miceRequests += 1;
+                        }
+                    }
+                } else {
+                    const pd = getPrimaryOperationalDate(req);
+                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
+                        const mr = byMonth.get(keyFor(pd));
+                        if (mr) {
+                            mr.miceRevenue += ev;
+                            mr.miceRequests += 1;
+                        }
+                    }
+                }
             }
 
             if (!skipPerf) {
@@ -4753,8 +4941,7 @@ export default function AdvancedSalesDashboard() {
         let roomsActual = 0;
         let fnbActual = 0;
         for (const req of scopedRequests) {
-            const primaryDate = getPrimaryOperationalDate(req);
-            if (!primaryDate || !isIsoInRange(primaryDate, range)) continue;
+            if (!requestTouchesOperationalRange(req, range)) continue;
             if (isDashboardExcludedRequest(req)) continue;
             if (normalizeStatus(req?.status) !== 'Actual') continue;
             const breakdown = computeRequestCostBreakdown(req);
@@ -4792,19 +4979,17 @@ export default function AdvancedSalesDashboard() {
     }, [dashboardCurrentRange, propertyFinancialKpis, scopedRequests, formatMoneyCompact]);
 
     const dashboardFeedRecentRequests = useMemo(() => {
+        const q = dashboardFeedSearchQuery.trim().toLowerCase();
         const list = [...(scopedRequests || [])]
             .filter((r: any) => !isDashboardExcludedRequest(r))
-            .filter((r: any) => {
-                const d = getPrimaryOperationalDate(r);
-                return d ? isIsoInRange(d, dashboardCurrentRange) : false;
-            })
+            .filter((r: any) => requestTouchesOperationalRange(r, dashboardCurrentRange))
             .sort((a: any, b: any) => {
                 const da = getPrimaryOperationalDate(a);
                 const db = getPrimaryOperationalDate(b);
                 return db.localeCompare(da);
             })
-            .slice(0, 12);
-        return list.map((r: any, i: number) => {
+            .slice(0, 80);
+        const mapped = list.map((r: any, i: number) => {
             const raw = computeRequestCostBreakdown(r).totalRevenue;
             const amount = formatCompactAmount(raw);
             return {
@@ -4816,9 +5001,25 @@ export default function AdvancedSalesDashboard() {
                 amount,
             };
         });
-    }, [scopedRequests, dashboardCurrentRange]);
+        const filtered = q
+            ? mapped.filter(
+                  (row: any) =>
+                      String(row.client || '')
+                          .toLowerCase()
+                          .includes(q) ||
+                      String(row.type || '')
+                          .toLowerCase()
+                          .includes(q) ||
+                      String(row.status || '')
+                          .toLowerCase()
+                          .includes(q),
+              )
+            : mapped;
+        return filtered.slice(0, 12);
+    }, [scopedRequests, dashboardCurrentRange, dashboardFeedSearchQuery]);
 
     const dashboardFeedSalesCalls = useMemo(() => {
+        const q = dashboardFeedSearchQuery.trim().toLowerCase();
         const flat = flattenCrmLeads(crmLeads);
         const sorted = [...flat]
             .filter((lead: any) => {
@@ -4829,30 +5030,53 @@ export default function AdvancedSalesDashboard() {
             const ta = Date.parse(parseYmd(a.lastContact || a.date) || '') || 0;
             const tb = Date.parse(parseYmd(b.lastContact || b.date) || '') || 0;
             return tb - ta;
-        }).slice(0, 12);
-        return sorted.map((l: any, i: number) => ({
+        }).slice(0, 80);
+        const mapped = sorted.map((l: any, i: number) => ({
             id: l.id ?? `crm-${i}`,
             activity: l.subject || l.nextStep || 'Sales opportunity',
             client: l.company || '—',
             date: l.lastContact || l.date || '—',
             result: crmCalendarStageMeta(String(l.stage || l.status || 'new'), colors).label,
         }));
-    }, [crmLeads, dashboardCurrentRange, colors]);
+        const filtered = q
+            ? mapped.filter(
+                  (row: any) =>
+                      String(row.client || '')
+                          .toLowerCase()
+                          .includes(q) ||
+                      String(row.activity || '')
+                          .toLowerCase()
+                          .includes(q) ||
+                      String(row.result || '')
+                          .toLowerCase()
+                          .includes(q),
+              )
+            : mapped;
+        return filtered.slice(0, 12);
+    }, [crmLeads, dashboardCurrentRange, colors, dashboardFeedSearchQuery]);
 
     const dashboardFeedAccountProfiles = useMemo(() => {
-        return (accounts || []).slice(0, 14).map((acc: any) => {
+        const q = dashboardFeedSearchQuery.trim().toLowerCase();
+        const rows = (accounts || []).map((acc: any) => {
             const reqs = filterRequestsForAccount(sharedRequests || [], acc.id, acc.name);
             const m = computeAccountMetrics(reqs);
-            const rev = formatMoneyCompact(m.totalSpend);
             return {
                 id: acc.id,
                 client: acc.name,
                 type: acc.type || 'Account',
-                revenue: rev,
+                revenue: formatMoneyCompact(m.totalSpend),
                 bookings: m.totalRequests,
+                revenueSort: m.totalSpend,
             };
         });
-    }, [accounts, sharedRequests, formatMoneyCompact]);
+        const filtered = q
+            ? rows.filter((row: any) => String(row.client || '').toLowerCase().includes(q))
+            : rows;
+        return filtered
+            .sort((a: any, b: any) => (b.revenueSort || 0) - (a.revenueSort || 0))
+            .slice(0, 50)
+            .map(({ revenueSort: _rs, ...rest }: any) => rest);
+    }, [accounts, sharedRequests, formatMoneyCompact, dashboardFeedSearchQuery]);
 
     const handleOpenTaskModal = (task: any = null) => {
         if (!task && !canMutateOperational(currentUser)) return;
@@ -4953,6 +5177,26 @@ export default function AdvancedSalesDashboard() {
         [tasks, activeProperty?.id]
     );
 
+    const dashboardFeedTasksFiltered = useMemo(() => {
+        const q = dashboardFeedSearchQuery.trim().toLowerCase();
+        if (!q) return activeTasks;
+        return activeTasks.filter(
+            (t: any) =>
+                String(t.task || '')
+                    .toLowerCase()
+                    .includes(q) ||
+                String(t.client || '')
+                    .toLowerCase()
+                    .includes(q) ||
+                String(t.description || '')
+                    .toLowerCase()
+                    .includes(q) ||
+                String(t.assignedTo || '')
+                    .toLowerCase()
+                    .includes(q),
+        );
+    }, [activeTasks, dashboardFeedSearchQuery]);
+
     // Click Outside Refs
     const eventsPickerRef = useRef<HTMLDivElement>(null);
     const eventTypeMenuRef = useRef<HTMLDivElement>(null);
@@ -5031,6 +5275,15 @@ export default function AdvancedSalesDashboard() {
     useEffect(() => {
         const t = setInterval(() => setDashboardNowAnchor(Date.now()), 60 * 60 * 1000);
         return () => clearInterval(t);
+    }, []);
+
+    /** After midnight or long backgrounding, refresh “today” so MTD/YTD end dates stay correct. */
+    useEffect(() => {
+        const onVis = () => {
+            if (document.visibilityState === 'visible') setDashboardNowAnchor(Date.now());
+        };
+        document.addEventListener('visibilitychange', onVis);
+        return () => document.removeEventListener('visibilitychange', onVis);
     }, []);
 
     const handleMonthChange = (direction: any) => {
@@ -5772,21 +6025,22 @@ export default function AdvancedSalesDashboard() {
                                     <CalendarDays size={14} style={{ color: dashboardPeriodMode === 'custom' ? colors.primary : colors.textMuted }} className="shrink-0" />
                                 </button>
                                 <button
-                                    onClick={() => setDashboardPeriodMode('mtd')}
+                                    type="button"
+                                    onClick={() => {
+                                        setDashboardNowAnchor(Date.now());
+                                        setDashboardPeriodMode('mtd');
+                                    }}
                                     className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'mtd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                     style={{ color: dashboardPeriodMode === 'mtd' ? colors.primary : colors.textMuted }}
                                 >
                                     MTD
                                 </button>
                                 <button
-                                    onClick={() => setDashboardPeriodMode('qtd')}
-                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'qtd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
-                                    style={{ color: dashboardPeriodMode === 'qtd' ? colors.primary : colors.textMuted }}
-                                >
-                                    QTD
-                                </button>
-                                <button
-                                    onClick={() => setDashboardPeriodMode('ytd')}
+                                    type="button"
+                                    onClick={() => {
+                                        setDashboardNowAnchor(Date.now());
+                                        setDashboardPeriodMode('ytd');
+                                    }}
                                     className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wide transition-colors ${dashboardPeriodMode === 'ytd' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                     style={{ color: dashboardPeriodMode === 'ytd' ? colors.primary : colors.textMuted }}
                                 >
@@ -6161,6 +6415,20 @@ export default function AdvancedSalesDashboard() {
                                     activeTab={feedTab}
                                     onTabChange={setFeedTab}
                                     actionIcon={Search}
+                                    onActionIconClick={() => setDashboardFeedSearchOpen((o) => !o)}
+                                    headerSearch={{
+                                        open: dashboardFeedSearchOpen,
+                                        value: dashboardFeedSearchQuery,
+                                        onChange: setDashboardFeedSearchQuery,
+                                        placeholder:
+                                            feedTab === 'ACC. Production'
+                                                ? 'Account name'
+                                                : feedTab === 'Tasks'
+                                                  ? 'Task or client'
+                                                  : feedTab === 'Sales Calls'
+                                                    ? 'Activity or client'
+                                                    : 'Client or type',
+                                    }}
                                     colors={colors}
                                     extraHeaderAction={feedTab === 'Tasks' && canMutateOperational(currentUser) && (
                                         <button
@@ -6200,7 +6468,7 @@ export default function AdvancedSalesDashboard() {
                                                     : feedTab === 'Sales Calls'
                                                         ? dashboardFeedSalesCalls
                                                         : feedTab === 'Tasks'
-                                                            ? activeTasks
+                                                            ? dashboardFeedTasksFiltered
                                                             : dashboardFeedAccountProfiles).map((item: any, i: number) => (
                                                     <tr key={item.id || i} className="transition-all group cursor-pointer border-b last:border-0 hover:bg-white/5 active:bg-white/10"
                                                         style={{ borderColor: colors.border }}
@@ -6279,7 +6547,7 @@ export default function AdvancedSalesDashboard() {
                                                     ))}
                                                 </Pie>
                                                 <Tooltip
-                                                    contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                                                    {...rechartsTooltipThemeProps(colors)}
                                                     formatter={(value: any, _n: any, item: any) => [
                                                         `${value} request${value === 1 ? '' : 's'}`,
                                                         item?.payload?.name ?? 'Type',

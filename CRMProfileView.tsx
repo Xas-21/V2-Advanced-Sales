@@ -656,7 +656,11 @@ export default function CRMProfileView({
                                                     <Cell key={item.name} fill={item.color} />
                                                 ))}
                                             </Pie>
-                                            <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                                                labelStyle={{ color: colors.textMain, fontWeight: 700 }}
+                                                itemStyle={{ color: colors.textMain }}
+                                            />
                                         </PieChart>
                                     </ResponsiveContainer>
                                     <div className="grid grid-cols-2 gap-2 mt-2">

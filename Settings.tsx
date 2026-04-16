@@ -1328,8 +1328,9 @@ export default function Settings({
                                     />
                                     <YAxis hide />
                                     <Tooltip
-                                        contentStyle={{ backgroundColor: colors.card, borderRadius: '12px', border: `1px solid ${colors.border}`, fontSize: '10px' }}
-                                        itemStyle={{ color: colors.primary }}
+                                        contentStyle={{ backgroundColor: colors.card, borderRadius: '12px', border: `1px solid ${colors.border}`, fontSize: '10px', color: colors.textMain }}
+                                        labelStyle={{ color: colors.textMain, fontWeight: 700 }}
+                                        itemStyle={{ color: colors.textMain }}
                                         formatter={(value: any) => formatMoney(Number(value || 0), 0)}
                                     />
                                     <Area

@@ -370,7 +370,11 @@ export default function LandingPage({ themes, currentThemeId, onOpenLogin, onThe
                                     <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
                                     <XAxis dataKey="month" tick={{ fill: colors.textMuted, fontSize: 11 }} />
                                     <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} />
-                                    <Tooltip contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }} />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: colors.tooltip, borderColor: colors.border, color: colors.textMain }}
+                                        labelStyle={{ color: colors.textMain, fontWeight: 700 }}
+                                        itemStyle={{ color: colors.textMain }}
+                                    />
                                     <Area dataKey={demoMetric} stroke={colors.primary} fill={colors.primary + '33'} strokeWidth={2} />
                                 </AreaChart>
                             </ResponsiveContainer>
