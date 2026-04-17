@@ -374,7 +374,11 @@ const getPrimaryOperationalDate = (req: any): string => {
         if (!starts.length) return '';
         return starts.sort()[0];
     })();
-    /** Imported / legacy rows may omit top-level dates; use room stay lines and metadata. */
+    /** Prefer stay/event anchors: earliest of check-in vs event start when either exists; agenda only if both missing. */
+    const stayOrEvent = [checkIn, eventStart].filter(Boolean).sort() as string[];
+    if (stayOrEvent.length) return stayOrEvent[0];
+    if (agendaStart) return agendaStart;
+
     const firstRoomArrival = (() => {
         const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
         const dates: string[] = [];
@@ -385,11 +389,12 @@ const getPrimaryOperationalDate = (req: any): string => {
         if (!dates.length) return '';
         return dates.sort()[0];
     })();
+    if (firstRoomArrival) return firstRoomArrival;
     const requestDate = parseYmd(req?.requestDate);
+    if (requestDate) return requestDate;
     const receivedDate = parseYmd(req?.receivedDate);
-    const createdAt = parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt);
-    const candidates = [checkIn, eventStart, agendaStart, firstRoomArrival, requestDate, receivedDate, createdAt].filter(Boolean).sort() as string[];
-    return candidates.length ? candidates[0] : '';
+    if (receivedDate) return receivedDate;
+    return parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt) || '';
 };
 
 const getRequestCountDates = (req: any): string[] => {
@@ -1114,9 +1119,9 @@ const CalendarView = ({
         });
 
         return (
-            <div className="flex flex-col h-full gap-4">
+            <div className="flex flex-1 flex-col min-h-0 gap-3">
                 {/* Calendar Legend */}
-                <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="shrink-0 flex flex-wrap items-center gap-4 sm:gap-6 px-3 sm:px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                     {[
                         { label: 'Group Accommodation', color: colors.blue },
                         { label: 'Series Group', color: colors.purple },
@@ -1140,14 +1145,14 @@ const CalendarView = ({
                             </div>
                         ))}
                     </div>
-                    <div className="grid grid-cols-7 flex-1">
+                    <div className="grid grid-cols-7 flex-1 min-h-0" style={{ gridTemplateRows: 'minmax(0, 1fr)' }}>
                         {weekDays.map((date, i) => {
                             const dayYmd = toYmd(date);
                             const dayEvents = displayEvents.filter((e: any) => e.ymd === dayYmd);
                             const isToday = dayYmd === toYmd(new Date());
                             return (
-                                <div key={i} className="border-r-2 last:border-r-0 p-2 overflow-y-auto" style={{ borderColor: colors.border, backgroundColor: isToday ? colors.bg : 'transparent' }}>
-                                    <div className="space-y-2">
+                                <div key={i} className="border-r-2 last:border-r-0 p-2 min-h-0 flex flex-col overflow-hidden" style={{ borderColor: colors.border, backgroundColor: isToday ? colors.bg : 'transparent' }}>
+                                    <div className="min-h-0 flex-1 overflow-y-auto space-y-2 scrollbar-thin">
                                         {dayEvents.map((evt: any, idx: number) => {
                                             const style = getEventColor(evt.color);
                                             const st = calendarItemStatusStyle(evt, colors);
@@ -1213,9 +1218,9 @@ const CalendarView = ({
             .sort((a: any, b: any) => String(a.ymd).localeCompare(String(b.ymd)));
 
         return (
-            <div className="flex flex-col h-full gap-4">
+            <div className="flex flex-1 flex-col min-h-0 gap-3">
                 {/* Calendar Legend */}
-                <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="shrink-0 flex flex-wrap items-center gap-4 sm:gap-6 px-3 sm:px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                     {[
                         { label: 'Group Accommodation', color: colors.blue },
                         { label: 'Series Group', color: colors.purple },
@@ -1230,7 +1235,7 @@ const CalendarView = ({
                 </div>
 
                 {/* List View */}
-                <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                     <div className="h-full overflow-y-auto p-4 space-y-3">
                         {allEvents.map((evt: any, idx: number) => {
                             const style = getEventColor(evt.color);
@@ -1297,10 +1302,12 @@ const CalendarView = ({
     }
 
     // Month View (default)
+    const monthWeekRowCount = Math.ceil((firstWeekdayOfMonth + daysInMonth + trailingPadDays) / 7);
+
     return (
-        <div className="flex flex-col h-full gap-4">
+        <div className="flex flex-1 flex-col min-h-0 gap-3">
             {/* Calendar Legend */}
-            <div className="flex flex-wrap items-center gap-6 px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+            <div className="shrink-0 flex flex-wrap items-center gap-4 sm:gap-6 px-3 sm:px-4 py-2 rounded-lg border-2" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                 {[
                     { label: 'Group Accommodation', color: colors.blue },
                     { label: 'Series Group', color: colors.purple },
@@ -1314,9 +1321,9 @@ const CalendarView = ({
                 ))}
             </div>
 
-            {/* Calendar Grid */}
+            {/* Calendar Grid — rows share remaining height; each day scrolls its own items */}
             <div className="flex-1 min-h-0 rounded-xl border-2 overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                <div className="grid grid-cols-7 border-b-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                <div className="shrink-0 grid grid-cols-7 border-b-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                     {days.map(day => (
                         <div key={day} className="py-2 text-center text-[10px] uppercase font-bold tracking-widest" style={{ color: colors.primary }}>
                             {day}
@@ -1325,7 +1332,7 @@ const CalendarView = ({
                 </div>
                 <div
                     className="grid grid-cols-7 flex-1 min-h-0"
-                    style={{ gridAutoRows: 'minmax(104px, 1fr)' }}
+                    style={{ gridTemplateRows: `repeat(${monthWeekRowCount}, minmax(0, 1fr))` }}
                 >
                     {Array.from({ length: firstWeekdayOfMonth }).map((_, i) => (
                         <div
@@ -1362,7 +1369,7 @@ const CalendarView = ({
                                     )}
                                 </div>
                                 <div
-                                    className={`min-h-0 flex-1 space-y-0.5 ${dayEvents.length > 0 ? 'overflow-y-auto overflow-x-hidden pr-0.5' : ''}`}
+                                    className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-0.5 space-y-0.5 scrollbar-thin"
                                 >
                                     {dayEvents.map((evt: any, idx: number) => {
                                         const style = getEventColor(evt.color);
@@ -1474,6 +1481,7 @@ const EventsView = ({
     const [beoSortOrder, setBeoSortOrder] = useState<'newest' | 'oldest'>('newest');
     const [beoModalRequestId, setBeoModalRequestId] = useState<string | null>(null);
     const [beoNotesDraft, setBeoNotesDraft] = useState('');
+    const eventsKanbanScrollRef = useRef<HTMLDivElement>(null);
 
     const miceRequests = useMemo(() => {
         return (sharedRequests || [])
@@ -2519,7 +2527,7 @@ const EventsView = ({
 
     // Default: Kanban Pipeline (Kanban Icon)
     return (
-        <div className="flex flex-col h-full gap-4">
+        <div className="flex flex-col h-full min-h-0 gap-4">
             {/* KPI Header */}
             <div className="flex items-center justify-between px-1">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: colors.textMuted }}>Dates</h3>
@@ -2535,8 +2543,37 @@ const EventsView = ({
                 <KPICard label="Number of Events" value={numEventsLabel} subtext="In The Selected Period" icon={CalendarDays} colorKey="orange" theme={theme} />
             </div>
 
+            <div className="shrink-0 flex items-center justify-end gap-1 px-1">
+                <button
+                    type="button"
+                    aria-label="Scroll columns left"
+                    className="p-1.5 rounded-lg border transition-colors hover:bg-white/10"
+                    style={{ borderColor: colors.border, color: colors.textMain }}
+                    onClick={() => {
+                        const el = eventsKanbanScrollRef.current;
+                        if (!el) return;
+                        el.scrollBy({ left: -Math.max(280, Math.floor(el.clientWidth * 0.55)), behavior: 'smooth' });
+                    }}
+                >
+                    <ChevronLeft size={18} />
+                </button>
+                <button
+                    type="button"
+                    aria-label="Scroll columns right"
+                    className="p-1.5 rounded-lg border transition-colors hover:bg-white/10"
+                    style={{ borderColor: colors.border, color: colors.textMain }}
+                    onClick={() => {
+                        const el = eventsKanbanScrollRef.current;
+                        if (!el) return;
+                        el.scrollBy({ left: Math.max(280, Math.floor(el.clientWidth * 0.55)), behavior: 'smooth' });
+                    }}
+                >
+                    <ChevronRight size={18} />
+                </button>
+            </div>
+
             {/* Kanban Board */}
-            <div className="flex-1 min-h-0 flex gap-4 overflow-x-auto pb-4 scrollbar-thin">
+            <div ref={eventsKanbanScrollRef} className="flex-1 min-h-0 flex gap-4 overflow-x-auto pb-4 scrollbar-thin">
                 {columns.map(col => (
                     <div
                         key={col.id}
@@ -6364,9 +6401,17 @@ export default function AdvancedSalesDashboard() {
                     </div>
                 </header>
 
-                {/* 2. Main Content Area — scroll includes footer; inner wrapper avoids h-full views pinning copyright to the viewport */}
-                <main className="flex-1 p-3 min-h-0 overflow-y-auto relative">
-                    <div className="w-full min-h-0 h-auto">
+                {/* 2. Main Content Area — calendar fills viewport and scrolls inside day cells; other views scroll the main pane */}
+                <main
+                    className={`flex-1 p-3 min-h-0 relative ${
+                        currentView === 'calendar' ? 'overflow-hidden flex flex-col min-h-0' : 'overflow-y-auto'
+                    }`}
+                >
+                    <div
+                        className={`w-full min-h-0 ${
+                            currentView === 'calendar' ? 'flex-1 flex flex-col min-h-0 h-full' : 'h-auto'
+                        }`}
+                    >
                     {currentView === 'calendar' ? (
                         <CalendarView
                             theme={theme}

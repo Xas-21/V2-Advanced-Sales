@@ -3,7 +3,7 @@ import {
     Users, Phone, Mail, MapPin, Tag, TrendingUp, DollarSign,
     Calendar, MessageSquare, FileText, MoreVertical, MoreHorizontal, X, ArrowRight,
     CheckCircle2, Clock, XCircle, Star, Building, User, Plus,
-    Edit, Trash2, Filter, Search, ChevronDown, List, Kanban, Save,
+    Edit, Trash2, Filter, Search, ChevronDown, ChevronLeft, ChevronRight, List, Kanban, Save,
     PhoneCall, Send, Eye, BarChart3, Award, Check, Copy, UserCircle
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
@@ -249,6 +249,7 @@ export default function CRM({
     /** false = oldest → newest (default); true = newest → oldest */
     const [listSortNewestFirst, setListSortNewestFirst] = useState(false);
     const crmAccountComboRef = useRef<HTMLDivElement>(null);
+    const pipelineBoardScrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (!listMenuLeadId) return;
@@ -948,7 +949,36 @@ export default function CRM({
                         </div>
                     </div>
                 ) : (
-                    <div className="flex-1 overflow-x-auto flex gap-4">
+                    <div className="flex-1 flex flex-col min-h-0 gap-1.5">
+                        <div className="shrink-0 flex items-center justify-end gap-1 px-0.5">
+                            <button
+                                type="button"
+                                aria-label="Scroll pipeline left"
+                                className="p-1.5 rounded-lg border transition-colors hover:bg-white/10 disabled:opacity-30"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                onClick={() => {
+                                    const el = pipelineBoardScrollRef.current;
+                                    if (!el) return;
+                                    el.scrollBy({ left: -Math.max(280, Math.floor(el.clientWidth * 0.55)), behavior: 'smooth' });
+                                }}
+                            >
+                                <ChevronLeft size={18} />
+                            </button>
+                            <button
+                                type="button"
+                                aria-label="Scroll pipeline right"
+                                className="p-1.5 rounded-lg border transition-colors hover:bg-white/10 disabled:opacity-30"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                onClick={() => {
+                                    const el = pipelineBoardScrollRef.current;
+                                    if (!el) return;
+                                    el.scrollBy({ left: Math.max(280, Math.floor(el.clientWidth * 0.55)), behavior: 'smooth' });
+                                }}
+                            >
+                                <ChevronRight size={18} />
+                            </button>
+                        </div>
+                        <div ref={pipelineBoardScrollRef} className="flex-1 min-h-0 overflow-x-auto flex gap-4 pb-1 scrollbar-thin">
                         {stages.map((stage) => (
                             <div key={stage.id} className="w-80 shrink-0 flex flex-col rounded-xl border overflow-hidden"
                                 style={{ backgroundColor: colors.card, borderColor: colors.border }}
@@ -1084,6 +1114,7 @@ export default function CRM({
                                 </div>
                             </div>
                         ))}
+                        </div>
                     </div>
                 )}
             </div>
