@@ -328,6 +328,21 @@ function escapeHtml(raw: any) {
         .replace(/"/g, '&quot;');
 }
 
+/** One meal code for list/detail when all room rows match; `MIX` when they differ; fallback to request-level meal. */
+export function deriveRequestMealLabelFromRooms(rooms: unknown, fallbackRequestMeal?: string): string {
+    const list = Array.isArray(rooms) ? rooms : [];
+    const codes = new Set<string>();
+    for (const r of list) {
+        const raw = String((r as any)?.mealPlan ?? '').trim().toUpperCase();
+        if (raw) codes.add(raw);
+    }
+    if (codes.size === 0) {
+        return String(fallbackRequestMeal ?? '').trim();
+    }
+    if (codes.size === 1) return [...codes][0];
+    return 'MIX';
+}
+
 export function calculateAccFinancialsForRequest(
     form: any,
     taxesList: any[],

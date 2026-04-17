@@ -47,6 +47,7 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
     findFirstAgendaVenueConflict,
+    deriveRequestMealLabelFromRooms,
     paymentsMeetOrExceedTotal,
     shouldPromoteDefiniteToActual,
     requestSectionAddButtonStyle,
@@ -142,7 +143,7 @@ const initialAccommodation = {
     depositDeadline: '',
     paymentDeadline: '',
     mealPlan: 'RO',
-    rooms: [{ id: Date.now(), type: '', occupancy: 'Single', count: 1, rate: 0 }],
+    rooms: [{ id: Date.now(), type: '', occupancy: 'Single', count: 1, rate: 0, mealPlan: 'RO' }],
     transportation: [] as any[],
     agenda: [] as any[],
     invoices: {
@@ -464,7 +465,7 @@ export default function RequestsManager({
             setAccForm({ 
                 ...initialAccommodation, 
                 id: 'REQ-' + Math.floor(Math.random() * 100000),
-                rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: 'Single', count: 1, rate: 0 }],
+                rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: 'Single', count: 1, rate: 0, mealPlan: 'RO' }],
                 payments: [],
                 logs: [],
                 transportation: [],
@@ -755,7 +756,11 @@ export default function RequestsManager({
                     const a = String(r.arrival || ci || '').slice(0, 10);
                     const d = String(r.departure || co || '').slice(0, 10);
                     const n = a && d ? calculateNights(a, d) : Math.max(0, Number(r.nights) || 0);
-                    return { ...r, nights: n };
+                    return {
+                        ...r,
+                        nights: n,
+                        mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
+                    };
                 }),
                 transportation: Array.isArray(req.transportation) ? req.transportation : [],
                 payments: savedPayments,
@@ -789,6 +794,10 @@ export default function RequestsManager({
                 accountName,
                 accountId: req.accountId || '',
                 nights: nightsAcc,
+                rooms: (Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms).map((r: any) => ({
+                    ...r,
+                    mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
+                })),
                 payments: savedPayments,
                 logs: req.logs || [],
                 segment: req.segment || '',
@@ -1023,9 +1032,16 @@ export default function RequestsManager({
                 if (p != null && String(p).trim() !== '') createdByUserIdOut = String(p).trim();
             }
 
+            const savedRooms = sanitizeRequestRoomsForSave(formData.rooms || []);
+            const mealPlanForPayload =
+                normalizedType === 'event'
+                    ? String(formData.mealPlan ?? '').trim()
+                    : deriveRequestMealLabelFromRooms(savedRooms, formData.mealPlan);
+
             const payload = {
                 ...formData,
-                rooms: sanitizeRequestRoomsForSave(formData.rooms),
+                rooms: savedRooms,
+                mealPlan: mealPlanForPayload || String(formData.mealPlan ?? '').trim() || '—',
                 id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
                 requestName: formData.requestName || 'Unnamed Request',
                 account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
@@ -1384,6 +1400,7 @@ export default function RequestsManager({
 
         const addRoom = () => {
             const rt = primaryPropertyRoomType || '';
+            const defaultMeal = String(accForm.mealPlan || 'RO').trim() || 'RO';
             const newRoom =
                 requestType === 'series' || requestType === 'event_rooms'
                     ? {
@@ -1395,8 +1412,9 @@ export default function RequestsManager({
                           occupancy: 'Single',
                           count: 1,
                           rate: 0,
+                          mealPlan: defaultMeal,
                       }
-                    : { id: Date.now(), type: rt, occupancy: 'Single', count: 1, rate: 0 };
+                    : { id: Date.now(), type: rt, occupancy: 'Single', count: 1, rate: 0, mealPlan: defaultMeal };
 
             setAccForm({
                 ...accForm,
@@ -2109,23 +2127,29 @@ export default function RequestsManager({
                                         </select>
                                     </div>
                                     <div className="col-span-1 min-w-0">
+                                        {(() => {
+                                            const rowMeal =
+                                                String((room as any).mealPlan ?? accForm.mealPlan ?? 'RO').trim() || 'RO';
+                                            return (
                                         <select
-                                            value={accForm.mealPlan}
-                                            onChange={(e) => setAccForm({ ...accForm, mealPlan: e.target.value })}
+                                            value={rowMeal}
+                                            onChange={(e) => updateRoom(room.id, 'mealPlan', e.target.value)}
                                             className="w-full min-w-0 py-1.5 px-0.5 text-[11px] font-mono font-bold text-center rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             title={
-                                                mealPlansForProperty.find((m) => m.code === accForm.mealPlan)?.name ||
-                                                accForm.mealPlan ||
+                                                mealPlansForProperty.find((m) => m.code === rowMeal)?.name ||
+                                                rowMeal ||
                                                 'Meal plan'
                                             }
                                         >
                                             {mealPlansForProperty.map((m) => (
                                                 <option key={m.id} value={m.code}>{m.code}</option>
                                             ))}
-                                            {accForm.mealPlan && !mealPlansForProperty.some((mm) => mm.code === accForm.mealPlan) ? (
-                                                <option value={accForm.mealPlan}>{accForm.mealPlan}</option>
+                                            {rowMeal && !mealPlansForProperty.some((mm) => mm.code === rowMeal) ? (
+                                                <option value={rowMeal}>{rowMeal}</option>
                                             ) : null}
                                         </select>
+                                            );
+                                        })()}
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
                                         <select className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
@@ -3203,7 +3227,9 @@ export default function RequestsManager({
                                             </div>
                                             <div>
                                                 <p className="text-[10px] font-bold uppercase opacity-40">Meal Plan</p>
-                                                <p className="font-bold text-sm">{request.mealPlan}</p>
+                                                <p className="font-bold text-sm">
+                                                    {deriveRequestMealLabelFromRooms(request.rooms, request.mealPlan) || '—'}
+                                                </p>
                                             </div>
                                         </div>
                                     </>
@@ -5011,6 +5037,7 @@ export default function RequestsManager({
     const mealPlanShort = (meal: string) => {
         const m = String(meal || '').toUpperCase().trim();
         if (!m) return '';
+        if (m === 'MIX') return 'MIX';
         if (m === 'RO' || m === 'BB' || m === 'HB' || m === 'FB') return m;
         if (m === 'BREAKFAST') return 'BB';
         if (m === 'HALF BOARD') return 'HB';
@@ -5021,7 +5048,8 @@ export default function RequestsManager({
     const getMealCellValue = (request: any) => {
         const type = normalizeRequestTypeKey(request.requestType);
         const pkg = toShortPackage((request.agenda && request.agenda[0]?.package) || '');
-        const meal = mealPlanShort(request.mealPlan || '');
+        const roomMealsAgg = deriveRequestMealLabelFromRooms(request.rooms, request.mealPlan);
+        const meal = roomMealsAgg === 'MIX' ? 'MIX' : mealPlanShort(roomMealsAgg);
         if (type === 'event') return pkg || '-';
         if (type === 'event_rooms') {
             if (meal && pkg) return `${meal}/${pkg}`;
