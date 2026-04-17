@@ -153,6 +153,19 @@ export function inclusiveCalendarDays(start: string, end: string) {
     return Math.max(1, Math.floor(ms / (1000 * 60 * 60 * 24)) + 1);
 }
 
+/** Sum of (agenda row pax × inclusive row days) across all rows — used for "total attendees" / cover counts. */
+export function sumAgendaAttendeeDays(agenda: any[] = []) {
+    if (!Array.isArray(agenda) || agenda.length === 0) return 0;
+    return agenda.reduce((sum: number, item: any) => {
+        const start = String(item?.startDate || '').slice(0, 10);
+        const end = String(item?.endDate || item?.startDate || '').slice(0, 10);
+        const rowDays = start && end ? inclusiveCalendarDays(start, end) : 1;
+        const safeDays = Math.max(1, rowDays || 1);
+        const pax = Number(item?.pax) || 0;
+        return sum + pax * safeDays;
+    }, 0);
+}
+
 export function getEventDateWindow(r: any) {
     const agenda = r?.agenda || [];
     const dates: string[] = [];
@@ -315,6 +328,7 @@ export function calculateAccFinancialsForRequest(
     }
 
     const totalEventPax = (form.agenda || []).reduce((acc: number, item: any) => acc + Number(item.pax), 0) || 0;
+    const totalEventAttendeeDays = sumAgendaAttendeeDays(form.agenda || []);
     const totalEventDays = calculateEventAgendaDays(form.agenda || []);
     const ddr = totalEventPax > 0 ? eventCostNoTax / totalEventPax : 0;
 
@@ -331,6 +345,7 @@ export function calculateAccFinancialsForRequest(
         adr,
         ddr,
         totalEventPax,
+        totalEventAttendeeDays,
         totalEventDays,
         grandTotalNoTax: totalCostNoTax,
         grandTotalWithTax: totalCostWithTax,
@@ -442,7 +457,7 @@ ${activeProperty?.logoUrl ? `<img src="${escapeHtml(activeProperty.logoUrl)}" cl
 <h2>Event summary</h2>
 <p><strong>Status:</strong> ${escapeHtml(req.status || '—')} &nbsp;|&nbsp; <strong>Request type:</strong> ${escapeHtml(req.requestType || beoType)}</p>
 <p><strong>Start:</strong> ${escapeHtml(ev.start || '—')} &nbsp; <strong>End:</strong> ${escapeHtml(ev.end || '—')} &nbsp;|&nbsp; <strong>Package:</strong> ${escapeHtml(pkg)}</p>
-<p><strong>Total attendees (agenda pax):</strong> ${fin.totalEventPax} &nbsp;|&nbsp; <strong>Event days:</strong> ${fin.totalEventDays || fallbackDays}</p>
+<p><strong>Total attendees (pax × days per row):</strong> ${fin.totalEventAttendeeDays ?? fin.totalEventPax} &nbsp;|&nbsp; <strong>Headcount (agenda pax):</strong> ${fin.totalEventPax} &nbsp;|&nbsp; <strong>Event days:</strong> ${fin.totalEventDays || fallbackDays}</p>
 <p><strong>DDR (per person, excl. tax basis):</strong> ${fin.ddr.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR &nbsp;|&nbsp; <strong>Event cost per day (incl. tax):</strong> ${eventCostPerDay.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
 <h2>Agenda</h2>
 <table><thead><tr><th>Start</th><th>End</th><th>Session time</th><th>Coffee break</th><th>Lunch</th><th>Dinner</th><th>Venue</th><th>Shape</th><th>Package</th><th>Pax</th><th class="num">Rate</th><th class="num">Rental</th><th class="num">Line</th></tr></thead><tbody>${agendaRows}</tbody></table>

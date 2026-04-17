@@ -31,6 +31,7 @@ import {
     calculateNights,
     normalizeRequestTypeKey,
     calculateEventAgendaDays,
+    sumAgendaAttendeeDays,
     inclusiveCalendarDays,
     getEventDateWindow,
     formatAgendaPackageSummary,
@@ -640,6 +641,12 @@ export default function RequestsManager({
         ? propertyVenues
         : [{ id: 'placeholder', name: '— Add venues in Property Settings —' }];
 
+    /** Venues flagged “Combined” in Settings → Venues (used for per-agenda combined room selection). */
+    const combinedVenueOptions = useMemo(
+        () => (propertyVenues || []).filter((v: any) => v && v.id !== 'placeholder' && Boolean(v.isCombined)),
+        [propertyVenues]
+    );
+
     const defaultVenueName = () => (propertyVenues[0] as any)?.name || '';
 
     const openRequestForEdit = (req: any) => {
@@ -1242,6 +1249,7 @@ export default function RequestsManager({
             grandTotalNoTax: eventCostNoTax,
             revenue: eventCostNoTax,
             totalPax: (form.agenda || []).reduce((acc: number, item: any) => acc + Number(item.pax), 0),
+            totalEventAttendeeDays: sumAgendaAttendeeDays(form.agenda || []),
             totalEventDays: calculateEventAgendaDays(form.agenda || []),
             nights: 0,
             totalRooms: 0,
@@ -1441,6 +1449,8 @@ export default function RequestsManager({
                 ? {
                       ...last,
                       id: Date.now(),
+                      combined: Boolean(last.combined),
+                      combinedVenueNames: Array.isArray(last.combinedVenueNames) ? [...last.combinedVenueNames] : [],
                   }
                 : {
                       id: Date.now(),
@@ -1459,6 +1469,8 @@ export default function RequestsManager({
                       rental: 0,
                       package: defPkg,
                       notes: '',
+                      combined: false,
+                      combinedVenueNames: [] as string[],
                   };
             setAccForm({
                 ...accForm,
@@ -1508,6 +1520,20 @@ export default function RequestsManager({
             const s = String(row.startDate || '').slice(0, 10);
             if (!s) return;
             patchAgendaRow(row.id, { endDate: addCalendarDaysIso(s, num - 1) });
+        };
+
+        const toggleAgendaCombinedVenue = (rowId: number, venueName: string) => {
+            if (readOnlyOperational) return;
+            setAccForm((prev) => ({
+                ...prev,
+                agenda: (prev.agenda || []).map((item: any) => {
+                    if (item.id !== rowId) return item;
+                    const cur = Array.isArray(item.combinedVenueNames) ? item.combinedVenueNames : [];
+                    const has = cur.includes(venueName);
+                    const combinedVenueNames = has ? cur.filter((n: string) => n !== venueName) : [...cur, venueName];
+                    return { ...item, combinedVenueNames };
+                }),
+            }));
         };
 
         const handlePostPayment = () => {
@@ -2176,7 +2202,7 @@ export default function RequestsManager({
                                         <Trash2 size={16} />
                                     </button>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Start Date</label>
                                             <input
@@ -2221,6 +2247,22 @@ export default function RequestsManager({
                                                 {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
                                             </select>
                                         </div>
+                                        <div className="flex flex-col justify-end pb-0.5">
+                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Combined</label>
+                                            <label className="flex items-center gap-2 cursor-pointer select-none rounded-xl border-2 border-transparent px-3 py-2 bg-black/20 hover:border-primary/40 transition-all">
+                                                <input
+                                                    type="checkbox"
+                                                    className="rounded border-white/20"
+                                                    checked={Boolean(row.combined)}
+                                                    disabled={readOnlyOperational}
+                                                    onChange={(e) => {
+                                                        const on = e.target.checked;
+                                                        patchAgendaRow(row.id, on ? { combined: true } : { combined: false, combinedVenueNames: [] });
+                                                    }}
+                                                />
+                                                <span className="text-xs font-bold" style={{ color: colors.textMain }}>Combined</span>
+                                            </label>
+                                        </div>
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Setup Style (Shape)</label>
                                             <select value={row.shape} onChange={e => updateAgendaRow(row.id, 'shape', e.target.value)}
@@ -2229,6 +2271,45 @@ export default function RequestsManager({
                                             </select>
                                         </div>
                                     </div>
+
+                                    {row.combined ? (
+                                        <div
+                                            className="rounded-2xl border border-white/10 bg-black/15 p-4 space-y-3"
+                                            style={{ borderColor: colors.border }}
+                                        >
+                                            <p className="text-[10px] font-black uppercase opacity-50 tracking-wider" style={{ color: colors.textMuted }}>
+                                                Combined meeting rooms for this session
+                                            </p>
+                                            {combinedVenueOptions.length > 0 ? (
+                                                <div className="flex flex-wrap gap-x-5 gap-y-2">
+                                                    {combinedVenueOptions.map((v: any) => {
+                                                        const name = String(v.name || '');
+                                                        const selected = (Array.isArray(row.combinedVenueNames) ? row.combinedVenueNames : []).includes(name);
+                                                        return (
+                                                            <label
+                                                                key={v.id || name}
+                                                                className={`flex items-center gap-2 text-sm font-medium cursor-pointer select-none ${readOnlyOperational ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                                                style={{ color: colors.textMain }}
+                                                            >
+                                                                <input
+                                                                    type="checkbox"
+                                                                    className="rounded border-white/20"
+                                                                    checked={selected}
+                                                                    disabled={readOnlyOperational}
+                                                                    onChange={() => toggleAgendaCombinedVenue(row.id, name)}
+                                                                />
+                                                                <span>{name}</span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : (
+                                                <p className="text-xs leading-relaxed opacity-60" style={{ color: colors.textMuted }}>
+                                                    No venues are marked as combined yet. In Property Settings → Venues, edit a meeting room and enable “Combined” for halls that can be joined for one booking.
+                                                </p>
+                                            )}
+                                        </div>
+                                    ) : null}
 
                                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                                         <div>
@@ -2454,7 +2535,7 @@ export default function RequestsManager({
                                         </div>
                                         <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
                                             <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Attendees</p>
-                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventPax}</p>
+                                            <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventAttendeeDays ?? fin.totalEventPax}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -2484,10 +2565,10 @@ export default function RequestsManager({
                             </div>
                             <div className="p-4 rounded-xl bg-black/10 border border-white/5">
                                 <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
-                                    {requestType === 'event' ? 'Total Persons' : 'Total Room Nights'}
+                                    {requestType === 'event' ? 'Total attendees' : 'Total Room Nights'}
                                 </p>
                                 <p className="text-2xl font-bold" style={{ color: colors.textMain }}>
-                                    {requestType === 'event' ? fin.totalEventPax : fin.totalRoomNights}
+                                    {requestType === 'event' ? (fin.totalEventAttendeeDays ?? fin.totalEventPax) : fin.totalRoomNights}
                                 </p>
                             </div>
                             <div className="p-4 rounded-xl bg-black/10 border border-white/5">
@@ -3137,7 +3218,7 @@ export default function RequestsManager({
                                             <th className="px-4 py-3">Occupancy</th>
                                             <th className="px-4 py-3 text-center whitespace-nowrap">Rooms</th>
                                             <th className="px-4 py-3 text-right whitespace-nowrap">Rate</th>
-                                            <th className="px-4 py-3 text-right whitespace-nowrap">Subtotal</th>
+                                            <th className="pl-5 pr-4 py-3 text-right whitespace-nowrap">Subtotal</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-white/5">
@@ -3166,7 +3247,7 @@ export default function RequestsManager({
                                                     <td className="px-4 py-4 opacity-70">{r.occupancy}</td>
                                                     <td className="px-4 py-4 text-center">{r.count}</td>
                                                     <td className="px-4 py-4 text-right font-mono">{formatMoney(Number(r.rate || 0), 0)}</td>
-                                                    <td className="px-4 py-4 text-right font-bold text-primary">{formatMoney(subtotal, 0)}</td>
+                                                    <td className="pl-5 pr-4 py-4 text-right font-bold text-primary tabular-nums">{formatMoney(subtotal, 0)}</td>
                                                 </tr>
                                             );
                                         })}
@@ -3183,7 +3264,7 @@ export default function RequestsManager({
                                     {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
                                     {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
                                     {statCard('Number of days', displayEventDays || '—')}
-                                    {statCard('Total attendees', fin.totalEventPax)}
+                                    {statCard('Total attendees', fin.totalEventAttendeeDays ?? fin.totalEventPax)}
                                     {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
                                     <div className="col-span-2 lg:col-span-2">
                                         {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
@@ -3209,7 +3290,7 @@ export default function RequestsManager({
                                         {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
                                         {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
                                         {statCard('Number of days', displayEventDays || '—')}
-                                        {statCard('Total attendees', fin.totalEventPax)}
+                                        {statCard('Total attendees', fin.totalEventAttendeeDays ?? fin.totalEventPax)}
                                         {statCard('Event total (incl. tax)', <>{formatMoney(fin.eventCostWithTax)}</>)}
                                     </div>
                                 </div>
@@ -4128,7 +4209,7 @@ export default function RequestsManager({
                                             <div><span className="font-bold uppercase text-[10px] opacity-50">End</span><br />{beoEv.end || '—'}</div>
                                             <div><span className="font-bold uppercase text-[10px] opacity-50">Package</span><br />{beoPkg}</div>
                                             <div><span className="font-bold uppercase text-[10px] opacity-50">Event days</span><br />{beoFin.totalEventDays || beoFallbackDays}</div>
-                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Attendees (pax)</span><br />{beoFin.totalEventPax}</div>
+                                            <div><span className="font-bold uppercase text-[10px] opacity-50">Total attendees (pax × days)</span><br />{beoFin.totalEventAttendeeDays ?? beoFin.totalEventPax} <span className="text-[10px] opacity-50">({beoFin.totalEventPax} pax)</span></div>
                                             <div><span className="font-bold uppercase text-[10px] opacity-50">DDR (per person)</span><br />{formatMoney(beoFin.ddr)}</div>
                                             <div className="md:col-span-2"><span className="font-bold uppercase text-[10px] opacity-50">Event cost per day (incl. tax)</span><br />{formatMoney(beoEventCostPerDay)}</div>
                                         </div>
@@ -5433,26 +5514,44 @@ export default function RequestsManager({
                 return;
             }
 
-            const checkIn = parseYmdToDate(String(req.checkIn || ''));
-            const checkOut = parseYmdToDate(String(req.checkOut || ''));
-            if (!checkIn || !checkOut || checkOut <= checkIn) return;
-            const rooms = Array.isArray(req.rooms) ? req.rooms : [];
-            const totalRoomsPerNight = rooms.reduce((s: number, room: any) => s + Math.max(0, Number(room?.count || 0)), 0);
-            if (totalRoomsPerNight <= 0) return;
-            const map = new Map<number, Map<number, number>>();
-            const cursor = new Date(checkIn.getTime());
-            while (cursor < checkOut) {
-                const y = cursor.getFullYear();
-                const m = cursor.getMonth();
-                const d = cursor.getDate();
-                if (y === gridYear) {
-                    if (!map.has(m)) map.set(m, new Map<number, number>());
-                    const monthDays = map.get(m)!;
-                    monthDays.set(d, (monthDays.get(d) || 0) + totalRoomsPerNight);
+            /** accommodation + event_rooms: each room line can have its own stay window; sum counts per calendar night (same as series math). */
+            const roomLines = Array.isArray(req.rooms) ? req.rooms : [];
+            const mergedMap = new Map<number, Map<number, number>>();
+            const addStayWindowToMap = (arrival: Date | null, departure: Date | null, count: number) => {
+                if (!arrival || !departure || departure <= arrival || count <= 0) return;
+                const cursor = new Date(arrival.getTime());
+                while (cursor < departure) {
+                    const y = cursor.getFullYear();
+                    const m = cursor.getMonth();
+                    const d = cursor.getDate();
+                    if (y === gridYear) {
+                        if (!mergedMap.has(m)) mergedMap.set(m, new Map<number, number>());
+                        const monthDays = mergedMap.get(m)!;
+                        monthDays.set(d, (monthDays.get(d) || 0) + count);
+                    }
+                    cursor.setDate(cursor.getDate() + 1);
                 }
-                cursor.setDate(cursor.getDate() + 1);
+            };
+
+            if (roomLines.length > 0) {
+                for (const group of roomLines) {
+                    const arrival = parseYmdToDate(String(group?.arrival || group?.checkIn || req?.checkIn || ''));
+                    const departure = parseYmdToDate(String(group?.departure || group?.checkOut || req?.checkOut || ''));
+                    const count = Math.max(0, Number(group?.count || 0));
+                    addStayWindowToMap(arrival, departure, count);
+                }
             }
-            pushMappedRows(req, status, map, typeKey);
+
+            if (mergedMap.size === 0) {
+                const checkIn = parseYmdToDate(String(req.checkIn || ''));
+                const checkOut = parseYmdToDate(String(req.checkOut || ''));
+                if (!checkIn || !checkOut || checkOut <= checkIn) return;
+                const totalRoomsPerNight = roomLines.reduce((s: number, room: any) => s + Math.max(0, Number(room?.count || 0)), 0);
+                if (totalRoomsPerNight <= 0) return;
+                addStayWindowToMap(checkIn, checkOut, totalRoomsPerNight);
+            }
+
+            pushMappedRows(req, status, mergedMap, typeKey);
         });
 
         return (
@@ -5470,11 +5569,12 @@ export default function RequestsManager({
                         <label className="text-xs font-bold uppercase" style={{ color: colors.textMuted }}>Year</label>
                         <input
                             type="number"
-                            min={2026}
+                            min={2000}
+                            max={2100}
                             value={gridYear}
                             onChange={(e) => {
                                 const y = Number(e.target.value);
-                                if (!Number.isFinite(y) || y < 2026) return;
+                                if (!Number.isFinite(y) || y < 2000 || y > 2100) return;
                                 setGridYear(Math.floor(y));
                             }}
                             className="w-24 px-3 py-1.5 rounded border bg-black/20 text-sm outline-none"
@@ -5508,7 +5608,7 @@ export default function RequestsManager({
                                     <thead>
                                         <tr style={{ backgroundColor: pinnedBg }}>
                                             <th
-                                                className="border px-2 py-1 text-left sticky left-0"
+                                                className="border pl-3 pr-2 py-1 text-left sticky left-0"
                                                 style={{
                                                     borderColor: colors.border,
                                                     backgroundColor: pinnedBg,
@@ -5595,7 +5695,7 @@ export default function RequestsManager({
                                             return (
                                             <tr key={row.id} className="hover:brightness-105 transition-all">
                                                 <td
-                                                    className="border px-2 py-1 sticky left-0 truncate font-semibold"
+                                                    className="border pl-3 pr-2 py-1 sticky left-0 truncate font-semibold"
                                                     style={{
                                                         borderColor: colors.border,
                                                         backgroundColor: rowBg,

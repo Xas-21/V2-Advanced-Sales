@@ -106,6 +106,7 @@ import {
     normalizeRequestTypeKey,
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
+    sumAgendaAttendeeDays,
 } from './beoShared';
 import { resolveUserAttributionId, taskAssignedToUser } from './userProfileMetrics';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
@@ -373,7 +374,21 @@ const getPrimaryOperationalDate = (req: any): string => {
         if (!starts.length) return '';
         return starts.sort()[0];
     })();
-    const candidates = [checkIn, eventStart, agendaStart].filter(Boolean).sort();
+    /** Imported / legacy rows may omit top-level dates; use room stay lines and metadata. */
+    const firstRoomArrival = (() => {
+        const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+        const dates: string[] = [];
+        for (const row of rooms) {
+            const a = parseYmd((row as any)?.arrival || (row as any)?.checkIn);
+            if (a) dates.push(a);
+        }
+        if (!dates.length) return '';
+        return dates.sort()[0];
+    })();
+    const requestDate = parseYmd(req?.requestDate);
+    const receivedDate = parseYmd(req?.receivedDate);
+    const createdAt = parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt);
+    const candidates = [checkIn, eventStart, agendaStart, firstRoomArrival, requestDate, receivedDate, createdAt].filter(Boolean).sort() as string[];
     return candidates.length ? candidates[0] : '';
 };
 
@@ -678,6 +693,35 @@ function getMiceRequestDateWindow(req: any): { start: string; end: string } {
     return { start: a, end: b || a };
 }
 
+/** Total attendees for a MICE request: prefer stored total, else sum of agenda row pax. */
+function totalMiceRequestPax(req: any): number {
+    const stored = Number(req?.totalEventPax ?? 0);
+    if (Number.isFinite(stored) && stored > 0) return Math.floor(stored);
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    let sum = 0;
+    for (const row of agenda) sum += Number(row?.pax || 0) || 0;
+    if (sum > 0) return sum;
+    const ag0 = agenda[0];
+    return Number(ag0?.pax || 0) || 0;
+}
+
+/** Sum of (agenda pax × row days) for dashboards / performance; falls back to headcount when agenda yields 0. */
+function totalMiceRequestAttendeeDays(req: any): number {
+    const n = sumAgendaAttendeeDays(Array.isArray(req?.agenda) ? req.agenda : []);
+    if (n > 0) return n;
+    return totalMiceRequestPax(req);
+}
+
+/** First agenda start through last agenda end (YYYY-MM-DD), or single date. */
+function formatMiceAgendaDateRange(req: any): string {
+    const win = getMiceRequestDateWindow(req);
+    const s = String(win.start || '').trim().slice(0, 10);
+    const e = String(win.end || win.start || '').trim().slice(0, 10);
+    if (!s) return '—';
+    if (!e || e === s) return s;
+    return `${s} — ${e}`;
+}
+
 function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
     if (!aStart && !aEnd) return true;
     const as = aStart || aEnd;
@@ -804,10 +848,8 @@ function computeRequestCostBreakdown(req: any) {
 
 function requestToKanbanCard(req: any, _taxes: any[] = []) {
     const eventRevenueOnly = computeRequestCostBreakdown(req).eventRevenue;
-    const agenda = Array.isArray(req.agenda) && req.agenda.length ? req.agenda[0] : null;
-    const pax = Number(agenda?.pax || req.totalEventPax || 0) || 0;
-    const dateRaw = req.eventStart || req.checkIn || agenda?.startDate || req.requestDate || '';
-    const date = String(dateRaw).slice(0, 10) || '—';
+    const pax = totalMiceRequestPax(req);
+    const date = formatMiceAgendaDateRange(req);
     return {
         id: req.id,
         requestId: req.id,
@@ -1429,6 +1471,7 @@ const EventsView = ({
     /** How many day columns the availability grid shows (independent of summary range). */
     const [availabilityGridDays, setAvailabilityGridDays] = useState(7);
     const [beoSearch, setBeoSearch] = useState('');
+    const [beoSortOrder, setBeoSortOrder] = useState<'newest' | 'oldest'>('newest');
     const [beoModalRequestId, setBeoModalRequestId] = useState<string | null>(null);
     const [beoNotesDraft, setBeoNotesDraft] = useState('');
 
@@ -1480,7 +1523,7 @@ const EventsView = ({
     }, [kanbanData, formatMoneyCompact]);
 
     const totalAttendance = useMemo(() => {
-        const n = miceRequests.reduce((sum: number, r: any) => sum + (Number(requestToKanbanCard(r).pax) || 0), 0);
+        const n = miceRequests.reduce((sum: number, r: any) => sum + totalMiceRequestAttendeeDays(r), 0);
         return `${n.toLocaleString()} Pax`;
     }, [miceRequests]);
 
@@ -1493,8 +1536,7 @@ const EventsView = ({
             if (!byAcc[name]) byAcc[name] = { name, events: [], total: 0, pax: 0 };
             byAcc[name].events.push(r);
             byAcc[name].total += computeRequestCostBreakdown(r).eventRevenue;
-            const ag = Array.isArray(r.agenda) && r.agenda[0];
-            byAcc[name].pax += Number(ag?.pax || r.totalEventPax || 0) || 0;
+            byAcc[name].pax += totalMiceRequestAttendeeDays(r);
         }
         return Object.values(byAcc)
             .map(a => ({
@@ -1503,14 +1545,13 @@ const EventsView = ({
                 spent: formatMoneyCompact(a.total),
                 pax: a.pax,
                 details: a.events.map((req: any) => {
-                    const ag = Array.isArray(req.agenda) && req.agenda[0];
-                    const date = String(req.eventStart || ag?.startDate || req.checkIn || '').slice(0, 10);
+                    const date = formatMiceAgendaDateRange(req);
                     const val = computeRequestCostBreakdown(req).eventRevenue;
                     const valStr = formatMoneyCompact(val);
                     return {
                         date: date || '—',
                         title: req.requestName || req.confirmationNo,
-                        pax: Number(ag?.pax || 0),
+                        pax: totalMiceRequestAttendeeDays(req),
                         value: valStr,
                     };
                 }),
@@ -1940,10 +1981,20 @@ const EventsView = ({
 
     if (subView === 'beo') {
         const q = beoSearch.toLowerCase().trim();
-        const rows = beoCandidates.filter((r: any) => {
+        const rowsFiltered = beoCandidates.filter((r: any) => {
             if (!q) return true;
             const blob = `${r.requestName || ''} ${r.account || ''} ${r.confirmationNo || ''}`.toLowerCase();
             return blob.includes(q);
+        });
+        const beoEventSortKey = (r: any) => {
+            const w = getMiceRequestDateWindow(r);
+            const iso = String(w.start || '').slice(0, 10);
+            if (iso) return iso;
+            return String(r.requestDate || r.receivedDate || r.createdAt || '').slice(0, 10) || '1970-01-01';
+        };
+        const rows = [...rowsFiltered].sort((a, b) => {
+            const cmp = beoEventSortKey(a).localeCompare(beoEventSortKey(b));
+            return beoSortOrder === 'newest' ? -cmp : cmp;
         });
         const beoModalReq = beoModalRequestId
             ? (sharedRequests || []).find((x: any) => String(x.id) === String(beoModalRequestId)) || null
@@ -1991,16 +2042,43 @@ const EventsView = ({
                             <h2 className="text-2xl font-bold mb-1" style={{ color: colors.primary }}>Banquet Event Order Management</h2>
                             <p style={{ color: colors.textMuted }}>All active MICE requests (excluding Cancelled / Lost).</p>
                         </div>
-                        <div className="relative">
-                            <input
-                                type="text"
-                                placeholder="Search event..."
-                                value={beoSearch}
-                                onChange={(e) => setBeoSearch(e.target.value)}
-                                className="pl-8 pr-3 py-2 rounded bg-black/20 border text-sm w-64"
-                                style={{ borderColor: colors.border, color: colors.textMain }}
-                            />
-                            <Search size={14} className="absolute left-2.5 top-2.5" style={{ color: colors.textMuted }} />
+                        <div className="flex flex-wrap items-center gap-2 justify-end">
+                            <div className="flex rounded-lg border overflow-hidden" style={{ borderColor: colors.border }}>
+                                <button
+                                    type="button"
+                                    onClick={() => setBeoSortOrder('newest')}
+                                    className={`px-3 py-2 text-[10px] font-black uppercase tracking-wide ${beoSortOrder === 'newest' ? '' : 'opacity-60'}`}
+                                    style={{
+                                        backgroundColor: beoSortOrder === 'newest' ? colors.primary + '35' : 'transparent',
+                                        color: colors.textMain,
+                                    }}
+                                >
+                                    Newest
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setBeoSortOrder('oldest')}
+                                    className={`px-3 py-2 text-[10px] font-black uppercase tracking-wide border-l ${beoSortOrder === 'oldest' ? '' : 'opacity-60'}`}
+                                    style={{
+                                        borderColor: colors.border,
+                                        backgroundColor: beoSortOrder === 'oldest' ? colors.primary + '35' : 'transparent',
+                                        color: colors.textMain,
+                                    }}
+                                >
+                                    Oldest
+                                </button>
+                            </div>
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    placeholder="Search event..."
+                                    value={beoSearch}
+                                    onChange={(e) => setBeoSearch(e.target.value)}
+                                    className="pl-8 pr-3 py-2 rounded bg-black/20 border text-sm w-64"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                />
+                                <Search size={14} className="absolute left-2.5 top-2.5" style={{ color: colors.textMuted }} />
+                            </div>
                         </div>
                     </div>
                     <div className="space-y-3 overflow-y-auto flex-1">
@@ -2008,9 +2086,11 @@ const EventsView = ({
                             <p className="text-sm opacity-50 text-center py-12" style={{ color: colors.textMuted }}>No qualifying events for this property.</p>
                         ) : (
                             rows.map((r: any) => {
-                                const ag = Array.isArray(r.agenda) && r.agenda[0];
-                                const venue = ag?.venue || '—';
-                                const d = String(r.eventStart || ag?.startDate || '').slice(0, 10) || '—';
+                                const agenda = Array.isArray(r.agenda) ? r.agenda : [];
+                                const venues = [...new Set(agenda.map((row: any) => String(row?.venue || '').trim()).filter(Boolean))];
+                                const venue = venues.length ? venues.join(', ') : '—';
+                                const d = formatMiceAgendaDateRange(r);
+                                const paxLine = totalMiceRequestPax(r);
                                 return (
                                     <div
                                         key={r.id}
@@ -2023,7 +2103,7 @@ const EventsView = ({
                                             className="flex-1 min-w-0 text-left"
                                         >
                                             <h4 className="font-bold" style={{ color: colors.textMain }}>{r.requestName || r.confirmationNo}</h4>
-                                            <p className="text-xs" style={{ color: colors.textMuted }}>{d} • {venue} • {r.account || r.accountName}</p>
+                                            <p className="text-xs" style={{ color: colors.textMuted }}>{d} • {venue} • {paxLine} pax • {r.account || r.accountName}</p>
                                         </button>
                                         <div className="flex items-center gap-2 shrink-0">
                                             <StatusBadge status={String(r.status)} theme={theme} />
@@ -2156,7 +2236,7 @@ const EventsView = ({
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">End</span><br />{beoEvModal.end || '—'}</div>
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">Package</span><br />{beoPkgModal}</div>
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">Event days</span><br />{beoFinModal.totalEventDays || beoFallbackDaysModal}</div>
-                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Attendees (pax)</span><br />{beoFinModal.totalEventPax}</div>
+                                    <div><span className="font-bold uppercase text-[10px] opacity-50">Total attendees (pax × days)</span><br />{beoFinModal.totalEventAttendeeDays ?? beoFinModal.totalEventPax} <span className="text-[10px] opacity-50">({beoFinModal.totalEventPax} pax)</span></div>
                                     <div><span className="font-bold uppercase text-[10px] opacity-50">DDR (per person)</span><br />{formatMoney(beoFinModal.ddr)}</div>
                                     <div className="md:col-span-2"><span className="font-bold uppercase text-[10px] opacity-50">Event cost per day (incl. tax)</span><br />{formatMoney(beoEventCostPerDayModal)}</div>
                                 </div>
@@ -2284,7 +2364,7 @@ const EventsView = ({
                                         <th className="pb-3 pl-4">Account Name</th>
                                         <th className="pb-3 text-right">Events Held</th>
                                         <th className="pb-3 text-right">Total Spent</th>
-                                        <th className="pb-3 pr-4 text-right">Pax</th>
+                                        <th className="pb-3 pr-4 text-right">Pax (× days)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2314,19 +2394,19 @@ const EventsView = ({
                                                                 <table className="w-full text-[10px]">
                                                                     <thead className="opacity-60" style={{ color: colors.textMuted }}>
                                                                         <tr className="border-b" style={{ borderColor: colors.border }}>
-                                                                            <th className="px-4 py-2 font-medium">Date</th>
+                                                                            <th className="px-4 py-2 font-medium">Dates</th>
                                                                             <th className="px-4 py-2 font-medium">Event Title</th>
-                                                                            <th className="px-4 py-2 text-right font-medium">Pax</th>
-                                                                            <th className="px-4 py-2 text-right font-medium">Value</th>
+                                                                            <th className="px-4 py-2 text-right font-medium">Pax (× days)</th>
+                                                                            <th className="pl-5 pr-4 py-2 text-right font-medium">Value</th>
                                                                         </tr>
                                                                     </thead>
                                                                     <tbody>
                                                                         {acc.details.map((detail, di) => (
                                                                             <tr key={di} className="border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors">
-                                                                                <td className="px-4 py-2 opacity-70" style={{ color: colors.textMain }}>{detail.date}</td>
+                                                                                <td className="px-4 py-2 opacity-70 text-[10px] whitespace-nowrap max-w-[10rem] truncate" style={{ color: colors.textMain }} title={detail.date}>{detail.date}</td>
                                                                                 <td className="px-4 py-2 font-medium" style={{ color: colors.textMain }}>{detail.title}</td>
                                                                                 <td className="px-4 py-2 text-right opacity-70" style={{ color: colors.textMain }}>{detail.pax}</td>
-                                                                                <td className="px-4 py-2 text-right font-bold" style={{ color: colors.green }}>{detail.value}</td>
+                                                                                <td className="pl-5 pr-4 py-2 text-right font-bold tabular-nums" style={{ color: colors.green }}>{detail.value}</td>
                                                                             </tr>
                                                                         ))}
                                                                     </tbody>
@@ -2397,9 +2477,9 @@ const EventsView = ({
                             <thead className="uppercase font-bold border-b sticky top-0 z-10" style={{ borderColor: colors.border, color: colors.textMuted, backgroundColor: colors.bg }}>
                                 <tr>
                                     <th className="pb-2">Client / Event Name</th>
-                                    <th className="pb-2">Date</th>
+                                    <th className="pb-2">Dates</th>
                                     <th className="pb-2">Venue</th>
-                                    <th className="pb-2 text-center">Pax</th>
+                                    <th className="pb-2 text-center">Pax (× days)</th>
                                     <th className="pb-2 text-right">Status</th>
                                 </tr>
                             </thead>
@@ -2410,18 +2490,19 @@ const EventsView = ({
                                     </tr>
                                 ) : (
                                     miceRequests.map((req: any) => {
-                                        const ag = Array.isArray(req.agenda) && req.agenda[0];
-                                        const venue = ag?.venue || '—';
-                                        const d = String(req.eventStart || ag?.startDate || req.checkIn || '').slice(0, 10) || '—';
-                                        const pax = Number(ag?.pax || req.totalEventPax || 0);
+                                        const agenda = Array.isArray(req.agenda) ? req.agenda : [];
+                                        const venues = [...new Set(agenda.map((row: any) => String(row?.venue || '').trim()).filter(Boolean))];
+                                        const venue = venues.length ? venues.join(', ') : '—';
+                                        const d = formatMiceAgendaDateRange(req);
+                                        const pax = totalMiceRequestAttendeeDays(req);
                                         return (
                                             <tr key={req.id} className="hover:bg-white/5 transition-colors">
                                                 <td className="py-2.5">
                                                     <div className="font-bold" style={{ color: colors.textMain }}>{req.requestName || req.confirmationNo}</div>
                                                     <div className="text-[10px]" style={{ color: colors.textMuted }}>{req.account || req.accountName}</div>
                                                 </td>
-                                                <td className="py-2.5 text-[11px]" style={{ color: colors.textMuted }}>{d}</td>
-                                                <td className="py-2.5 text-[11px]" style={{ color: colors.textMuted }}>{venue}</td>
+                                                <td className="py-2.5 text-[11px] whitespace-nowrap max-w-[11rem] truncate" style={{ color: colors.textMuted }} title={d}>{d}</td>
+                                                <td className="py-2.5 text-[11px] max-w-[10rem] truncate" style={{ color: colors.textMuted }} title={venue}>{venue}</td>
                                                 <td className="py-2.5 text-center font-mono" style={{ color: colors.textMain }}>{pax}</td>
                                                 <td className="py-2.5 text-right"><StatusBadge status={String(req.status || 'Inquiry')} theme={theme} /></td>
                                             </tr>
@@ -2442,7 +2523,7 @@ const EventsView = ({
             {/* KPI Header */}
             <div className="flex items-center justify-between px-1">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: colors.textMuted }}>Dates</h3>
-                <div className="text-[10px] font-bold" style={{ color: colors.primary }}>
+                <div className="text-[10px] font-bold truncate max-w-[min(100%,14rem)] text-right" style={{ color: colors.primary }} title={`${filterRange.start} – ${filterRange.end}`}>
                     {filterRange.start && filterRange.end ? `${filterRange.start} - ${filterRange.end}` : 'All dates'}
                 </div>
             </div>
@@ -2477,8 +2558,8 @@ const EventsView = ({
                             </div>
                         </div>
 
-                        {/* Cards Container */}
-                        <div className="flex-1 p-2 space-y-2 overflow-y-auto">
+                        {/* Cards Container — min height keeps empty columns sized for ~4 cards after main scroll layout */}
+                        <div className="flex-1 min-h-[34rem] p-2 space-y-2 overflow-y-auto">
                             {kanbanData[col.id]?.map((event: any) => (
                                 <div
                                     key={String(event.requestId ?? event.id)}
@@ -2518,8 +2599,9 @@ const EventsView = ({
                                             {formatMoneyCompact(parseValue(event.budget))}
                                         </div>
                                     </div>
-                                    <div className="mt-2 text-[10px] flex items-center gap-1" style={{ color: colors.textMuted }}>
-                                        <Calendar size={10} /> {event.date}
+                                    <div className="mt-2 text-[10px] flex items-center gap-1 min-w-0" style={{ color: colors.textMuted }} title={event.date}>
+                                        <Calendar size={10} className="shrink-0" />
+                                        <span className="truncate">{event.date}</span>
                                     </div>
                                 </div>
                             ))}
@@ -2982,7 +3064,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
     return (
         <ResponsiveContainer width="100%" height="100%">
             {chartTab === 'Revenue' ? (
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 8, bottom: 0 }}>
                     <defs>
                         <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
                             <stop offset="5%" stopColor={colors.green} stopOpacity={0.3} />
@@ -2991,7 +3073,13 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
+                    <YAxis
+                        width={56}
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        tickFormatter={moneyTickFormatter}
+                    />
                     <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Area type="monotone" dataKey="revenue" stroke={colors.green} fill="url(#colorRev)" />
                 </AreaChart>
@@ -3396,7 +3484,7 @@ const DistributionChart = ({ distTab, segmentData, accountTypeData, colors }: an
     return (
         <ResponsiveContainer width="100%" height="100%">
             {distTab === 'Segments' ? (
-                <BarChart layout="vertical" data={segmentData} margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                <BarChart layout="vertical" data={segmentData} margin={{ top: 5, right: 30, left: 56, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} horizontal={false} />
                     <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
                     <YAxis dataKey="name" type="category" width={80} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
@@ -3852,8 +3940,12 @@ export default function AdvancedSalesDashboard() {
         setShowAddAccountModal(false);
     };
 
-    // Filter Logic
-    const [eventsFilterRange, setEventsFilterRange] = useState({ start: '', end: '' });
+    // Filter Logic — Events & Catering: default to current calendar year until the user changes the range
+    const defaultEventsYearRange = () => {
+        const y = new Date().getFullYear();
+        return { start: `${y}-01-01`, end: `${y}-12-31` };
+    };
+    const [eventsFilterRange, setEventsFilterRange] = useState(defaultEventsYearRange);
     const [showEventsDatePicker, setShowEventsDatePicker] = useState(false);
 
     // Task Management State
@@ -4394,17 +4486,32 @@ export default function AdvancedSalesDashboard() {
         [activeProperty, taxonomyRefresh]
     );
 
+    const dashboardCurrentRange = useMemo(() => {
+        const anchor = new Date(dashboardNowAnchor);
+        if (dashboardPeriodMode === 'custom') {
+            const start = parseYmd(customDates.start);
+            const end = parseYmd(customDates.end);
+            if (!start || !end || start > end) return getCurrentYearRange();
+            return { start, end };
+        }
+        if (dashboardPeriodMode === 'mtd') return getMtdRange(anchor);
+        if (dashboardPeriodMode === 'ytd') return getYtdRange(anchor);
+        return getCurrentYearRange();
+    }, [dashboardPeriodMode, customDates.start, customDates.end, dashboardNowAnchor]);
+
     const dashboardSegmentChartData = useMemo(() => {
         const pid = activeProperty?.id;
         const reqs = (sharedRequests || []).filter(
             (r: any) =>
-                (!pid || !r.propertyId || r.propertyId === pid) && !isDashboardExcludedRequest(r)
+                (!pid || !r.propertyId || r.propertyId === pid) &&
+                !isDashboardExcludedRequest(r) &&
+                requestTouchesOperationalRange(r, dashboardCurrentRange)
         );
         return propertySegmentLabels.map((name) => ({
             name,
             value: reqs.filter((r: any) => String(r.segment || '').trim() === name).length,
         }));
-    }, [sharedRequests, activeProperty?.id, propertySegmentLabels]);
+    }, [sharedRequests, activeProperty?.id, propertySegmentLabels, dashboardCurrentRange]);
 
     const dashboardAccountTypeChartData = useMemo(() => {
         const rows = propertyAccountTypeLabels.map((name) => ({
@@ -4421,7 +4528,9 @@ export default function AdvancedSalesDashboard() {
         const pid = activeProperty?.id;
         const reqs = (sharedRequests || []).filter(
             (r: any) =>
-                (!pid || !r.propertyId || r.propertyId === pid) && !isDashboardExcludedRequest(r)
+                (!pid || !r.propertyId || r.propertyId === pid) &&
+                !isDashboardExcludedRequest(r) &&
+                requestTouchesOperationalRange(r, dashboardCurrentRange)
         );
         const tallies: Record<'accommodation' | 'event_rooms' | 'series' | 'event', number> = {
             accommodation: 0,
@@ -4440,20 +4549,7 @@ export default function AdvancedSalesDashboard() {
             percent: n ? Math.round((tallies[meta.key] / n) * 100) : 0,
             color: palette[i % palette.length],
         }));
-    }, [sharedRequests, activeProperty?.id, currentThemeId]);
-
-    const dashboardCurrentRange = useMemo(() => {
-        const anchor = new Date(dashboardNowAnchor);
-        if (dashboardPeriodMode === 'custom') {
-            const start = parseYmd(customDates.start);
-            const end = parseYmd(customDates.end);
-            if (!start || !end || start > end) return getCurrentYearRange();
-            return { start, end };
-        }
-        if (dashboardPeriodMode === 'mtd') return getMtdRange(anchor);
-        if (dashboardPeriodMode === 'ytd') return getYtdRange(anchor);
-        return getCurrentYearRange();
-    }, [dashboardPeriodMode, customDates.start, customDates.end, dashboardNowAnchor]);
+    }, [sharedRequests, activeProperty?.id, currentThemeId, dashboardCurrentRange]);
 
     const dashboardLyRange = useMemo(
         () => shiftRangeByYears(dashboardCurrentRange, -1),
@@ -5687,7 +5783,10 @@ export default function AdvancedSalesDashboard() {
                                                     className="w-full px-3 py-2 rounded border text-sm"
                                                     style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                                                 >
-                                                    {Array.from({ length: 10 }, (_, i) => 2020 + i).map(y => (
+                                                    {Array.from(
+                                                        { length: Math.max(new Date().getFullYear(), 2030) - 1999 + 1 },
+                                                        (_, i) => 2000 + i
+                                                    ).map((y) => (
                                                         <option key={y} value={y}>{y}</option>
                                                     ))}
                                                 </select>
@@ -5858,13 +5957,38 @@ export default function AdvancedSalesDashboard() {
                                                         />
                                                     </div>
                                                 </div>
-                                                <button
-                                                    onClick={() => setShowEventsDatePicker(false)}
-                                                    className="w-full mt-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wide bg-primary text-black hover:brightness-110 transition-all"
-                                                    style={{ backgroundColor: colors.primary }}
-                                                >
-                                                    Apply Range
-                                                </button>
+                                                <div className="flex flex-col gap-2 mt-3">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowEventsDatePicker(false)}
+                                                        className="w-full py-1.5 rounded text-[10px] font-bold uppercase tracking-wide bg-primary text-black hover:brightness-110 transition-all"
+                                                        style={{ backgroundColor: colors.primary }}
+                                                    >
+                                                        Apply Range
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setEventsFilterRange(defaultEventsYearRange());
+                                                            setShowEventsDatePicker(false);
+                                                        }}
+                                                        className="w-full py-1.5 rounded text-[10px] font-bold uppercase tracking-wide border hover:bg-white/5"
+                                                        style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    >
+                                                        Reset to this year
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setEventsFilterRange({ start: '', end: '' });
+                                                            setShowEventsDatePicker(false);
+                                                        }}
+                                                        className="w-full py-1.5 rounded text-[10px] font-bold uppercase tracking-wide border hover:bg-white/5"
+                                                        style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    >
+                                                        All dates
+                                                    </button>
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -6240,8 +6364,9 @@ export default function AdvancedSalesDashboard() {
                     </div>
                 </header>
 
-                {/* 2. Main Content Area */}
+                {/* 2. Main Content Area — scroll includes footer; inner wrapper avoids h-full views pinning copyright to the viewport */}
                 <main className="flex-1 p-3 min-h-0 overflow-y-auto relative">
+                    <div className="w-full min-h-0 h-auto">
                     {currentView === 'calendar' ? (
                         <CalendarView
                             theme={theme}
@@ -7041,11 +7166,16 @@ export default function AdvancedSalesDashboard() {
                             </div>
                         </div>
                     )}
-                    <div className="w-full mt-8 mb-4 text-center">
+                    </div>
+                    <footer
+                        role="contentinfo"
+                        className="w-full mt-12 pt-6 pb-4 text-center border-t shrink-0"
+                        style={{ borderColor: colors.border }}
+                    >
                         <p className="text-[10px] uppercase tracking-widest opacity-50 font-medium" style={{ color: colors.textMuted }}>
                             All rights reserved to AS @2026
                         </p>
-                    </div>
+                    </footer>
                 </main>
             </div>
 

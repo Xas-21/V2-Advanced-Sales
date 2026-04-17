@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Phone, Mail, MapPin, X, Plus, Edit, Trash2, ChevronDown,
-    PhoneCall, Send, FileText, MessageSquare, History
+    PhoneCall, Send, FileText, MessageSquare, History, CalendarDays
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, ResponsiveContainer, Tooltip
@@ -16,6 +16,7 @@ import { formatSarCompact } from './formatSar';
 import { getTagColor, setTagColorForName, TAG_COLORS_EVENT, readTagColors, writeTagColors } from './tagColorSettings';
 import type { ContractRecord, ContractStatus } from './contractsStore';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+import { getPrimaryOperationalDate } from './userProfileMetrics';
 
 export interface CRMProfileViewProps {
     lead: any;
@@ -108,6 +109,44 @@ export default function CRMProfileView({
 }: CRMProfileViewProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
+    /** `null` = all time (default). Not persisted — reload or switching account resets. */
+    const [performanceDateRange, setPerformanceDateRange] = useState<{ from: string; to: string } | null>(null);
+    const [perfPanelOpen, setPerfPanelOpen] = useState(false);
+    const [perfDraftFrom, setPerfDraftFrom] = useState('');
+    const [perfDraftTo, setPerfDraftTo] = useState('');
+    const perfPickerRef = useRef<HTMLDivElement>(null);
+
+    const leadIdentityKey = String(lead?.accountId || lead?.id || lead?.company || '');
+
+    useEffect(() => {
+        setPerformanceDateRange(null);
+        setPerfPanelOpen(false);
+        setPerfDraftFrom('');
+        setPerfDraftTo('');
+    }, [leadIdentityKey]);
+
+    useEffect(() => {
+        if (!perfPanelOpen) return;
+        const onDown = (e: MouseEvent) => {
+            const el = perfPickerRef.current;
+            if (el && !el.contains(e.target as Node)) setPerfPanelOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [perfPanelOpen]);
+
+    const performanceLinkedRequests = useMemo(() => {
+        const list = linkedRequests || [];
+        if (!performanceDateRange) return list;
+        const { from, to } = performanceDateRange;
+        if (!from || !to || from > to) return list;
+        return list.filter((r) => {
+            const ymd = getPrimaryOperationalDate(r);
+            if (!ymd) return false;
+            return ymd >= from && ymd <= to;
+        });
+    }, [linkedRequests, performanceDateRange]);
+
     const [expandedContact, setExpandedContact] = useState<number | null>(0);
     const [isContactModalOpen, setIsContactModalOpen] = useState(false);
     const [newContactData, setNewContactData] = useState({
@@ -119,8 +158,8 @@ export default function CRMProfileView({
     });
 
     const tags = lead.tags || [];
-    const metrics = useMemo(() => computeAccountMetrics(linkedRequests), [linkedRequests]);
-    const openBookingRequests = useMemo(() => filterOpenBookingRequests(linkedRequests), [linkedRequests]);
+    const metrics = useMemo(() => computeAccountMetrics(performanceLinkedRequests), [performanceLinkedRequests]);
+    const openBookingRequests = useMemo(() => filterOpenBookingRequests(performanceLinkedRequests), [performanceLinkedRequests]);
     const timelineItems = useMemo(
         () =>
             buildAccountTimeline({
@@ -144,7 +183,7 @@ export default function CRMProfileView({
             MICE: 0,
             Accom: 0,
         };
-        for (const req of linkedRequests || []) {
+        for (const req of performanceLinkedRequests || []) {
             const t = String(req?.requestType || '').toLowerCase().trim();
             if (!t) continue;
             if (t === 'series' || t.includes('series')) {
@@ -182,7 +221,7 @@ export default function CRMProfileView({
                 pct: total > 0 ? `${Math.round((value / total) * 100)}%` : '0%',
             }));
         return { total, data };
-    }, [linkedRequests, colors.blue, colors.cyan, colors.purple, colors.orange, colors.textMuted]);
+    }, [performanceLinkedRequests, colors.blue, colors.cyan, colors.purple, colors.orange, colors.textMuted]);
     const initial = (lead.company || '?').toString().charAt(0) || '?';
 
     const [showActivityModal, setShowActivityModal] = useState(false);
@@ -300,6 +339,96 @@ export default function CRMProfileView({
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 justify-end">
+                    <div className="relative" ref={perfPickerRef}>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (!perfPanelOpen && performanceDateRange) {
+                                    setPerfDraftFrom(performanceDateRange.from);
+                                    setPerfDraftTo(performanceDateRange.to);
+                                } else if (!perfPanelOpen) {
+                                    setPerfDraftFrom('');
+                                    setPerfDraftTo('');
+                                }
+                                setPerfPanelOpen((o) => !o);
+                            }}
+                            className={`px-3 py-2 rounded border hover:bg-white/5 flex items-center gap-2 text-sm ${performanceDateRange ? 'ring-1' : ''}`}
+                            style={{
+                                borderColor: colors.border,
+                                color: colors.textMain,
+                                boxShadow: performanceDateRange ? `0 0 0 1px ${colors.primary}55` : undefined,
+                            }}
+                            title="Filter Performance metrics by request date range (optional). Default: all dates."
+                        >
+                            <CalendarDays size={16} style={{ color: performanceDateRange ? colors.primary : colors.textMuted }} />
+                            <span className="hidden sm:inline">Dates</span>
+                        </button>
+                        {perfPanelOpen && (
+                            <div
+                                className="absolute right-0 top-full mt-2 p-4 rounded-xl border shadow-2xl z-[120] w-[min(100vw-2rem,20rem)]"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                            >
+                                <p className="text-[10px] font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>
+                                    Performance date range
+                                </p>
+                                <p className="text-[10px] leading-relaxed mb-3 opacity-80" style={{ color: colors.textMuted }}>
+                                    Uses each request’s primary operational date (check-in, event start, agenda, etc.). Leave cleared for all-time totals.
+                                </p>
+                                <div className="space-y-3">
+                                    <div>
+                                        <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>From</label>
+                                        <input
+                                            type="date"
+                                            value={perfDraftFrom}
+                                            onChange={(e) => setPerfDraftFrom(e.target.value)}
+                                            className="w-full px-2 py-1.5 rounded border text-xs"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>To</label>
+                                        <input
+                                            type="date"
+                                            value={perfDraftTo}
+                                            onChange={(e) => setPerfDraftTo(e.target.value)}
+                                            className="w-full px-2 py-1.5 rounded border text-xs"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 pt-1">
+                                        <button
+                                            type="button"
+                                            className="flex-1 min-w-[6rem] py-2 rounded text-[10px] font-black uppercase tracking-wide"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                            onClick={() => {
+                                                const f = perfDraftFrom.trim().slice(0, 10);
+                                                const t = perfDraftTo.trim().slice(0, 10);
+                                                if (!f || !t) return;
+                                                if (f > t) return;
+                                                setPerformanceDateRange({ from: f, to: t });
+                                                setPerfPanelOpen(false);
+                                            }}
+                                        >
+                                            Apply
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="flex-1 min-w-[6rem] py-2 rounded border text-[10px] font-bold uppercase"
+                                            style={{ borderColor: colors.border, color: colors.textMuted }}
+                                            onClick={() => {
+                                                setPerformanceDateRange(null);
+                                                setPerfDraftFrom('');
+                                                setPerfDraftTo('');
+                                                setPerfPanelOpen(false);
+                                            }}
+                                        >
+                                            All dates
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                     <button
                         type="button"
                         onClick={() => setShowHistoryModal(true)}
@@ -593,12 +722,33 @@ export default function CRMProfileView({
 
                         <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <h3
-                                className="text-xs font-bold uppercase tracking-wider mb-4"
+                                className="text-xs font-bold uppercase tracking-wider mb-1"
                                 style={{ color: colors.textMuted }}
                                 title="Win rate = Definite or Actual ÷ all linked requests. Cancellation rate = Cancelled or Lost ÷ all linked requests. Spend = sum of paid amounts on linked requests."
                             >
                                 Performance
                             </h3>
+                            {performanceDateRange ? (
+                                <p className="text-[10px] mb-3 leading-snug" style={{ color: colors.primary }}>
+                                    Filtered: {performanceDateRange.from} → {performanceDateRange.to}
+                                    <button
+                                        type="button"
+                                        className="ml-2 underline font-bold"
+                                        style={{ color: colors.textMuted }}
+                                        onClick={() => {
+                                            setPerformanceDateRange(null);
+                                            setPerfDraftFrom('');
+                                            setPerfDraftTo('');
+                                        }}
+                                    >
+                                        Show all dates
+                                    </button>
+                                </p>
+                            ) : (
+                                <p className="text-[10px] mb-3 opacity-70 leading-snug" style={{ color: colors.textMuted }}>
+                                    All dates — every linked request is included. Use the calendar icon above to narrow the range.
+                                </p>
+                            )}
                             <div className="space-y-4">
                                 <div>
                                     <div className="flex justify-between items-center gap-2 mb-1">

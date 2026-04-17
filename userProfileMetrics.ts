@@ -18,8 +18,30 @@ function parseYmd(raw: any): string {
 export function getPrimaryOperationalDate(req: any): string {
     const checkIn = parseYmd(req?.checkIn);
     const eventStart = parseYmd(req?.eventStart);
-    if (checkIn && eventStart) return checkIn <= eventStart ? checkIn : eventStart;
-    return checkIn || eventStart || '';
+    const agendaStart = (() => {
+        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+        const starts = agenda
+            .map((row: any) => parseYmd(row?.startDate || row?.endDate))
+            .filter(Boolean) as string[];
+        if (!starts.length) return '';
+        return starts.sort()[0];
+    })();
+    const firstRoomArrival = (() => {
+        const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+        const dates: string[] = [];
+        for (const row of rooms) {
+            const a = parseYmd(row?.arrival || row?.checkIn);
+            if (a) dates.push(a);
+        }
+        if (!dates.length) return '';
+        return dates.sort()[0];
+    })();
+    const requestDate = parseYmd(req?.requestDate);
+    const receivedDate = parseYmd(req?.receivedDate);
+    const createdAt = parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt);
+    const candidates = [checkIn, eventStart, agendaStart, firstRoomArrival, requestDate, receivedDate, createdAt].filter(Boolean).sort() as string[];
+    if (!candidates.length) return '';
+    return candidates[0];
 }
 
 const asNumber = (v: any) => parseFloat(String(v ?? 0).replace(/,/g, '')) || 0;
