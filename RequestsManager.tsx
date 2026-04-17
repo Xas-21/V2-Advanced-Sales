@@ -47,6 +47,7 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
     findFirstAgendaVenueConflict,
+    formatAgendaRowVenueDisplay,
     deriveRequestMealLabelFromRooms,
     paymentsMeetOrExceedTotal,
     shouldPromoteDefiniteToActual,
@@ -3074,7 +3075,7 @@ export default function RequestsManager({
                                         <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
                                         <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
                                         <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
-                                        <td className="px-4 py-3 opacity-80">{row.venue || '—'}</td>
+                                        <td className="px-4 py-3 opacity-80">{formatAgendaRowVenueDisplay(row) || '—'}</td>
                                         <td className="px-4 py-3 opacity-80">{row.shape || '—'}</td>
                                         <td className="px-4 py-3">{row.package || '—'}</td>
                                         <td className="px-4 py-3 text-center">{row.pax ?? '—'}</td>
@@ -4370,7 +4371,7 @@ export default function RequestsManager({
                                                                 <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
                                                                 <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
                                                                 <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
-                                                                <td className="py-2 pr-2">{row.venue || '—'}</td>
+                                                                <td className="py-2 pr-2">{formatAgendaRowVenueDisplay(row) || '—'}</td>
                                                                 <td className="py-2 pr-2">{row.shape || '—'}</td>
                                                                 <td className="py-2 pr-2">{row.package || '—'}</td>
                                                                 <td className="text-center py-2">{row.pax ?? '—'}</td>

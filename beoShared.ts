@@ -188,6 +188,17 @@ export function expandAgendaRowVenueOccupancies(row: any, req?: any): { name: st
     return [{ name: v, start: a, end: b || a }];
 }
 
+/** Venue text for BEO / detail tables: combined rows use `combinedVenueNames`; otherwise `venue`. */
+export function formatAgendaRowVenueDisplay(row: any): string {
+    if (row?.combined && Array.isArray(row.combinedVenueNames) && row.combinedVenueNames.length > 0) {
+        const names = row.combinedVenueNames
+            .map((n: any) => String(n ?? '').trim())
+            .filter(Boolean);
+        if (names.length) return names.join(', ');
+    }
+    return String(row?.venue ?? '').trim();
+}
+
 export function isoInclusiveRangesOverlap(s1: string, e1: string, s2: string, e2: string): boolean {
     const a1 = String(s1 || '').slice(0, 10);
     const b1 = String(e1 || s1 || '').slice(0, 10) || a1;
@@ -509,7 +520,8 @@ export function printBeoDocument(req: any, fin: any, notes: string, accounts: an
             const coffee = formatAgendaRowCoffeeBreak(row);
             const lunch = formatAgendaRowLunch(row);
             const dinner = formatAgendaRowDinner(row);
-            return `<tr><td>${escapeHtml(row.startDate || '—')}</td><td>${escapeHtml(row.endDate || row.startDate || '—')}</td><td>${escapeHtml([row.startTime, row.endTime].filter(Boolean).join(' – ') || '—')}</td><td>${escapeHtml(coffee || '—')}</td><td>${escapeHtml(lunch || '—')}</td><td>${escapeHtml(dinner || '—')}</td><td>${escapeHtml(row.venue || '—')}</td><td>${escapeHtml(row.shape || '—')}</td><td>${escapeHtml(row.package || '—')}</td><td style="text-align:center">${escapeHtml(String(row.pax ?? '—'))}</td><td style="text-align:right">${Number(row.rate || 0).toLocaleString()}</td><td style="text-align:right">${Number(row.rental || 0).toLocaleString()}</td><td style="text-align:right">${line.toLocaleString()}</td></tr>`;
+            const venueCell = formatAgendaRowVenueDisplay(row) || '—';
+            return `<tr><td>${escapeHtml(row.startDate || '—')}</td><td>${escapeHtml(row.endDate || row.startDate || '—')}</td><td>${escapeHtml([row.startTime, row.endTime].filter(Boolean).join(' – ') || '—')}</td><td>${escapeHtml(coffee || '—')}</td><td>${escapeHtml(lunch || '—')}</td><td>${escapeHtml(dinner || '—')}</td><td>${escapeHtml(venueCell)}</td><td>${escapeHtml(row.shape || '—')}</td><td>${escapeHtml(row.package || '—')}</td><td style="text-align:center">${escapeHtml(String(row.pax ?? '—'))}</td><td style="text-align:right">${Number(row.rate || 0).toLocaleString()}</td><td style="text-align:right">${Number(row.rental || 0).toLocaleString()}</td><td style="text-align:right">${line.toLocaleString()}</td></tr>`;
         }).join('');
 
     const remainingBlock = remaining > 0

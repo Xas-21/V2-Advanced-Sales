@@ -108,6 +108,7 @@ import {
     deriveBeoPaymentView,
     sumAgendaAttendeeDays,
     expandAgendaRowVenueOccupancies,
+    formatAgendaRowVenueDisplay,
 } from './beoShared';
 import { resolveUserAttributionId, taskAssignedToUser } from './userProfileMetrics';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
@@ -2280,7 +2281,7 @@ const EventsView = ({
                                                         <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
                                                         <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
                                                         <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
-                                                        <td className="py-2 pr-2">{row.venue || '—'}</td>
+                                                        <td className="py-2 pr-2">{formatAgendaRowVenueDisplay(row) || '—'}</td>
                                                         <td className="text-center py-2">{row.pax ?? '—'}</td>
                                                         <td className="text-right py-2 font-mono font-bold">{line.toLocaleString()}</td>
                                                     </tr>
