@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { apiUrl } from './backendApi';
 import {
     LayoutList, Search, Plus, Calendar, User, FileText, Check, DollarSign,
@@ -46,6 +46,7 @@ import {
     addCalendarDaysIso,
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
+    findFirstAgendaVenueConflict,
     paymentsMeetOrExceedTotal,
     shouldPromoteDefiniteToActual,
     requestSectionAddButtonStyle,
@@ -373,6 +374,8 @@ export default function RequestsManager({
     const [gisSeriesRowInclude, setGisSeriesRowInclude] = useState<Record<number, boolean>>({});
     const [requestAlertsModalId, setRequestAlertsModalId] = useState<string | null>(null);
     const [requestAlertsModalAuto, setRequestAlertsModalAuto] = useState(false);
+    /** In-app notice (replaces browser `alert` for consistent UI). */
+    const [systemNotice, setSystemNotice] = useState<{ title: string; message: string } | null>(null);
     const prevDetailRequestIdRef = useRef<string | null>(null);
 
     const getSearchOnlyParams = (params: any = {}) => {
@@ -421,6 +424,10 @@ export default function RequestsManager({
         if (selectedRequest && String(selectedRequest.id) === id) return selectedRequest;
         return null;
     }, [requestAlertsModalId, requests, selectedRequest]);
+
+    const showSystemNotice = useCallback((title: string, message: string) => {
+        setSystemNotice({ title, message });
+    }, []);
 
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
 
@@ -799,6 +806,38 @@ export default function RequestsManager({
         try {
             // Always recalculate financial metrics to ensure they match current form state (handle updates)
             const normalizedType = normalizeRequestTypeKey(type);
+            const agendaForVenueCheck =
+                normalizedType === 'event' ? (formData.agenda || []) : normalizedType === 'event_rooms' ? (formData.agenda || []) : [];
+            if (normalizedType === 'event' || normalizedType === 'event_rooms') {
+                if (Array.isArray(agendaForVenueCheck) && agendaForVenueCheck.length) {
+                    for (let i = 0; i < agendaForVenueCheck.length; i++) {
+                        const row = agendaForVenueCheck[i];
+                        if (row?.combined && !(Array.isArray(row.combinedVenueNames) && row.combinedVenueNames.length)) {
+                            showSystemNotice(
+                                'Cannot save request',
+                                `Agenda row ${i + 1}: "Combined" is on but no meeting rooms are selected. Choose at least one room, or turn off Combined.`
+                            );
+                            return;
+                        }
+                    }
+                    const conflict = findFirstAgendaVenueConflict({
+                        agenda: agendaForVenueCheck,
+                        requestId: formData.id || null,
+                        propertyId: activeProperty?.id,
+                        candidates: requests,
+                    });
+                    if (conflict) {
+                        const r = conflict.ref;
+                        const reqTitle = String(r.requestName || r.confirmationNo || r.id || 'another request').trim();
+                        const acct = String(r.account || r.accountName || 'Unknown account').trim();
+                        showSystemNotice(
+                            'Venue not available',
+                            `${conflict.venue} is not available on the selected dates. It is already booked for:\n\nRequest: ${reqTitle}\nAccount: ${acct}\n\nPlease check venue availability before confirming your booking.`
+                        );
+                        return;
+                    }
+                }
+            }
             const fin = normalizedType === 'event'
                 ? (Array.isArray(formData?.agenda) ? calculateAccFinancials(formData) : calculateEvtFinancials(formData))
                 : calculateAccFinancials(formData);
@@ -1040,11 +1079,11 @@ export default function RequestsManager({
                     setRequestType(null);
                 }
             } else {
-                alert("Failed to save request. Status: " + res.status);
+                showSystemNotice('Save failed', 'Failed to save request. Status: ' + res.status);
             }
         } catch (err) {
             console.error("Error saving request:", err);
-            alert("Error saving request. Please check console.");
+            showSystemNotice('Save error', 'Error saving request. Please check the console for details.');
         } finally {
             setIsLoading(false);
         }
@@ -1080,11 +1119,11 @@ export default function RequestsManager({
                 await fetchRequests();
                 onAfterRequestsMutate?.();
             } else {
-                alert("Failed to update. Status: " + res.status);
+                showSystemNotice('Update failed', 'Failed to update. Status: ' + res.status);
             }
         } catch (err) {
             console.error("Error updating request:", err);
-            alert("Error updating request.");
+            showSystemNotice('Update error', 'Error updating request.');
         } finally {
             setIsLoading(false);
         }
@@ -1184,11 +1223,11 @@ export default function RequestsManager({
                 await fetchRequests();
                 onAfterRequestsMutate?.();
             } else {
-                alert("Failed to delete. Status: " + res.status);
+                showSystemNotice('Delete failed', 'Failed to delete. Status: ' + res.status);
             }
         } catch (err) {
             console.error("Error deleting request:", err);
-            alert("Error deleting request.");
+            showSystemNotice('Delete error', 'Error deleting request.');
         } finally {
             setIsLoading(false);
         }
@@ -1615,7 +1654,10 @@ export default function RequestsManager({
             if (!(amt > 0)) return;
             const netPaid = sumPaymentAmounts(accForm.payments);
             if (netPaid < amt) {
-                window.alert('There is no remaining paid balance to offset for this amount.');
+                showSystemNotice(
+                    'Cannot offset payment',
+                    'There is no remaining paid balance to offset for this amount.'
+                );
                 return;
             }
             setAccForm({
@@ -1728,7 +1770,7 @@ export default function RequestsManager({
                     },
                 }));
             } catch (e: any) {
-                window.alert(e?.message || 'Failed to upload file to Cloudinary.');
+                showSystemNotice('Upload failed', e?.message || 'Failed to upload file to Cloudinary.');
             } finally {
                 setUploadingDocs((prev) => ({ ...prev, [docId]: false }));
             }
@@ -2202,7 +2244,7 @@ export default function RequestsManager({
                                         <Trash2 size={16} />
                                     </button>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+                                    <div className={`grid grid-cols-1 gap-4 ${row.combined ? 'md:grid-cols-5' : 'md:grid-cols-6'}`}>
                                         <div>
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Start Date</label>
                                             <input
@@ -2240,13 +2282,15 @@ export default function RequestsManager({
                                                 className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Meeting Room</label>
-                                            <select value={row.venue} onChange={e => updateAgendaRow(row.id, 'venue', e.target.value)}
-                                                className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
-                                                {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
-                                            </select>
-                                        </div>
+                                        {!row.combined ? (
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Meeting Room</label>
+                                                <select value={row.venue} onChange={e => updateAgendaRow(row.id, 'venue', e.target.value)}
+                                                    className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                    {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
+                                                </select>
+                                            </div>
+                                        ) : null}
                                         <div className="flex flex-col justify-end pb-0.5">
                                             <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Combined</label>
                                             <label className="flex items-center gap-2 cursor-pointer select-none rounded-xl border-2 border-transparent px-3 py-2 bg-black/20 hover:border-primary/40 transition-all">
@@ -2257,7 +2301,10 @@ export default function RequestsManager({
                                                     disabled={readOnlyOperational}
                                                     onChange={(e) => {
                                                         const on = e.target.checked;
-                                                        patchAgendaRow(row.id, on ? { combined: true } : { combined: false, combinedVenueNames: [] });
+                                                        patchAgendaRow(
+                                                            row.id,
+                                                            on ? { combined: true, venue: '' } : { combined: false, combinedVenueNames: [] }
+                                                        );
                                                     }}
                                                 />
                                                 <span className="text-xs font-bold" style={{ color: colors.textMain }}>Combined</span>
@@ -3946,6 +3993,56 @@ export default function RequestsManager({
             <>
                 {paymentModal}
 
+                {systemNotice && (
+                    <div className="fixed inset-0 z-[220] flex items-center justify-center p-4" role="alertdialog" aria-modal="true" aria-labelledby="system-notice-title">
+                        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSystemNotice(null)} />
+                        <div
+                            className="relative w-full max-w-md rounded-3xl border shadow-2xl overflow-hidden animate-in zoom-in duration-300"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                        >
+                            <div className="p-6 border-b flex items-start justify-between gap-3" style={{ borderColor: colors.border }}>
+                                <div className="flex items-start gap-3 min-w-0">
+                                    <div className="shrink-0 mt-0.5 p-2 rounded-xl bg-amber-500/15 border border-amber-500/30">
+                                        <AlertTriangle className="text-amber-500" size={22} aria-hidden />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-1" style={{ color: colors.textMain }}>
+                                            System message
+                                        </p>
+                                        <h3 id="system-notice-title" className="font-black text-lg leading-tight" style={{ color: colors.textMain }}>
+                                            {systemNotice.title}
+                                        </h3>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setSystemNotice(null)}
+                                    className="shrink-0 opacity-30 hover:opacity-100 transition-opacity p-1"
+                                    style={{ color: colors.textMain }}
+                                    aria-label="Close"
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="p-6 max-h-[55vh] overflow-y-auto">
+                                <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium" style={{ color: colors.textMuted }}>
+                                    {systemNotice.message}
+                                </p>
+                            </div>
+                            <div className="p-4 border-t" style={{ borderColor: colors.border }}>
+                                <button
+                                    type="button"
+                                    onClick={() => setSystemNotice(null)}
+                                    className="w-full py-3 rounded-xl font-bold text-sm transition-all hover:opacity-90 active:scale-[0.99]"
+                                    style={{ backgroundColor: colors.primary, color: colors.card }}
+                                >
+                                    OK
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 <AddAccountModal
                     isOpen={showAddAccountModal}
                     onClose={() => setShowAddAccountModal(false)}
@@ -4358,12 +4455,16 @@ export default function RequestsManager({
                                             type="button"
                                             onClick={() => {
                                                 if (selectedGisLines.length === 0) {
-                                                    alert('Select at least one check-in block (series) or ensure room lines exist before printing.');
+                                                    showSystemNotice(
+                                                        'GIS',
+                                                        'Select at least one check-in block (series) or ensure room lines exist before printing.'
+                                                    );
                                                     return;
                                                 }
                                                 const arrivalTime = String(gisExpectedArrivalTimeDraft || '').trim();
                                                 if (!arrivalTime) {
-                                                    alert(
+                                                    showSystemNotice(
+                                                        'GIS',
                                                         'Expected arrival time is required before printing the GIS.\n\n' +
                                                             'Enter the time the group is expected to arrive at the property, then try Print again.'
                                                     );

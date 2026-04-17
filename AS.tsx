@@ -107,6 +107,7 @@ import {
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
     sumAgendaAttendeeDays,
+    expandAgendaRowVenueOccupancies,
 } from './beoShared';
 import { resolveUserAttributionId, taskAssignedToUser } from './userProfileMetrics';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
@@ -1586,9 +1587,11 @@ const EventsView = ({
         for (const r of miceRequests) {
             const rows = Array.isArray(r.agenda) ? r.agenda : [];
             for (const row of rows) {
-                const v = String(row.venue || '').trim();
-                if (!v) continue;
-                counts[v] = (counts[v] || 0) + 1;
+                for (const occ of expandAgendaRowVenueOccupancies(row, r)) {
+                    const v = occ.name.trim();
+                    if (!v) continue;
+                    counts[v] = (counts[v] || 0) + 1;
+                }
             }
         }
         return Object.entries(counts)
@@ -1654,9 +1657,9 @@ const EventsView = ({
             if (st === 'Cancelled' || st === 'Lost') continue;
             const rows = Array.isArray(req.agenda) ? req.agenda : [];
             const hit = rows.some((row: any) => {
-                const rowVenue = String(row.venue || '').trim().toLowerCase();
-                if (rowVenue !== venueName.trim().toLowerCase()) return false;
-                return agendaCoversDate(row, checkIso, req);
+                if (!agendaCoversDate(row, checkIso, req)) return false;
+                const want = venueName.trim().toLowerCase();
+                return expandAgendaRowVenueOccupancies(row, req).some((occ) => occ.name.trim().toLowerCase() === want);
             });
             if (!hit) continue;
             const idx = order.indexOf(st);

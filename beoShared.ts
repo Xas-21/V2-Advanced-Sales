@@ -166,6 +166,78 @@ export function sumAgendaAttendeeDays(agenda: any[] = []) {
     }, 0);
 }
 
+/** One booking slice per venue name for an agenda row (single `venue` or `combinedVenueNames`). */
+export function expandAgendaRowVenueOccupancies(row: any, req?: any): { name: string; start: string; end: string }[] {
+    const a = String(row?.startDate || req?.eventStart || req?.checkIn || '').trim().slice(0, 10);
+    const b = String(
+        row?.endDate || row?.startDate || req?.eventEnd || req?.checkOut || req?.eventStart || req?.checkIn || ''
+    )
+        .trim()
+        .slice(0, 10) || a;
+    if (!a) return [];
+    if (row?.combined && Array.isArray(row.combinedVenueNames) && row.combinedVenueNames.length > 0) {
+        const out: { name: string; start: string; end: string }[] = [];
+        for (const raw of row.combinedVenueNames) {
+            const name = String(raw || '').trim();
+            if (name) out.push({ name, start: a, end: b || a });
+        }
+        return out;
+    }
+    const v = String(row?.venue || '').trim();
+    if (!v) return [];
+    return [{ name: v, start: a, end: b || a }];
+}
+
+export function isoInclusiveRangesOverlap(s1: string, e1: string, s2: string, e2: string): boolean {
+    const a1 = String(s1 || '').slice(0, 10);
+    const b1 = String(e1 || s1 || '').slice(0, 10) || a1;
+    const a2 = String(s2 || '').slice(0, 10);
+    const b2 = String(e2 || s2 || '').slice(0, 10) || a2;
+    if (!a1 || !a2) return false;
+    return a1 <= b2 && a2 <= b1;
+}
+
+/** First venue/date overlap with another request (same property), excluding `requestId` when editing. */
+export function findFirstAgendaVenueConflict(opts: {
+    agenda: any[];
+    requestId?: string | null;
+    propertyId?: string | null;
+    candidates: any[];
+}): { venue: string; ref: any } | null {
+    const { agenda, requestId, propertyId, candidates } = opts;
+    if (!Array.isArray(agenda) || agenda.length === 0) return null;
+    const mine: { name: string; start: string; end: string }[] = [];
+    for (const row of agenda) mine.push(...expandAgendaRowVenueOccupancies(row, {}));
+    if (!mine.length) return null;
+
+    const normPid = String(propertyId || '').trim();
+    const skipStatus = new Set(['cancelled', 'lost']);
+
+    for (const other of candidates || []) {
+        if (String(other?.id || '') === String(requestId || '')) continue;
+        const pid = String(other?.propertyId || '').trim();
+        if (normPid && pid && pid !== normPid) continue;
+        const st = String(other?.status || '').trim().toLowerCase();
+        if (skipStatus.has(st)) continue;
+
+        const rows = Array.isArray(other?.agenda) ? other.agenda : [];
+        for (const orow of rows) {
+            const occs = expandAgendaRowVenueOccupancies(orow, other);
+            for (const o of occs) {
+                const on = o.name.trim().toLowerCase();
+                if (!on) continue;
+                for (const m of mine) {
+                    if (m.name.trim().toLowerCase() !== on) continue;
+                    if (isoInclusiveRangesOverlap(m.start, m.end, o.start, o.end)) {
+                        return { venue: m.name, ref: other };
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
 export function getEventDateWindow(r: any) {
     const agenda = r?.agenda || [];
     const dates: string[] = [];
