@@ -5515,51 +5515,7 @@ export default function AdvancedSalesDashboard() {
         setCurrentView('dashboard');
     };
 
-    // --- Renderers ---
-
-
-    // --- Render ---
-
-    // Show Login page if not authenticated
-    if (!isAuthenticated) {
-        if (!showLoginPage) {
-            return (
-                <LandingPage
-                    themes={THEMES}
-                    currentThemeId={currentThemeId}
-                    onOpenLogin={() => setShowLoginPage(true)}
-                    onThemeChange={cycleTheme}
-                />
-            );
-        }
-        return (
-            <Login
-                onLogin={handleLogin}
-                themes={THEMES}
-                currentThemeId={currentThemeId}
-                onThemeChange={cycleTheme}
-                onBackToLanding={() => setShowLoginPage(false)}
-            />
-        );
-    }
-
-    // Main Dashboard (when authenticated)
-    const getPageTitle = () => {
-        switch (currentView) {
-            case 'dashboard': return 'Dashboard';
-            case 'calendar': return 'Calendar';
-            case 'events': return 'Events & Catering';
-            case 'requests': return 'Requests Center';
-            case 'crm': return 'Sales Calls';
-            case 'contracts': return 'Contracts';
-            case 'accounts': return 'Accounts';
-            case 'reports': return 'Reports';
-            case 'todo': return 'To-Do Management';
-            case 'settings': return 'Settings';
-            default: return 'Dashboard';
-        }
-    };
-
+    /** Must run on every render (even when logged out) — hooks cannot appear after the unauthenticated early return. */
     const getAlertRowStyle = useCallback((accent: RequestAlert['accent']): React.CSSProperties => {
         const lw = 4;
         switch (accent) {
@@ -5608,6 +5564,51 @@ export default function AdvancedSalesDashboard() {
                 };
         }
     }, [colors]);
+
+    // --- Renderers ---
+
+
+    // --- Render ---
+
+    // Show Login page if not authenticated
+    if (!isAuthenticated) {
+        if (!showLoginPage) {
+            return (
+                <LandingPage
+                    themes={THEMES}
+                    currentThemeId={currentThemeId}
+                    onOpenLogin={() => setShowLoginPage(true)}
+                    onThemeChange={cycleTheme}
+                />
+            );
+        }
+        return (
+            <Login
+                onLogin={handleLogin}
+                themes={THEMES}
+                currentThemeId={currentThemeId}
+                onThemeChange={cycleTheme}
+                onBackToLanding={() => setShowLoginPage(false)}
+            />
+        );
+    }
+
+    // Main Dashboard (when authenticated)
+    const getPageTitle = () => {
+        switch (currentView) {
+            case 'dashboard': return 'Dashboard';
+            case 'calendar': return 'Calendar';
+            case 'events': return 'Events & Catering';
+            case 'requests': return 'Requests Center';
+            case 'crm': return 'Sales Calls';
+            case 'contracts': return 'Contracts';
+            case 'accounts': return 'Accounts';
+            case 'reports': return 'Reports';
+            case 'todo': return 'To-Do Management';
+            case 'settings': return 'Settings';
+            default: return 'Dashboard';
+        }
+    };
 
     // Main Dashboard (when authenticated)
     return (
