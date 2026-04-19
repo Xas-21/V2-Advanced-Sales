@@ -15,6 +15,11 @@ function parseYmd(raw: any): string {
     return `${y}-${m}-${d}`;
 }
 
+/**
+ * Date used to bucket profile/dashboard revenue by calendar month.
+ * Uses a clear priority — **not** “earliest of all fields”, so e.g. `createdAt` in March cannot
+ * override June `checkIn` / event dates (that mismatch looked like “fake” revenue in the wrong month).
+ */
 export function getPrimaryOperationalDate(req: any): string {
     const checkIn = parseYmd(req?.checkIn);
     const eventStart = parseYmd(req?.eventStart);
@@ -26,6 +31,11 @@ export function getPrimaryOperationalDate(req: any): string {
         if (!starts.length) return '';
         return starts.sort()[0];
     })();
+    /** Stay / event anchors first (same idea as Events & Catering calendar). */
+    const stayOrEvent = [checkIn, eventStart].filter(Boolean).sort() as string[];
+    if (stayOrEvent.length) return stayOrEvent[0];
+    if (agendaStart) return agendaStart;
+
     const firstRoomArrival = (() => {
         const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
         const dates: string[] = [];
@@ -36,12 +46,13 @@ export function getPrimaryOperationalDate(req: any): string {
         if (!dates.length) return '';
         return dates.sort()[0];
     })();
+    if (firstRoomArrival) return firstRoomArrival;
+
     const requestDate = parseYmd(req?.requestDate);
+    if (requestDate) return requestDate;
     const receivedDate = parseYmd(req?.receivedDate);
-    const createdAt = parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt);
-    const candidates = [checkIn, eventStart, agendaStart, firstRoomArrival, requestDate, receivedDate, createdAt].filter(Boolean).sort() as string[];
-    if (!candidates.length) return '';
-    return candidates[0];
+    if (receivedDate) return receivedDate;
+    return parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt) || '';
 }
 
 const asNumber = (v: any) => parseFloat(String(v ?? 0).replace(/,/g, '')) || 0;
@@ -505,4 +516,104 @@ export function monthRangeRevenueSeries(
         }
     }
     return out;
+}
+
+/** Min/max operational dates among requests attributed to the user (for “full history” chart range). */
+export function userAttributedOperationalDateBounds(
+    requests: any[],
+    propertyId: string | undefined,
+    user: any
+): { min: string; max: string } | null {
+    let min = '';
+    let max = '';
+    for (const req of requests || []) {
+        if (!requestInProperty(req, propertyId)) continue;
+        if (!requestAttributedToUser(req, user)) continue;
+        const pd = getPrimaryOperationalDate(req);
+        if (!pd) continue;
+        if (!min || pd < min) min = pd;
+        if (!max || pd > max) max = pd;
+    }
+    if (!min || !max) return null;
+    return { min, max };
+}
+
+/** Same month iteration as `monthRangeRevenueSeries`, but counts requests per month. */
+export function monthRangeRequestSeries(
+    requests: any[],
+    propertyId: string | undefined,
+    user: any,
+    fromMonthLabel: string,
+    fromYear: string,
+    toMonthLabel: string,
+    toYear: string
+): { month: string; requests: number }[] {
+    const mi = (s: string) => PROFILE_MONTH_LABELS.indexOf(s as (typeof PROFILE_MONTH_LABELS)[number]);
+    let y0 = parseInt(fromYear, 10);
+    let m0 = mi(fromMonthLabel);
+    let y1 = parseInt(toYear, 10);
+    let m1 = mi(toMonthLabel);
+    if (!Number.isFinite(y0)) y0 = new Date().getFullYear();
+    if (!Number.isFinite(y1)) y1 = y0;
+    if (m0 < 0) m0 = 0;
+    if (m1 < 0) m1 = 11;
+    const out: { month: string; requests: number }[] = [];
+    let cy = y0;
+    let cm = m0;
+    let guard = 0;
+    while (guard++ < 120) {
+        const ym = `${cy}-${String(cm + 1).padStart(2, '0')}`;
+        const label = `${PROFILE_MONTH_LABELS[cm]} ${cy}`;
+        let n = 0;
+        for (const req of requests || []) {
+            if (!requestInProperty(req, propertyId)) continue;
+            if (!requestAttributedToUser(req, user)) continue;
+            const pd = getPrimaryOperationalDate(req);
+            if (pd.startsWith(ym)) n += 1;
+        }
+        out.push({ month: label, requests: n });
+        if (cy === y1 && cm === m1) break;
+        cm += 1;
+        if (cm > 11) {
+            cm = 0;
+            cy += 1;
+        }
+    }
+    return out;
+}
+
+function parseCreatedYmd(req: any): string {
+    return parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt);
+}
+
+/** Recent requests attributed to this user, sorted by `createdAt` desc, optional created-date range. */
+export function getProfileRecentRequests(
+    requests: any[],
+    propertyId: string | undefined,
+    user: any,
+    createdFrom: string,
+    createdTo: string,
+    limit: number
+): any[] {
+    const rows = (requests || []).filter(
+        (r) => requestInProperty(r, propertyId) && requestAttributedToUser(r, user)
+    );
+    const withDates = rows
+        .map((req) => ({ req, cd: parseCreatedYmd(req) }))
+        .filter((x) => x.cd);
+    let filtered = withDates;
+    if (createdFrom) filtered = filtered.filter((x) => x.cd >= createdFrom);
+    if (createdTo) filtered = filtered.filter((x) => x.cd <= createdTo);
+    filtered.sort((a, b) => (a.cd < b.cd ? 1 : a.cd > b.cd ? -1 : 0));
+    return filtered.slice(0, Math.max(1, limit)).map((x) => x.req);
+}
+
+/** Count leads with any dated last-contact / activity (all-time rollup for profile KPI). */
+export function countCallsAllTime(leads: any[]): number {
+    let n = 0;
+    for (const l of leads || []) {
+        const d = parseYmd(l?.lastContact || l?.date);
+        if (d) n += 1;
+    }
+    return n;
 }

@@ -134,6 +134,14 @@ export function normalizeRequestTypeKey(raw: string = '') {
     return t || 'accommodation';
 }
 
+/**
+ * Rooms tab / room-inventory charts: pure event & catering types have no accommodation block.
+ * Event + Rooms, series stays, and accommodation still contribute.
+ */
+export function shouldIncludeRequestInRoomsChart(req: any): boolean {
+    return normalizeRequestTypeKey(req?.requestType || '') !== 'event';
+}
+
 export function calculateEventAgendaDays(agenda: any[] = []) {
     if (!Array.isArray(agenda) || agenda.length === 0) return 0;
     return agenda.reduce((sum: number, item: any) => {

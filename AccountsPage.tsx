@@ -29,6 +29,8 @@ import {
     isSystemAdmin,
 } from './userPermissions';
 import type { CurrencyCode } from './currency';
+
+export type AccountPerfDateRange = { from: string; to: string };
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId } from './userProfileMetrics';
@@ -50,6 +52,10 @@ interface AccountsPageProps {
     accountTypeOptions?: string[];
     currency?: CurrencyCode;
     activeProperty?: any;
+    /** Controlled from AS shell header when viewing an account profile. */
+    shellAccountPerformanceRange: AccountPerfDateRange;
+    onShellAccountPerformanceRangeChange: (r: AccountPerfDateRange) => void;
+    onAccountProfileShellStateChange?: (state: { open: boolean; leadKey: string | null }) => void;
 }
 
 export default function AccountsPage({
@@ -66,6 +72,9 @@ export default function AccountsPage({
     accountTypeOptions,
     currency = 'SAR',
     activeProperty,
+    shellAccountPerformanceRange,
+    onShellAccountPerformanceRangeChange,
+    onAccountProfileShellStateChange,
 }: AccountsPageProps) {
     const colors = theme.colors;
     const profileReadOnly = isAccountsPageReadOnly(currentUser);
@@ -100,6 +109,13 @@ export default function AccountsPage({
             localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(columnOrder));
         } catch { /* ignore */ }
     }, [columnOrder]);
+
+    useEffect(() => {
+        onAccountProfileShellStateChange?.({
+            open: !!profileLead,
+            leadKey: profileLead ? String(profileLead.accountId || profileLead.id || '') : null,
+        });
+    }, [profileLead, onAccountProfileShellStateChange]);
 
     useEffect(() => {
         const refresh = () => setAccountContracts(getContractRecords());
@@ -347,6 +363,8 @@ export default function AccountsPage({
                             ? () => openAccountDeleteConfirm(String(aid))
                             : undefined
                     }
+                    shellAccountPerformanceRange={shellAccountPerformanceRange}
+                    onShellAccountPerformanceRangeChange={onShellAccountPerformanceRangeChange}
                 />
                 <AddAccountModal
                     isOpen={showEditAccountModal}

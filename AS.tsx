@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
 import {
     LayoutDashboard,
     CalendarDays,
@@ -104,13 +104,15 @@ import {
     formatBeoSpecialRequestsCombined,
     inclusiveCalendarDays,
     normalizeRequestTypeKey,
+    shouldIncludeRequestInRoomsChart,
     getBeoScopeGrandTotalInclTax,
     deriveBeoPaymentView,
     sumAgendaAttendeeDays,
     expandAgendaRowVenueOccupancies,
     formatAgendaRowVenueDisplay,
 } from './beoShared';
-import { resolveUserAttributionId, taskAssignedToUser } from './userProfileMetrics';
+import { resolveUserAttributionId, taskAssignedToUser, getPrimaryOperationalDate } from './userProfileMetrics';
+import { getDefaultAccountPerformanceRange } from './accountProfileChartData';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
@@ -364,40 +366,6 @@ function isEventsCateringEligibleRequest(req: any): boolean {
     if (t.includes('event with')) return true;
     return false;
 }
-
-const getPrimaryOperationalDate = (req: any): string => {
-    const checkIn = parseYmd(req?.checkIn);
-    const eventStart = parseYmd(req?.eventStart);
-    const agendaStart = (() => {
-        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
-        const starts = agenda
-            .map((row: any) => parseYmd(row?.startDate || row?.endDate))
-            .filter(Boolean) as string[];
-        if (!starts.length) return '';
-        return starts.sort()[0];
-    })();
-    /** Prefer stay/event anchors: earliest of check-in vs event start when either exists; agenda only if both missing. */
-    const stayOrEvent = [checkIn, eventStart].filter(Boolean).sort() as string[];
-    if (stayOrEvent.length) return stayOrEvent[0];
-    if (agendaStart) return agendaStart;
-
-    const firstRoomArrival = (() => {
-        const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
-        const dates: string[] = [];
-        for (const row of rooms) {
-            const a = parseYmd((row as any)?.arrival || (row as any)?.checkIn);
-            if (a) dates.push(a);
-        }
-        if (!dates.length) return '';
-        return dates.sort()[0];
-    })();
-    if (firstRoomArrival) return firstRoomArrival;
-    const requestDate = parseYmd(req?.requestDate);
-    if (requestDate) return requestDate;
-    const receivedDate = parseYmd(req?.receivedDate);
-    if (receivedDate) return receivedDate;
-    return parseYmd(String(req?.createdAt || '').split('T')[0] || req?.createdAt) || '';
-};
 
 const getRequestCountDates = (req: any): string[] => {
     if (isSeriesRequest(req)) {
@@ -3627,7 +3595,7 @@ type AlertsBellProps = {
     onViewRequest: (a: RequestAlert) => void;
 };
 
-function AlertsBell({
+const AlertsBell = memo(function AlertsBell({
     colors,
     bellSize,
     panelRef,
@@ -3739,7 +3707,7 @@ function AlertsBell({
             ) : null}
         </div>
     );
-}
+});
 
 export default function AdvancedSalesDashboard() {
     const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('as_themeId') || 'light');
@@ -3779,6 +3747,23 @@ export default function AdvancedSalesDashboard() {
     const currentCurrency = resolveCurrencyCode(currentUser?.preferredCurrency || 'SAR');
     const theme = (THEMES as any)[currentThemeId] || (THEMES as any).light;
     const colors = theme.colors;
+    const userInitials = useMemo(
+        () =>
+            String(currentUser?.name || '')
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .map((n: string) => n[0])
+                .join('') || 'US',
+        [currentUser?.name]
+    );
+    const userAvatarGradientStyle = useMemo(
+        () => ({
+            background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})`,
+            borderColor: colors.border,
+        }),
+        [colors.primary, colors.orange, colors.border]
+    );
     const formatMoney = useCallback(
         (amountSar: number, maxFractionDigits = 2) => formatCurrencyAmount(amountSar, currentCurrency, { maximumFractionDigits: maxFractionDigits }),
         [currentCurrency]
@@ -3870,7 +3855,8 @@ export default function AdvancedSalesDashboard() {
         account: '',
         segment: '',
         confNumber: '',
-        status: 'all'
+        status: 'all',
+        createdByUserId: '',
     });
     const navigateRequestsSubView = (nextSubView: string) => {
         setRequestsSubView(nextSubView);
@@ -3910,6 +3896,17 @@ export default function AdvancedSalesDashboard() {
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     });
     const [showCrmMonthPicker, setShowCrmMonthPicker] = useState(false);
+
+    /** Accounts: which account profile is open (non-null → show performance picker in shell header). */
+    const [accountsProfileLeadKey, setAccountsProfileLeadKey] = useState<string | null>(null);
+    const [accountShellPerfRange, setAccountShellPerfRange] = useState(() => getDefaultAccountPerformanceRange());
+    const [accountShellPerfDraftFrom, setAccountShellPerfDraftFrom] = useState(() => getDefaultAccountPerformanceRange().from);
+    const [accountShellPerfDraftTo, setAccountShellPerfDraftTo] = useState(() => getDefaultAccountPerformanceRange().to);
+    const [showAccountShellPerfPicker, setShowAccountShellPerfPicker] = useState(false);
+
+    const handleAccountProfileShellState = useCallback((next: { open: boolean; leadKey: string | null }) => {
+        setAccountsProfileLeadKey(next.leadKey);
+    }, []);
 
     // Events Calendar State
     const [eventsCalendarView, setEventsCalendarView] = useState('Month');
@@ -4960,7 +4957,7 @@ export default function AdvancedSalesDashboard() {
                 }
             }
 
-            if (!skipPerf) {
+            if (!skipPerf && shouldIncludeRequestInRoomsChart(req)) {
                 const roomRows = Array.isArray(req?.rooms) ? req.rooms : [];
                 let roomContributed = false;
                 let roomRevenueAllocated = 0;
@@ -5091,6 +5088,7 @@ export default function AdvancedSalesDashboard() {
             if (!requestTouchesOperationalRange(req, range)) continue;
             if (isDashboardExcludedRequest(req)) continue;
             if (normalizeStatus(req?.status) !== 'Actual') continue;
+            if (!shouldIncludeRequestInRoomsChart(req)) continue;
             const breakdown = computeRequestCostBreakdown(req);
             if (breakdown.roomsRevenue > 0) roomsActual += breakdown.roomsRevenue;
             if (breakdown.eventRevenue > 0) fnbActual += breakdown.eventRevenue;
@@ -5349,8 +5347,11 @@ export default function AdvancedSalesDashboard() {
     const eventTypeMenuRef = useRef<HTMLDivElement>(null);
     const calendarPickerRef = useRef<HTMLDivElement>(null);
     const dashboardPickerRef = useRef<HTMLDivElement>(null);
+    const accountShellPerfPickerRef = useRef<HTMLDivElement>(null);
     const crmMonthPickerRef = useRef<HTMLDivElement>(null);
     const userDropdownRef = useRef<HTMLDivElement>(null);
+    /** Mobile header avatar (must be included in click-outside for profile menu). */
+    const userProfileMobileRef = useRef<HTMLDivElement>(null);
     const alertsPanelRef = useRef<HTMLDivElement>(null);
     const alertsPanelMobileRef = useRef<HTMLDivElement>(null);
 
@@ -5366,10 +5367,16 @@ export default function AdvancedSalesDashboard() {
             if (dashboardPickerRef.current && !dashboardPickerRef.current.contains(event.target as Node)) {
                 setShowDatePicker(false);
             }
+            if (accountShellPerfPickerRef.current && !accountShellPerfPickerRef.current.contains(event.target as Node)) {
+                setShowAccountShellPerfPicker(false);
+            }
             if (crmMonthPickerRef.current && !crmMonthPickerRef.current.contains(event.target as Node)) {
                 setShowCrmMonthPicker(false);
             }
-            if (userDropdownRef.current && !userDropdownRef.current.contains(event.target as Node)) {
+            const profileTarget = event.target as Node;
+            const inDesktopProfile = userDropdownRef.current?.contains(profileTarget);
+            const inMobileProfile = userProfileMobileRef.current?.contains(profileTarget);
+            if (!inDesktopProfile && !inMobileProfile) {
                 setUserDropdownOpen(false);
             }
             const t = event.target as Node;
@@ -5392,10 +5399,27 @@ export default function AdvancedSalesDashboard() {
         setShowEventsDatePicker(false);
         setShowCalendarDatePicker(false);
         setShowDatePicker(false);
+        setShowAccountShellPerfPicker(false);
         setShowCrmMonthPicker(false);
         setCalendarDetailModal(null);
         setAlertsPanelOpen(false);
     }, [currentView, eventsSubView, requestsSubView]);
+
+    useEffect(() => {
+        if (currentView !== 'accounts') {
+            setAccountsProfileLeadKey(null);
+            setShowAccountShellPerfPicker(false);
+        }
+    }, [currentView]);
+
+    useEffect(() => {
+        if (!accountsProfileLeadKey) return;
+        const d = getDefaultAccountPerformanceRange();
+        setAccountShellPerfRange(d);
+        setAccountShellPerfDraftFrom(d.from);
+        setAccountShellPerfDraftTo(d.to);
+        setShowAccountShellPerfPicker(false);
+    }, [accountsProfileLeadKey]);
 
     useEffect(() => {
         if (currentView !== 'dashboard') return;
@@ -5536,7 +5560,7 @@ export default function AdvancedSalesDashboard() {
         }
     };
 
-    const getAlertRowStyle = (accent: RequestAlert['accent']): React.CSSProperties => {
+    const getAlertRowStyle = useCallback((accent: RequestAlert['accent']): React.CSSProperties => {
         const lw = 4;
         switch (accent) {
             case 'yellow':
@@ -5583,11 +5607,11 @@ export default function AdvancedSalesDashboard() {
                     backgroundColor: `${colors.red}14`,
                 };
         }
-    };
+    }, [colors]);
 
     // Main Dashboard (when authenticated)
     return (
-        <div className="flex h-screen w-full font-sans overflow-hidden transition-colors duration-500"
+        <div className="flex h-screen w-full font-sans overflow-hidden"
             style={{ backgroundColor: colors.bg, color: colors.textMain }}>
 
 
@@ -5718,7 +5742,7 @@ export default function AdvancedSalesDashboard() {
 
 
                 {/* 1. Header */}
-                <header className="flex-none h-auto md:min-h-12 border-b flex flex-col md:flex-row items-center justify-between px-4 md:px-5 py-2 md:py-1.5 z-20 transition-colors duration-300 relative gap-3 md:gap-0"
+                <header className="flex-none h-auto md:min-h-12 border-b flex flex-col md:flex-row items-center justify-between px-4 md:px-5 py-2 md:py-1.5 z-20 relative gap-3 md:gap-0"
                     style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
 
                     {/* Left: Logo & Menu Trigger */}
@@ -5761,11 +5785,13 @@ export default function AdvancedSalesDashboard() {
                                 ))}
                             </select>
                             <button
+                                type="button"
+                                ref={userProfileMobileRef}
                                 onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                                className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-black border shadow-sm transition-transform active:scale-90"
-                                style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})`, borderColor: colors.border }}
+                                className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-black border shadow-sm active:scale-95"
+                                style={userAvatarGradientStyle}
                             >
-                                {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                                {userInitials}
                             </button>
                         </div>
 
@@ -6120,7 +6146,94 @@ export default function AdvancedSalesDashboard() {
                                 )}
                             </div>
                         ) : currentView === 'accounts' ? (
-                            null
+                            accountsProfileLeadKey ? (
+                                <div
+                                    className="relative flex items-center gap-2 px-2 py-1 rounded-lg border transition-colors duration-300 overflow-visible max-w-full"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                    ref={accountShellPerfPickerRef}
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!showAccountShellPerfPicker) {
+                                                setAccountShellPerfDraftFrom(accountShellPerfRange.from);
+                                                setAccountShellPerfDraftTo(accountShellPerfRange.to);
+                                            }
+                                            setShowAccountShellPerfPicker((v) => !v);
+                                        }}
+                                        className="p-1 rounded hover:bg-white/10 transition-colors"
+                                        title="Account profile performance date range (operational dates)"
+                                    >
+                                        <CalendarDays
+                                            size={14}
+                                            style={{ color: showAccountShellPerfPicker ? colors.primary : colors.textMuted }}
+                                            className="shrink-0"
+                                        />
+                                    </button>
+                                    <span
+                                        className="text-[10px] font-bold uppercase tracking-wide max-w-[min(11rem,40vw)] truncate hidden sm:inline font-mono"
+                                        style={{ color: colors.textMuted }}
+                                        title={`${accountShellPerfRange.from} → ${accountShellPerfRange.to}`}
+                                    >
+                                        {accountShellPerfRange.from} → {accountShellPerfRange.to}
+                                    </span>
+                                    {showAccountShellPerfPicker && (
+                                        <div
+                                            className="absolute top-full right-0 mt-2 p-4 rounded-xl border shadow-2xl z-[130] w-[min(100vw-2rem,20rem)] flex flex-col gap-3"
+                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                        >
+                                            <div>
+                                                <label className="text-[9px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>From</label>
+                                                <input
+                                                    type="date"
+                                                    value={accountShellPerfDraftFrom}
+                                                    onChange={(e) => setAccountShellPerfDraftFrom(e.target.value)}
+                                                    className="w-full px-2 py-1.5 rounded border text-xs"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>To</label>
+                                                <input
+                                                    type="date"
+                                                    value={accountShellPerfDraftTo}
+                                                    onChange={(e) => setAccountShellPerfDraftTo(e.target.value)}
+                                                    className="w-full px-2 py-1.5 rounded border text-xs"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                />
+                                            </div>
+                                            <button
+                                                type="button"
+                                                className="w-full py-2 rounded text-[10px] font-black uppercase tracking-wide"
+                                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                                                onClick={() => {
+                                                    const f = accountShellPerfDraftFrom.trim().slice(0, 10);
+                                                    const t = accountShellPerfDraftTo.trim().slice(0, 10);
+                                                    if (!f || !t || f > t) return;
+                                                    setAccountShellPerfRange({ from: f, to: t });
+                                                    setShowAccountShellPerfPicker(false);
+                                                }}
+                                            >
+                                                Apply Range
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="w-full py-2 rounded border text-[10px] font-black uppercase tracking-wide"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                                onClick={() => {
+                                                    const d = getDefaultAccountPerformanceRange();
+                                                    setAccountShellPerfRange(d);
+                                                    setAccountShellPerfDraftFrom(d.from);
+                                                    setAccountShellPerfDraftTo(d.to);
+                                                    setShowAccountShellPerfPicker(false);
+                                                }}
+                                            >
+                                                RESET TO CURRENT YEAR
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : null
                         ) : currentView === 'crm' ? (
                             /* CRM HEADER CONTROLS */
                             <div className="flex items-center gap-2">
@@ -6313,13 +6426,14 @@ export default function AdvancedSalesDashboard() {
                             {/* Profile Dropdown */}
                             <div className="relative" ref={userDropdownRef}>
                                 <button
+                                    type="button"
                                     onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                                    className="flex items-center gap-2 p-1 pr-3 rounded-full border transition-all hover:bg-white/5"
+                                    className="flex items-center gap-2 p-1 pr-3 rounded-full border transition-colors hover:bg-white/5"
                                     style={{ backgroundColor: colors.card, borderColor: colors.border }}
                                 >
                                     <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-black border shadow-sm"
-                                        style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})`, borderColor: colors.border }}>
-                                        {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                                        style={userAvatarGradientStyle}>
+                                        {userInitials}
                                     </div>
                                     <div className="text-left hidden lg:block">
                                         <p className="text-[10px] font-bold leading-tight" style={{ color: colors.textMain }}>{currentUser?.name || 'User'}</p>
@@ -6330,15 +6444,15 @@ export default function AdvancedSalesDashboard() {
 
                                 {/* Dropdown Menu */}
                                 {userDropdownOpen && (
-                                    <div className="absolute top-full right-0 mt-3 w-72 rounded-2xl border shadow-2xl overflow-hidden z-[100] animate-in fade-in zoom-in-95 slide-in-from-top-4 duration-300"
+                                    <div className="absolute top-full right-0 mt-3 w-72 rounded-2xl border shadow-2xl overflow-hidden z-[100]"
                                         style={{ backgroundColor: colors.card, borderColor: colors.border }}>
 
                                         {/* User Profile Header */}
                                         <div className="p-5 border-b" style={{ borderColor: colors.border, background: `linear-gradient(to bottom right, ${colors.primary}05, transparent)` }}>
                                             <div className="flex items-center gap-4 mb-4">
                                                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-black shadow-lg"
-                                                    style={{ background: `linear-gradient(135deg, ${colors.primary}, ${colors.orange})` }}>
-                                                    {currentUser?.name?.split(' ').map((n: string) => n[0]).join('') || 'US'}
+                                                    style={userAvatarGradientStyle}>
+                                                    {userInitials}
                                                 </div>
                                                 <div>
                                                     <h4 className="font-bold text-base leading-tight" style={{ color: colors.textMain }}>{currentUser?.name || 'User'}</h4>
@@ -6459,6 +6573,9 @@ export default function AdvancedSalesDashboard() {
                             activeProperty={activeProperty}
                             currency={currentCurrency}
                             accountTypeOptions={propertyAccountTypeLabels}
+                            shellAccountPerformanceRange={accountShellPerfRange}
+                            onShellAccountPerformanceRangeChange={setAccountShellPerfRange}
+                            onAccountProfileShellStateChange={handleAccountProfileShellState}
                             onOpenRequest={(id) => {
                                 setPendingOpenRequestId(id);
                                 setRequestsSubView('list');
@@ -6547,7 +6664,7 @@ export default function AdvancedSalesDashboard() {
                                 setRequestsSubView(p.subView);
                             }
                             setRequestSearchParams(p);
-                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} />
+                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} />
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">

@@ -17,6 +17,14 @@ import { getTagColor, setTagColorForName, TAG_COLORS_EVENT, readTagColors, write
 import type { ContractRecord, ContractStatus } from './contractsStore';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { getPrimaryOperationalDate } from './userProfileMetrics';
+import {
+    buildAccountProfileChartData,
+    getDefaultAccountPerformanceRange,
+} from './accountProfileChartData';
+import AccountProfilePerformanceChart, {
+    ACCOUNT_PROFILE_CHART_TABS,
+    type AccountProfileChartTab,
+} from './AccountProfilePerformanceChart';
 
 export interface CRMProfileViewProps {
     lead: any;
@@ -49,6 +57,9 @@ export interface CRMProfileViewProps {
     canDeleteContractRecords?: boolean;
     onDeleteContractRecord?: (contractId: string) => void;
     currency?: CurrencyCode;
+    /** When set with onShellAccountPerformanceRangeChange, range is controlled from the app shell (Accounts nav header). */
+    shellAccountPerformanceRange?: { from: string; to: string };
+    onShellAccountPerformanceRangeChange?: (r: { from: string; to: string }) => void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -106,38 +117,50 @@ export default function CRMProfileView({
     canDeleteContractRecords = false,
     onDeleteContractRecord,
     currency = 'SAR',
+    shellAccountPerformanceRange,
+    onShellAccountPerformanceRangeChange,
 }: CRMProfileViewProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
-    /** `null` = all time (default). Not persisted — reload or switching account resets. */
-    const [performanceDateRange, setPerformanceDateRange] = useState<{ from: string; to: string } | null>(null);
-    const [perfPanelOpen, setPerfPanelOpen] = useState(false);
-    const [perfDraftFrom, setPerfDraftFrom] = useState('');
-    const [perfDraftTo, setPerfDraftTo] = useState('');
-    const perfPickerRef = useRef<HTMLDivElement>(null);
+    const isShellPerformanceRange =
+        shellAccountPerformanceRange != null && onShellAccountPerformanceRangeChange != null;
+    const [internalPerformanceDateRange, setInternalPerformanceDateRange] = useState(getDefaultAccountPerformanceRange);
+    const performanceDateRange = isShellPerformanceRange
+        ? shellAccountPerformanceRange!
+        : internalPerformanceDateRange;
+    const [perfDraftFrom, setPerfDraftFrom] = useState(() => getDefaultAccountPerformanceRange().from);
+    const [perfDraftTo, setPerfDraftTo] = useState(() => getDefaultAccountPerformanceRange().to);
+    const [accountChartTab, setAccountChartTab] = useState<AccountProfileChartTab>('Revenue');
+    const [showAccountPerfDatePicker, setShowAccountPerfDatePicker] = useState(false);
+    const [timelineShowAll, setTimelineShowAll] = useState(false);
+    const accountPerfPickerRef = useRef<HTMLDivElement>(null);
 
     const leadIdentityKey = String(lead?.accountId || lead?.id || lead?.company || '');
 
     useEffect(() => {
-        setPerformanceDateRange(null);
-        setPerfPanelOpen(false);
-        setPerfDraftFrom('');
-        setPerfDraftTo('');
-    }, [leadIdentityKey]);
+        setAccountChartTab('Revenue');
+        setTimelineShowAll(false);
+        setShowAccountPerfDatePicker(false);
+        if (!isShellPerformanceRange) {
+            const d = getDefaultAccountPerformanceRange();
+            setInternalPerformanceDateRange(d);
+            setPerfDraftFrom(d.from);
+            setPerfDraftTo(d.to);
+        }
+    }, [leadIdentityKey, isShellPerformanceRange]);
 
     useEffect(() => {
-        if (!perfPanelOpen) return;
+        if (!showAccountPerfDatePicker) return;
         const onDown = (e: MouseEvent) => {
-            const el = perfPickerRef.current;
-            if (el && !el.contains(e.target as Node)) setPerfPanelOpen(false);
+            const el = accountPerfPickerRef.current;
+            if (el && !el.contains(e.target as Node)) setShowAccountPerfDatePicker(false);
         };
         document.addEventListener('mousedown', onDown);
         return () => document.removeEventListener('mousedown', onDown);
-    }, [perfPanelOpen]);
+    }, [showAccountPerfDatePicker]);
 
     const performanceLinkedRequests = useMemo(() => {
         const list = linkedRequests || [];
-        if (!performanceDateRange) return list;
         const { from, to } = performanceDateRange;
         if (!from || !to || from > to) return list;
         return list.filter((r) => {
@@ -146,6 +169,16 @@ export default function CRMProfileView({
             return ymd >= from && ymd <= to;
         });
     }, [linkedRequests, performanceDateRange]);
+
+    const accountChartOperationalRange = useMemo(
+        () => ({ start: performanceDateRange.from, end: performanceDateRange.to }),
+        [performanceDateRange.from, performanceDateRange.to]
+    );
+
+    const accountChartData = useMemo(
+        () => buildAccountProfileChartData(linkedRequests || [], accountChartOperationalRange),
+        [linkedRequests, accountChartOperationalRange]
+    );
 
     const [expandedContact, setExpandedContact] = useState<number | null>(0);
     const [isContactModalOpen, setIsContactModalOpen] = useState(false);
@@ -168,6 +201,12 @@ export default function CRMProfileView({
                 manualActivities: lead.activities || []
             }),
         [linkedRequests, salesCalls, lead.activities]
+    );
+
+    const TIMELINE_PAGE = 10;
+    const timelineVisibleItems = useMemo(
+        () => (timelineShowAll ? timelineItems : timelineItems.slice(0, TIMELINE_PAGE)),
+        [timelineItems, timelineShowAll]
     );
     const winRate = metrics.winRate;
     const cancellationRate = metrics.cancellationRate;
@@ -316,17 +355,18 @@ export default function CRMProfileView({
 
     return (
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
-            <div className="shrink-0 p-6 border-b flex justify-between items-start" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                <div className="flex items-start gap-4">
-                    <button type="button" onClick={onClose} className="p-2 rounded hover:bg-white/5" style={{ color: colors.textMuted }}>
+            <div className="shrink-0 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="p-6 flex justify-between items-start gap-4">
+                <div className="flex items-start gap-4 min-w-0">
+                    <button type="button" onClick={onClose} className="p-2 rounded hover:bg-white/5 shrink-0" style={{ color: colors.textMuted }}>
                         <X size={20} />
                     </button>
-                    <div className="flex items-start gap-4">
-                        <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white"
+                    <div className="flex items-start gap-4 min-w-0">
+                        <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white shrink-0"
                             style={{ backgroundColor: colors.primary }}>
                             {initial}
                         </div>
-                        <div>
+                        <div className="min-w-0">
                             <h1 className="text-2xl font-bold mb-1" style={{ color: colors.textMain }}>{lead.company}</h1>
                             <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>
                                 Client TAX ID:{' '}
@@ -338,97 +378,95 @@ export default function CRMProfileView({
                         </div>
                     </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 justify-end">
-                    <div className="relative" ref={perfPickerRef}>
+                <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
+                    {!isShellPerformanceRange && (
+                    <div
+                        className="relative flex items-center gap-2 px-2 py-1 rounded-lg border transition-colors"
+                        ref={accountPerfPickerRef}
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
                         <button
                             type="button"
                             onClick={() => {
-                                if (!perfPanelOpen && performanceDateRange) {
+                                if (!showAccountPerfDatePicker) {
                                     setPerfDraftFrom(performanceDateRange.from);
                                     setPerfDraftTo(performanceDateRange.to);
-                                } else if (!perfPanelOpen) {
-                                    setPerfDraftFrom('');
-                                    setPerfDraftTo('');
                                 }
-                                setPerfPanelOpen((o) => !o);
+                                setShowAccountPerfDatePicker((v) => !v);
                             }}
-                            className={`px-3 py-2 rounded border hover:bg-white/5 flex items-center gap-2 text-sm ${performanceDateRange ? 'ring-1' : ''}`}
-                            style={{
-                                borderColor: colors.border,
-                                color: colors.textMain,
-                                boxShadow: performanceDateRange ? `0 0 0 1px ${colors.primary}55` : undefined,
-                            }}
-                            title="Filter Performance metrics by request date range (optional). Default: all dates."
+                            className="p-1 rounded hover:bg-white/10 transition-colors"
+                            title="Performance date range (operational dates)"
                         >
-                            <CalendarDays size={16} style={{ color: performanceDateRange ? colors.primary : colors.textMuted }} />
-                            <span className="hidden sm:inline">Dates</span>
+                            <CalendarDays
+                                size={14}
+                                style={{ color: showAccountPerfDatePicker ? colors.primary : colors.textMuted }}
+                                className="shrink-0"
+                            />
                         </button>
-                        {perfPanelOpen && (
+                        <span
+                            className="text-[10px] font-bold uppercase tracking-wide max-w-[min(12rem,28vw)] truncate hidden sm:inline font-mono"
+                            style={{ color: colors.textMuted }}
+                            title={`${performanceDateRange.from} → ${performanceDateRange.to}`}
+                        >
+                            {performanceDateRange.from} → {performanceDateRange.to}
+                        </span>
+                        {showAccountPerfDatePicker && (
                             <div
-                                className="absolute right-0 top-full mt-2 p-4 rounded-xl border shadow-2xl z-[120] w-[min(100vw-2rem,20rem)]"
+                                className="absolute top-full right-0 mt-2 p-4 rounded-xl border shadow-2xl z-[130] w-[min(100vw-2rem,20rem)] flex flex-col gap-3"
                                 style={{ backgroundColor: colors.card, borderColor: colors.border }}
                             >
-                                <p className="text-[10px] font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>
-                                    Performance date range
-                                </p>
-                                <p className="text-[10px] leading-relaxed mb-3 opacity-80" style={{ color: colors.textMuted }}>
-                                    Uses each request’s primary operational date (check-in, event start, agenda, etc.). Leave cleared for all-time totals.
-                                </p>
-                                <div className="space-y-3">
-                                    <div>
-                                        <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>From</label>
-                                        <input
-                                            type="date"
-                                            value={perfDraftFrom}
-                                            onChange={(e) => setPerfDraftFrom(e.target.value)}
-                                            className="w-full px-2 py-1.5 rounded border text-xs"
-                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>To</label>
-                                        <input
-                                            type="date"
-                                            value={perfDraftTo}
-                                            onChange={(e) => setPerfDraftTo(e.target.value)}
-                                            className="w-full px-2 py-1.5 rounded border text-xs"
-                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
-                                        />
-                                    </div>
-                                    <div className="flex flex-wrap gap-2 pt-1">
-                                        <button
-                                            type="button"
-                                            className="flex-1 min-w-[6rem] py-2 rounded text-[10px] font-black uppercase tracking-wide"
-                                            style={{ backgroundColor: colors.primary, color: '#000' }}
-                                            onClick={() => {
-                                                const f = perfDraftFrom.trim().slice(0, 10);
-                                                const t = perfDraftTo.trim().slice(0, 10);
-                                                if (!f || !t) return;
-                                                if (f > t) return;
-                                                setPerformanceDateRange({ from: f, to: t });
-                                                setPerfPanelOpen(false);
-                                            }}
-                                        >
-                                            Apply
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="flex-1 min-w-[6rem] py-2 rounded border text-[10px] font-bold uppercase"
-                                            style={{ borderColor: colors.border, color: colors.textMuted }}
-                                            onClick={() => {
-                                                setPerformanceDateRange(null);
-                                                setPerfDraftFrom('');
-                                                setPerfDraftTo('');
-                                                setPerfPanelOpen(false);
-                                            }}
-                                        >
-                                            All dates
-                                        </button>
-                                    </div>
+                                <div>
+                                    <label className="text-[9px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>From</label>
+                                    <input
+                                        type="date"
+                                        value={perfDraftFrom}
+                                        onChange={(e) => setPerfDraftFrom(e.target.value)}
+                                        className="w-full px-2 py-1.5 rounded border text-xs"
+                                        style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    />
                                 </div>
+                                <div>
+                                    <label className="text-[9px] uppercase font-bold block mb-1" style={{ color: colors.textMuted }}>To</label>
+                                    <input
+                                        type="date"
+                                        value={perfDraftTo}
+                                        onChange={(e) => setPerfDraftTo(e.target.value)}
+                                        className="w-full px-2 py-1.5 rounded border text-xs"
+                                        style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    className="w-full py-2 rounded text-[10px] font-black uppercase tracking-wide"
+                                    style={{ backgroundColor: colors.primary, color: '#000' }}
+                                    onClick={() => {
+                                        const f = perfDraftFrom.trim().slice(0, 10);
+                                        const t = perfDraftTo.trim().slice(0, 10);
+                                        if (!f || !t || f > t) return;
+                                        setInternalPerformanceDateRange({ from: f, to: t });
+                                        setShowAccountPerfDatePicker(false);
+                                    }}
+                                >
+                                    Apply Range
+                                </button>
+                                <button
+                                    type="button"
+                                    className="w-full py-2 rounded border text-[10px] font-black uppercase tracking-wide"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    onClick={() => {
+                                        const d = getDefaultAccountPerformanceRange();
+                                        setInternalPerformanceDateRange(d);
+                                        setPerfDraftFrom(d.from);
+                                        setPerfDraftTo(d.to);
+                                        setShowAccountPerfDatePicker(false);
+                                    }}
+                                >
+                                    RESET TO CURRENT YEAR
+                                </button>
                             </div>
                         )}
                     </div>
+                    )}
                     <button
                         type="button"
                         onClick={() => setShowHistoryModal(true)}
@@ -473,12 +511,13 @@ export default function CRMProfileView({
                         </button>
                     )}
                 </div>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6">
-                <div className="grid grid-cols-3 gap-6">
-                    <div className="space-y-6">
-                        <div className="p-6 rounded-xl border flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="p-6 rounded-xl border flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <div className="flex justify-between items-center mb-4">
                                 <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Contact Information</h3>
                                 {!readOnly && (
@@ -579,11 +618,55 @@ export default function CRMProfileView({
                             </div>
                         </div>
 
+                    <div
+                        className="lg:col-span-2 p-6 rounded-xl border flex flex-col min-h-[300px]"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <div className="flex flex-col gap-3 mb-2 shrink-0">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>
+                                    Account performance
+                                </h3>
+                                <div className="flex flex-wrap gap-1 p-1 rounded-lg border shrink-0" style={{ backgroundColor: 'rgba(0,0,0,0.12)', borderColor: colors.border }}>
+                                    {ACCOUNT_PROFILE_CHART_TABS.map((tab) => (
+                                        <button
+                                            key={tab}
+                                            type="button"
+                                            onClick={() => setAccountChartTab(tab)}
+                                            className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wide transition-all ${
+                                                accountChartTab === tab ? 'shadow-md' : 'opacity-55 hover:opacity-95'
+                                            }`}
+                                            style={{
+                                                backgroundColor: accountChartTab === tab ? colors.primary : 'transparent',
+                                                color: accountChartTab === tab ? '#000' : colors.textMain,
+                                            }}
+                                        >
+                                            {tab}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex-1 w-full min-h-[220px]">
+                            <AccountProfilePerformanceChart
+                                chartTab={accountChartTab}
+                                chartData={accountChartData}
+                                colors={colors}
+                                currency={currency}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="space-y-6">
                         <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: colors.textMuted }}>Tags</h3>
-                            <p className="text-[10px] mb-3 opacity-80" style={{ color: colors.textMuted }}>
-                                Pick a color for each tag (saved for everyone). CRM cards use the same colors.
-                            </p>
+                            {!isShellPerformanceRange && (
+                                <p className="text-[10px] mb-3 opacity-80" style={{ color: colors.textMuted }}>
+                                    Pick a color for each tag (saved for everyone). CRM cards use the same colors.
+                                </p>
+                            )}
                             <div className="flex flex-wrap gap-2 items-center" key={tagColorTick}>
                                 {tags.map((tag: string, idx: number) => {
                                     const tc = getTagColor(tag, colors.primary);
@@ -728,27 +811,15 @@ export default function CRMProfileView({
                             >
                                 Performance
                             </h3>
-                            {performanceDateRange ? (
-                                <p className="text-[10px] mb-3 leading-snug" style={{ color: colors.primary }}>
-                                    Filtered: {performanceDateRange.from} → {performanceDateRange.to}
-                                    <button
-                                        type="button"
-                                        className="ml-2 underline font-bold"
-                                        style={{ color: colors.textMuted }}
-                                        onClick={() => {
-                                            setPerformanceDateRange(null);
-                                            setPerfDraftFrom('');
-                                            setPerfDraftTo('');
-                                        }}
-                                    >
-                                        Show all dates
-                                    </button>
-                                </p>
-                            ) : (
-                                <p className="text-[10px] mb-3 opacity-70 leading-snug" style={{ color: colors.textMuted }}>
-                                    All dates — every linked request is included. Use the calendar icon above to narrow the range.
-                                </p>
-                            )}
+                            <p className="text-[10px] mb-3 leading-snug" style={{ color: colors.textMuted }}>
+                                Range:{' '}
+                                <span style={{ color: colors.primary }} className="font-mono">
+                                    {performanceDateRange.from} → {performanceDateRange.to}
+                                </span>
+                                {!isShellPerformanceRange && (
+                                    <span className="opacity-70"> — KPIs use the same operational date filter as the chart bar above.</span>
+                                )}
+                            </p>
                             <div className="space-y-4">
                                 <div>
                                     <div className="flex justify-between items-center gap-2 mb-1">
@@ -770,9 +841,11 @@ export default function CRMProfileView({
                                             <div className="h-full shrink-0" style={{ width: `${otherBarPct}%`, backgroundColor: `${colors.textMuted}45` }} />
                                         )}
                                     </div>
-                                    <p className="text-[10px] mt-1.5 opacity-70 leading-snug" style={{ color: colors.textMuted }}>
-                                        Each linked request counts once. Win = Definite or Actual; cancellation = Cancelled or Lost; other = Inquiry, Tentative, Accepted, Draft, etc.
-                                    </p>
+                                    {!isShellPerformanceRange && (
+                                        <p className="text-[10px] mt-1.5 opacity-70 leading-snug" style={{ color: colors.textMuted }}>
+                                            Each linked request counts once. Win = Definite or Actual; cancellation = Cancelled or Lost; other = Inquiry, Tentative, Accepted, Draft, etc.
+                                        </p>
+                                    )}
                                 </div>
                                 <div>
                                     <p className="text-xs mb-1" style={{ color: colors.textMuted }}>Total spend (paid)</p>
@@ -1035,7 +1108,7 @@ export default function CRMProfileView({
                                         No sales calls, request logs, or manual activities yet.
                                     </p>
                                 )}
-                                {timelineItems.map((item) => {
+                                {timelineVisibleItems.map((item) => {
                                     const isManual = item.meta?.source === 'manual';
                                     const actId = item.meta?.activityId;
                                     return (
@@ -1102,9 +1175,33 @@ export default function CRMProfileView({
                                         </div>
                                     );
                                 })}
+                                {timelineItems.length > TIMELINE_PAGE && (
+                                    <div className="pt-2 flex justify-center">
+                                        {!timelineShowAll ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setTimelineShowAll(true)}
+                                                className="text-[10px] font-black uppercase tracking-wide px-4 py-2 rounded-lg border hover:bg-white/5 transition-colors"
+                                                style={{ borderColor: colors.border, color: colors.primary }}
+                                            >
+                                                View more ({timelineItems.length - TIMELINE_PAGE} more)
+                                            </button>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => setTimelineShowAll(false)}
+                                                className="text-[10px] font-bold uppercase tracking-wide px-4 py-2 rounded-lg border hover:bg-white/5 transition-colors"
+                                                style={{ borderColor: colors.border, color: colors.textMuted }}
+                                            >
+                                                Show less
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
+                </div>
                 </div>
             </div>
 

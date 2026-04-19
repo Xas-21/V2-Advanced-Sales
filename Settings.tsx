@@ -42,21 +42,28 @@ import {
 import {
     PROFILE_MONTH_LABELS,
     buildProfileActivityLog,
+    countCallsAllTime,
     countCallsInMonth,
     countCallsInYear,
+    countOpenPipeline,
     countOpenPipelineInYmdRange,
     countRequestsInYmdRange,
     filterUserAccounts,
     filterUserCrmLeads,
-    recordVisibleOnProperty,
+    getProfileRecentRequests,
     monthlySalesCallTarget,
+    monthRangeRequestSeries,
     monthRangeRevenueSeries,
+    recordVisibleOnProperty,
     sumRevenueInYmdRange,
     taskAssignedToUser,
+    userAttributedOperationalDateBounds,
     ymdBoundsForCalendarMonth,
     ymdBoundsForCalendarYear,
+    computeProfileRequestPreTax,
 } from './userProfileMetrics';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
+import { UserPerformanceDashboard } from './UserPerformanceDashboard';
 import type { PropertyAlertSettingsMap, SystemAlertKind } from './propertyAlertSettings';
 import {
     ALERT_TYPE_REGISTRY,
@@ -220,6 +227,25 @@ export default function Settings({
         } finally {
             setResetPasswordBusy(false);
         }
+    };
+
+    const userPerformanceDashboardSharedProps = {
+        colors,
+        properties,
+        users,
+        crmLeads,
+        sharedRequests,
+        accounts,
+        tasks,
+        activeProperty,
+        formatMoney,
+        showResetPassword,
+        setShowResetPassword,
+        resetPasswordData,
+        setResetPasswordData,
+        resetPasswordBusy,
+        handleProfileChangePassword,
+        onOpenTasks,
     };
 
     // Tax Config - Refactored for per-tax scope
@@ -863,718 +889,6 @@ export default function Settings({
         { id: 'alert_notifications', label: 'Alerts & Notifications', icon: Bell },
         ...(appIsAdmin ? [{ id: 'users', label: 'User Mgmt', icon: Users }] : []),
     ];
-
-    // --- Shared Components ---
-    const UserPerformanceDashboard = ({
-        user,
-        isOwnProfile = false,
-        propertyId: scopePropId,
-    }: {
-        user: any;
-        isOwnProfile?: boolean;
-        propertyId?: string;
-    }) => {
-        const assignedProperties = properties.filter(
-            (p) => p.assignedUserIds?.includes(user.id) || p.id === user.propertyId
-        );
-
-        const mergedUser = useMemo(() => {
-            const fromList = users.find((u: any) => String(u?.id) === String(user?.id));
-            if (!fromList) return user;
-            return {
-                ...user,
-                ...fromList,
-                stats: {
-                    ...(user?.stats || {}),
-                    ...(fromList?.stats || {}),
-                    yearlyTargets: {
-                        ...(user?.stats?.yearlyTargets || {}),
-                        ...(fromList?.stats?.yearlyTargets || {}),
-                    },
-                },
-            };
-        }, [users, user]);
-
-        const rollingThreeMonthRange = (d: Date) => {
-            const y = d.getFullYear();
-            const m = d.getMonth();
-            const from = new Date(y, m - 1, 1);
-            const to = new Date(y, m + 1, 1);
-            return {
-                fromMonth: PROFILE_MONTH_LABELS[from.getMonth()],
-                fromYear: String(from.getFullYear()),
-                toMonth: PROFILE_MONTH_LABELS[to.getMonth()],
-                toYear: String(to.getFullYear()),
-            };
-        };
-
-        const [revenueDateRange, setRevenueDateRange] = useState(() => rollingThreeMonthRange(new Date()));
-        const [activityDayFilter, setActivityDayFilter] = useState('');
-        const [viewMode, setViewMode] = useState<'month' | 'year'>('month');
-
-        const months = [...PROFILE_MONTH_LABELS];
-        const years = useMemo(() => {
-            const cy = new Date().getFullYear();
-            const out: string[] = [];
-            for (let y = cy - 5; y <= cy + 1; y++) out.push(String(y));
-            return out;
-        }, []);
-
-        useEffect(() => {
-            const now = new Date();
-            const y = String(now.getFullYear());
-            if (viewMode === 'month') {
-                setRevenueDateRange(rollingThreeMonthRange(now));
-            } else {
-                setRevenueDateRange({ fromMonth: 'Jan', fromYear: y, toMonth: 'Dec', toYear: y });
-            }
-        }, [viewMode]);
-
-        const revGradId = useMemo(() => `prof-rev-${String(mergedUser?.id || 'x')}`, [mergedUser?.id]);
-
-        const userLeads = useMemo(
-            () => filterUserCrmLeads(crmLeads, scopePropId, mergedUser),
-            [crmLeads, scopePropId, mergedUser]
-        );
-
-        const periodBounds = useMemo(() => {
-            const now = new Date();
-            const y = now.getFullYear();
-            const mi = now.getMonth();
-            if (viewMode === 'month') return { ...ymdBoundsForCalendarMonth(y, mi), year: y, monthIndex: mi };
-            return { ...ymdBoundsForCalendarYear(y), year: y, monthIndex: mi };
-        }, [viewMode]);
-
-        const monthRevenue = useMemo(
-            () =>
-                sumRevenueInYmdRange(sharedRequests, scopePropId, mergedUser, periodBounds.start, periodBounds.end),
-            [sharedRequests, scopePropId, mergedUser, periodBounds.start, periodBounds.end]
-        );
-        const monthReqCount = useMemo(
-            () =>
-                countRequestsInYmdRange(sharedRequests, scopePropId, mergedUser, periodBounds.start, periodBounds.end),
-            [sharedRequests, scopePropId, mergedUser, periodBounds.start, periodBounds.end]
-        );
-        const activePipeInPeriod = useMemo(
-            () =>
-                countOpenPipelineInYmdRange(
-                    sharedRequests,
-                    scopePropId,
-                    mergedUser,
-                    periodBounds.start,
-                    periodBounds.end
-                ),
-            [sharedRequests, scopePropId, mergedUser, periodBounds.start, periodBounds.end]
-        );
-        const ymPrefix = `${periodBounds.year}-${String(periodBounds.monthIndex + 1).padStart(2, '0')}`;
-        const monthCalls = useMemo(() => countCallsInMonth(userLeads, ymPrefix), [userLeads, ymPrefix]);
-        const yearCalls = useMemo(() => countCallsInYear(userLeads, periodBounds.year), [userLeads, periodBounds.year]);
-
-        const callsKpi = viewMode === 'year' ? yearCalls : monthCalls;
-
-        const userAccountsCount = useMemo(() => {
-            return filterUserAccounts(accounts || [], mergedUser).filter((a: any) =>
-                recordVisibleOnProperty(scopePropId, a?.propertyId)
-            ).length;
-        }, [accounts, mergedUser, scopePropId]);
-
-        const userTasks = useMemo(() => {
-            return (tasks || []).filter(
-                (t: any) =>
-                    taskAssignedToUser(t, mergedUser) &&
-                    (!scopePropId || !t.propertyId || String(t.propertyId) === String(scopePropId))
-            );
-        }, [tasks, mergedUser, scopePropId]);
-
-        const taskDone = userTasks.filter((t: any) => t.completed).length;
-        const taskOpen = userTasks.filter((t: any) => !t.completed);
-        const isUrgentT = (t: any) => t.priority === 'High' || t.star;
-        const isDueT = (t: any) => {
-            if (!t.date) return false;
-            const d = new Date(`${t.date}T12:00:00`);
-            if (Number.isNaN(d.getTime())) return false;
-            const end = new Date();
-            end.setHours(23, 59, 59, 999);
-            return d <= end;
-        };
-        const taskUrgent = taskOpen.filter(isUrgentT).length;
-        const taskDue = taskOpen.filter((t: any) => !isUrgentT(t) && isDueT(t)).length;
-        const taskPending = taskOpen.filter((t: any) => !isUrgentT(t) && !isDueT(t)).length;
-        const taskTotal = userTasks.length;
-        const taskPct = taskTotal > 0 ? Math.round((taskDone / taskTotal) * 100) : 0;
-
-        const annualTargetRaw = Number(
-            mergedUser?.stats?.yearlyTargets?.[String(periodBounds.year)] ??
-                mergedUser?.stats?.yearlyTargets?.[periodBounds.year] ??
-                0
-        );
-        const monthlyTargetCalls = monthlySalesCallTarget(mergedUser, periodBounds.year);
-        const progressCalls = monthlyTargetCalls > 0 ? Math.min(100, (monthCalls / monthlyTargetCalls) * 100) : 0;
-        const precisionPct =
-            viewMode === 'year'
-                ? annualTargetRaw > 0
-                    ? Math.min(100, Math.round((yearCalls / annualTargetRaw) * 100))
-                    : 0
-                : monthlyTargetCalls > 0
-                  ? Math.min(100, Math.round((monthCalls / monthlyTargetCalls) * 100))
-                  : 0;
-        const precisionLabel =
-            (viewMode === 'year' ? annualTargetRaw : monthlyTargetCalls) > 0 ? `${precisionPct}%` : '—';
-
-        const revenueSeries = useMemo(
-            () =>
-                monthRangeRevenueSeries(
-                    sharedRequests,
-                    scopePropId,
-                    mergedUser,
-                    revenueDateRange.fromMonth,
-                    revenueDateRange.fromYear,
-                    revenueDateRange.toMonth,
-                    revenueDateRange.toYear
-                ),
-            [
-                sharedRequests,
-                scopePropId,
-                mergedUser,
-                revenueDateRange.fromMonth,
-                revenueDateRange.fromYear,
-                revenueDateRange.toMonth,
-                revenueDateRange.toYear,
-            ]
-        );
-
-        const SIXTY_DAYS_MS = 60 * 86400000;
-        const activityAll = useMemo(
-            () => buildProfileActivityLog(sharedRequests, accounts, tasks, mergedUser, scopePropId, SIXTY_DAYS_MS),
-            [sharedRequests, accounts, tasks, mergedUser, scopePropId]
-        );
-        const displayedLogs = useMemo(() => {
-            if (!activityDayFilter) return activityAll;
-            return activityAll.filter((row) => row.date.startsWith(activityDayFilter));
-        }, [activityAll, activityDayFilter]);
-
-        const logIcon = (kind: string) => {
-            if (kind === 'account') return MapPin;
-            if (kind === 'task') return CheckCircle2;
-            return FileText;
-        };
-        const logColor = (kind: string) => {
-            if (kind === 'account') return '#10b981';
-            if (kind === 'task') return colors.orange;
-            return colors.primary;
-        };
-
-        const avatarKey =
-            mergedUser?.id != null ? `visatour_profile_avatar_v1_${mergedUser.id}` : 'visatour_profile_avatar_v1_anon';
-        const [avatarUrl, setAvatarUrl] = useState('');
-        const fileRef = useRef<HTMLInputElement>(null);
-        useEffect(() => {
-            try {
-                setAvatarUrl(localStorage.getItem(avatarKey) || '');
-            } catch {
-                setAvatarUrl('');
-            }
-        }, [avatarKey]);
-
-        const onAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-            const f = e.target.files?.[0];
-            if (!f || !f.type.startsWith('image/')) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-                const data = String(reader.result || '');
-                try {
-                    localStorage.setItem(avatarKey, data);
-                } catch {
-                    /* storage full */
-                }
-                setAvatarUrl(data);
-            };
-            reader.readAsDataURL(f);
-            e.target.value = '';
-        };
-
-        const displayName = String(mergedUser?.name || 'User');
-        const initialLetter = displayName.trim().charAt(0).toUpperCase() || '?';
-
-        const handleExportCSV = () => {
-            const rows = displayedLogs.map(
-                (l) => `${l.date},"${String(l.title).replace(/"/g, '""')}","${String(l.desc).replace(/"/g, '""')}"`
-            );
-            const csv = 'Date,Activity,Description\n' + rows.join('\n');
-            const link = document.createElement('a');
-            link.setAttribute('href', 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv));
-            link.setAttribute(
-                'download',
-                `activity_${displayName.replace(/\s+/g, '_')}_${activityDayFilter || 'last60d'}.csv`
-            );
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        };
-
-        return (
-            <div className="space-y-3 animate-in slide-in-from-right duration-300 pb-4">
-                {/* Top Toggle Navigation - Exclusive to Profile Dashboard */}
-                <div className="flex items-center justify-between bg-black/5 p-1 rounded-2xl border border-white/5 mb-2">
-                    <div className="flex gap-1">
-                        <button
-                            onClick={() => setViewMode('month')}
-                            className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'month' ? 'bg-primary text-black shadow-lg shadow-primary/20' : 'opacity-40 hover:opacity-100'}`}
-                            style={{ color: viewMode === 'month' ? '#000' : colors.textMain }}>
-                            Month View
-                        </button>
-                        <button
-                            onClick={() => setViewMode('year')}
-                            className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'year' ? 'bg-primary text-black shadow-lg shadow-primary/20' : 'opacity-40 hover:opacity-100'}`}
-                            style={{ color: viewMode === 'year' ? '#000' : colors.textMain }}>
-                            Year View
-                        </button>
-                    </div>
-                    <div className="px-4 text-[9px] font-bold opacity-30 uppercase tracking-[0.2em]" style={{ color: colors.textMain }}>
-                        Interactive Analytics Feed
-                    </div>
-                </div>
-
-                {/* Header Profile Section - Compact */}
-                <div className="p-4 rounded-[24px] border relative overflow-hidden shadow-xl"
-                    style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                    <div className="absolute top-0 right-0 p-4 opacity-[0.02]">
-                        <Users size={120} style={{ color: colors.primary }} />
-                    </div>
-
-                    <div className="flex flex-col lg:flex-row gap-6 items-center lg:items-start relative z-10 text-center lg:text-left">
-                        <div className="relative group">
-                            {avatarUrl ? (
-                                <img
-                                    src={avatarUrl}
-                                    alt=""
-                                    className="w-16 h-16 rounded-[20px] object-cover shadow-xl border border-white/10"
-                                />
-                            ) : (
-                                <div
-                                    className="w-16 h-16 rounded-[20px] flex items-center justify-center text-3xl font-black shadow-xl"
-                                    style={{ backgroundColor: colors.primaryDim, color: colors.primary }}
-                                >
-                                    {initialLetter}
-                                </div>
-                            )}
-                            {isOwnProfile && (
-                                <>
-                                    <input
-                                        ref={fileRef}
-                                        type="file"
-                                        accept="image/*"
-                                        className="hidden"
-                                        onChange={onAvatarFile}
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => fileRef.current?.click()}
-                                        className="absolute -bottom-1 -right-1 p-1.5 rounded-lg bg-primary text-black shadow-lg"
-                                    >
-                                        <Upload size={12} />
-                                    </button>
-                                </>
-                            )}
-                        </div>
-
-                        <div className="flex-1">
-                            <div className="flex flex-col md:flex-row md:items-center gap-3 mb-1 justify-center lg:justify-start">
-                                <h2 className="text-xl font-black italic tracking-tighter" style={{ color: colors.textMain }}>
-                                    {displayName.toUpperCase()}
-                                </h2>
-                                <span className="px-3 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border"
-                                    style={{ borderColor: colors.primary + '30', color: colors.primary, backgroundColor: colors.primary + '10' }}>
-                                    {mergedUser.role}
-                                </span>
-                            </div>
-
-                                <div className="flex flex-wrap gap-2 justify-center lg:justify-start">
-                                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/10 border border-white/5 backdrop-blur-sm">
-                                        <Mail size={12} className="text-blue-400" />
-                                        <span className="text-[10px] font-medium opacity-70" style={{ color: colors.textMain }}>{mergedUser.email}</span>
-                                    </div>
-                                    {assignedProperties.length > 0 ? (
-                                        assignedProperties.map(p => (
-                                            <div key={p.id} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/10 border backdrop-blur-sm ${activeProperty?.id === p.id ? 'border-primary/50' : 'border-white/5'}`}>
-                                                <Building size={12} className="text-emerald-400" />
-                                                <span className="text-[10px] font-medium opacity-70" style={{ color: colors.textMain }}>{p.name}</span>
-                                            </div>
-                                        ))
-                                    ) : (
-                                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/10 border border-white/5 backdrop-blur-sm">
-                                            <Building size={12} className="text-emerald-400 opacity-40" />
-                                            <span className="text-[10px] font-medium opacity-70" style={{ color: colors.textMain }}>Unassigned</span>
-                                        </div>
-                                    )}
-                                </div>
-
-                        </div>
-
-                        <div className="flex gap-2">
-                            {isOwnProfile && (
-                                <button onClick={() => setShowResetPassword(true)} className="px-4 py-2 rounded-xl border transition-all font-bold text-[10px] uppercase"
-                                    style={{ borderColor: colors.border, color: colors.textMain, opacity: 0.6 }}>
-                                    Reset Password
-                                </button>
-                            )}
-                            {!isOwnProfile && (
-                                <button className="px-6 py-2 rounded-xl bg-primary text-black font-black text-[10px] uppercase tracking-widest hover:brightness-110 transition-all">
-                                    Message
-                                </button>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Quick Stats Grid - 6 Items */}
-                    <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mt-4 pt-4 border-t" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-                        {[
-                            {
-                                label: viewMode === 'year' ? 'Annual Total Revenue' : 'Curr. Month Revenue',
-                                value: formatMoney(monthRevenue, 0),
-                                icon: TrendingUp,
-                                color: '#10b981',
-                            },
-                            {
-                                label: viewMode === 'year' ? 'Annual Requests' : 'Monthly Requests',
-                                value: String(monthReqCount),
-                                icon: List,
-                                color: '#8b5cf6',
-                            },
-                            {
-                                label: viewMode === 'year' ? 'Active Pipeline' : 'Active Month',
-                                value: String(activePipeInPeriod),
-                                icon: Zap,
-                                color: '#ec4899',
-                            },
-                            {
-                                label: viewMode === 'year' ? 'Annual Sales Calls' : 'Curr. Month Calls',
-                                value: String(callsKpi),
-                                icon: Phone,
-                                color: '#3b82f6',
-                            },
-                            { label: 'Total Accounts', value: String(userAccountsCount), icon: User, color: '#06b6d4' },
-                            {
-                                label: 'Task Ratio',
-                                value: `${taskDone}/${taskTotal}`,
-                                icon: CheckSquare,
-                                color: '#f59e0b',
-                            },
-                        ].map((stat, i) => (
-                            <div key={i} className="px-3 py-1.5 rounded-xl bg-black/5 border border-white/[0.03]">
-                                <p className="text-[8px] uppercase font-bold tracking-[0.1em] mb-0.5" style={{ color: colors.textMain, opacity: 0.5 }}>{stat.label}</p>
-                                <div className="flex items-center gap-2">
-                                    <stat.icon size={12} style={{ color: stat.color }} />
-                                    <h4 className="text-base font-black italic tracking-tighter" style={{ color: colors.textMain }}>{stat.value}</h4>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Dashboard Grid - White backgrounds for charts */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                    {/* Revenue Trend Chart */}
-                    <div className="lg:col-span-8 p-4 rounded-[24px] border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 gap-4">
-                            <div>
-                                <h3 className="text-xs font-bold italic" style={{ color: colors.textMain }}>REVENUE PERFORMANCE</h3>
-                                <p className="text-[8px] uppercase tracking-widest" style={{ color: colors.textMain, opacity: 0.4 }}>
-                                    Month view defaults to 3 rolling months (prev · current · next). Adjust from/to anytime.
-                                </p>
-                            </div>
-
-                            <div className="flex items-center gap-2 bg-black/10 p-1.5 rounded-xl border border-white/5">
-                                <div className="flex items-center gap-1">
-                                    <span className="text-[7px] font-bold opacity-40 uppercase ml-1" style={{ color: colors.textMain }}>From</span>
-                                    <select className="bg-transparent text-[9px] font-bold outline-none cursor-pointer" style={{ color: colors.primary }}
-                                        value={revenueDateRange.fromMonth} onChange={e => setRevenueDateRange({ ...revenueDateRange, fromMonth: e.target.value })}>
-                                        {months.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                    <select className="bg-transparent text-[9px] font-bold outline-none cursor-pointer" style={{ color: colors.primary }}
-                                        value={revenueDateRange.fromYear} onChange={e => setRevenueDateRange({ ...revenueDateRange, fromYear: e.target.value })}>
-                                        {years.map(y => <option key={y} value={y}>{y}</option>)}
-                                    </select>
-                                </div>
-                                <div className="w-[1px] h-3 bg-white/10 mx-1"></div>
-                                <div className="flex items-center gap-1">
-                                    <span className="text-[7px] font-bold opacity-40 uppercase" style={{ color: colors.textMain }}>To</span>
-                                    <select className="bg-transparent text-[9px] font-bold outline-none cursor-pointer" style={{ color: colors.primary }}
-                                        value={revenueDateRange.toMonth} onChange={e => setRevenueDateRange({ ...revenueDateRange, toMonth: e.target.value })}>
-                                        {months.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                    <select className="bg-transparent text-[9px] font-bold outline-none cursor-pointer" style={{ color: colors.primary }}
-                                        value={revenueDateRange.toYear} onChange={e => setRevenueDateRange({ ...revenueDateRange, toYear: e.target.value })}>
-                                        {years.map(y => <option key={y} value={y}>{y}</option>)}
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="h-[155px] w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={revenueSeries}>
-                                    <defs>
-                                        <linearGradient id={revGradId} x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor={colors.primary} stopOpacity={0.2} />
-                                            <stop offset="95%" stopColor={colors.primary} stopOpacity={0} />
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} opacity={0.3} />
-                                    <XAxis
-                                        dataKey="month"
-                                        axisLine={false}
-                                        tickLine={false}
-                                        tick={{ fill: colors.textMain, opacity: 0.5, fontSize: 9, fontWeight: 'bold' }}
-                                    />
-                                    <YAxis hide />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: colors.card, borderRadius: '12px', border: `1px solid ${colors.border}`, fontSize: '10px', color: colors.textMain }}
-                                        labelStyle={{ color: colors.textMain, fontWeight: 700 }}
-                                        itemStyle={{ color: colors.textMain }}
-                                        formatter={(value: any) => formatMoney(Number(value || 0), 0)}
-                                    />
-                                    <Area
-                                        type="monotone"
-                                        dataKey="revenue"
-                                        stroke={colors.primary}
-                                        strokeWidth={3}
-                                        fillOpacity={1}
-                                        fill={`url(#${revGradId})`}
-                                        isAnimationActive={false}
-                                    />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* Segment Distribution */}
-                    <div className="lg:col-span-4 p-4 rounded-[24px] border flex flex-col justify-between" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div>
-                            <h3 className="text-xs font-bold italic mb-3" style={{ color: colors.textMain }}>SALES CALLS: ACTUAL vs TARGET</h3>
-
-                            <div className="space-y-4">
-                                <div className="space-y-3">
-                                    <div className="flex justify-between items-end">
-                                        <div>
-                                            <p className="text-[8px] uppercase font-bold opacity-40 mb-1" style={{ color: colors.textMain }}>
-                                                {viewMode === 'year' ? `Year ${periodBounds.year}` : `Month (${PROFILE_MONTH_LABELS[periodBounds.monthIndex]} ${periodBounds.year})`}
-                                            </p>
-                                            <div className="flex items-center gap-2">
-                                                <h4 className="text-xl font-black italic tracking-tighter" style={{ color: colors.primary }}>
-                                                    {viewMode === 'year' ? yearCalls : monthCalls}
-                                                </h4>
-                                                <span className="text-[8px] font-bold opacity-30" style={{ color: colors.textMain }}>
-                                                    / {viewMode === 'year' ? annualTargetRaw || '—' : monthlyTargetCalls || '—'}{' '}
-                                                    {viewMode === 'year' ? 'YEAR TARGET' : 'MO TARGET'}
-                                                </span>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-[8px] uppercase font-bold opacity-40 mb-1" style={{ color: colors.textMain }}>Monthly target (from User Mgmt)</p>
-                                            <h4 className="text-sm font-black italic tracking-tighter" style={{ color: colors.textMain }}>
-                                                {monthlyTargetCalls || '—'}
-                                            </h4>
-                                        </div>
-                                    </div>
-
-                                    <div className="h-2 bg-black/10 rounded-full overflow-hidden border border-white/5">
-                                        <div
-                                            className="h-full bg-primary transition-all duration-1000 ease-out"
-                                            style={{
-                                                width: `${
-                                                    viewMode === 'year'
-                                                        ? annualTargetRaw > 0
-                                                            ? Math.min(100, (yearCalls / annualTargetRaw) * 100)
-                                                            : 0
-                                                        : progressCalls
-                                                }%`,
-                                            }}
-                                        />
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <div className="bg-black/5 p-2 rounded-xl border border-white/5">
-                                            <p className="text-[7px] font-bold opacity-40 uppercase" style={{ color: colors.textMain }}>Annual remaining</p>
-                                            <p className="text-xs font-black italic" style={{ color: colors.textMain }}>
-                                                {Math.max(0, annualTargetRaw - yearCalls).toLocaleString()}
-                                            </p>
-                                        </div>
-                                        <div className="bg-black/5 p-2 rounded-xl border border-white/5">
-                                            <p className="text-[7px] font-bold opacity-40 uppercase" style={{ color: colors.textMain }}>Run rate (YTD)</p>
-                                            <p className="text-xs font-black italic" style={{ color: colors.textMain }}>
-                                                {(() => {
-                                                    const mel =
-                                                        new Date().getFullYear() === periodBounds.year
-                                                            ? new Date().getMonth() + 1
-                                                            : 12;
-                                                    return mel > 0 ? `${Math.round(yearCalls / mel)} / mo` : '—';
-                                                })()}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="pt-4 border-t mt-4" style={{ borderColor: colors.border }}>
-                            <div className="flex items-center justify-between">
-                                <span className="text-[8px] font-bold opacity-40 uppercase" style={{ color: colors.textMain }}>Target attainment</span>
-                                <span className="text-[10px] font-black italic text-emerald-400">{precisionLabel}</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Bottom Row - Activity List & Export */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                    <div className="lg:col-span-7 p-4 rounded-[24px] border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div className="flex items-center justify-between mb-4">
-                            <div>
-                                <h3 className="text-xs font-bold italic" style={{ color: colors.textMain }}>RECENT ACTIVITY LOG</h3>
-                                <p className="text-[8px] uppercase tracking-widest opacity-40" style={{ color: colors.textMain }}>System history & User logs</p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="date"
-                                    className="p-1 px-2 bg-black/10 border border-white/10 rounded-lg text-[9px] font-bold outline-none"
-                                    style={{ color: colors.textMain }}
-                                    value={activityDayFilter}
-                                    onChange={(e) => setActivityDayFilter(e.target.value)}
-                                    title="Leave empty to show last 60 days on this profile"
-                                />
-                                <button onClick={handleExportCSV} className="p-1.5 px-3 rounded-lg bg-primary text-black hover:scale-105 transition-transform flex items-center gap-1.5">
-                                    <Download size={12} />
-                                    <span className="text-[9px] font-black uppercase">CSV</span>
-                                </button>
-                            </div>
-                        </div>
-                        <p className="text-[8px] opacity-40 mb-2" style={{ color: colors.textMain }}>
-                            Showing your actions only (last 60 days on this profile). Clear the date to see the full window.
-                        </p>
-                        <div className="space-y-0.5 max-h-[180px] overflow-auto custom-scrollbar pr-2">
-                            {displayedLogs.length === 0 ? (
-                                <p className="text-[10px] opacity-50 py-4 text-center" style={{ color: colors.textMuted }}>No activity in this range.</p>
-                            ) : (
-                                displayedLogs.map((log) => {
-                                    const Icon = logIcon(log.kind);
-                                    const col = logColor(log.kind);
-                                    return (
-                                        <div key={log.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-black/5 border border-transparent hover:border-white/5 transition-all group">
-                                            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: col + '15', color: col }}>
-                                                <Icon size={12} />
-                                            </div>
-                                            <div className="flex-1 overflow-hidden min-w-0">
-                                                <div className="flex justify-between items-center mb-0 gap-2">
-                                                    <h4 className="text-[10px] font-bold uppercase tracking-tight truncate" style={{ color: colors.textMain }}>{log.title}</h4>
-                                                    <span className="text-[8px] font-mono opacity-40 flex items-center gap-1 shrink-0" style={{ color: colors.textMain }}><Clock size={8} /> {log.date}</span>
-                                                </div>
-                                                <p className="text-[9px] opacity-50 break-words" style={{ color: colors.textMain }}>{log.desc}</p>
-                                            </div>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
-                    </div>
-
-                    <div className="lg:col-span-5 p-4 rounded-[24px] border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                        <div className="flex justify-between items-center mb-4">
-                            <div>
-                                <h3 className="text-xs font-bold italic" style={{ color: colors.textMain }}>TASK EXECUTION</h3>
-                                <p className="text-[8px] uppercase tracking-widest opacity-40" style={{ color: colors.textMain }}>Pipeline Health Status</p>
-                            </div>
-                            <span className="text-[10px] font-mono font-bold text-primary">{taskPct}% DONE</span>
-                        </div>
-
-                        <div className="space-y-3">
-                            <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div className="h-full bg-primary" style={{ width: `${taskPct}%` }}></div>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2">
-                                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20">
-                                    <p className="text-[7px] font-bold text-red-500/80 uppercase mb-0.5">Urgent</p>
-                                    <h5 className="text-lg font-black italic tracking-tighter text-red-500">{String(taskUrgent).padStart(2, '0')}</h5>
-                                </div>
-                                <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20">
-                                    <p className="text-[7px] font-bold text-orange-500/80 uppercase mb-0.5">Pending</p>
-                                    <h5 className="text-lg font-black italic tracking-tighter text-orange-500">{String(taskPending).padStart(2, '0')}</h5>
-                                </div>
-                                <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20">
-                                    <p className="text-[7px] font-bold text-blue-500/80 uppercase mb-0.5">Due</p>
-                                    <h5 className="text-lg font-black italic tracking-tighter text-blue-500">{String(taskDue).padStart(2, '0')}</h5>
-                                </div>
-                                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
-                                    <p className="text-[7px] font-bold text-emerald-500/80 uppercase mb-0.5">Done</p>
-                                    <h5 className="text-lg font-black italic tracking-tighter text-emerald-500">{String(taskDone).padStart(2, '0')}</h5>
-                                </div>
-                            </div>
-
-                            <button
-                                type="button"
-                                onClick={() => onOpenTasks?.()}
-                                className="w-full py-2.5 rounded-xl bg-black/20 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-primary hover:bg-black/30 transition-all"
-                            >
-                                Open Tasks Page
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Reset Password Form overlay */}
-                {showResetPassword && isOwnProfile && (
-                    <div className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
-                        <div className="w-full max-w-sm space-y-4">
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="text-xl font-bold" style={{ color: colors.primary }}>Security Credentials</h3>
-                                <button onClick={() => setShowResetPassword(false)} style={{ color: colors.textMuted }}><X size={24} /></button>
-                            </div>
-                            <div className="space-y-4">
-                                <div>
-                                    <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Current Password</label>
-                                    <input type="password" placeholder="••••••••" className="w-full p-3 bg-black/40 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                        value={resetPasswordData.current} onChange={e => setResetPasswordData({ ...resetPasswordData, current: e.target.value })} />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">New Password</label>
-                                    <input type="password" placeholder="••••••••" className="w-full p-3 bg-black/40 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                        value={resetPasswordData.new} onChange={e => setResetPasswordData({ ...resetPasswordData, new: e.target.value })} />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] uppercase font-bold tracking-widest mb-1 block opacity-50">Confirm New Password</label>
-                                    <input type="password" placeholder="••••••••" className="w-full p-3 bg-black/40 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                        value={resetPasswordData.confirm} onChange={e => setResetPasswordData({ ...resetPasswordData, confirm: e.target.value })} />
-                                </div>
-                                <button
-                                    type="button"
-                                    disabled={resetPasswordBusy}
-                                    className="w-full py-4 rounded-xl font-bold transition-all disabled:opacity-50"
-                                    style={{ backgroundColor: colors.primary, color: '#000' }}
-                                    onClick={() => void handleProfileChangePassword()}
-                                >
-                                    {resetPasswordBusy ? 'Saving…' : 'Save New Credentials'}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    // --- Sub-Components ---
-    // ... PropertyTab, RoomTypesTab, VenuesTab ... (Assume unchanged unless I specifically target them, but here I am replacing the block from state def to TaxTab) -> actually I can't do that easily without replacing massive chunks.
-
-    // I will use multiple chunks strategy or replace specific functions.
-    // Let's replace the State definitions first.
-
-    // Better: I'll Replace the TaxesTab component function entirely.
-    // And ProfileTab component function entirely.
-    // And the Main Render return to remove header.
-    // And state init.
-
-
-    // --- Sub-Components ---
 
     const renderPropertyTab = () => {
         if (managingProperty) {
@@ -2798,6 +2112,8 @@ export default function Settings({
                     <UserPerformanceDashboard
                         user={selectedUserForStats}
                         propertyId={managingProperty?.id || activeProperty?.id}
+                        isOwnProfile={false}
+                        {...userPerformanceDashboardSharedProps}
                     />
                 </div>
             );
@@ -2908,7 +2224,12 @@ export default function Settings({
             role: currentUser?.role || userProfile.title || 'Staff',
         };
         return (
-            <UserPerformanceDashboard user={mappedUser} isOwnProfile={true} propertyId={activeProperty?.id} />
+            <UserPerformanceDashboard
+                user={mappedUser}
+                isOwnProfile={true}
+                propertyId={activeProperty?.id}
+                {...userPerformanceDashboardSharedProps}
+            />
         );
     };
 

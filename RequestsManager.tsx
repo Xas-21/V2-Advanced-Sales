@@ -56,7 +56,7 @@ import {
     REQUEST_SECTION_ADD_BTN_LG_CLASS,
     REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
-import { resolveUserAttributionId } from './userProfileMetrics';
+import { resolveUserAttributionId, createdByMatchesUser } from './userProfileMetrics';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
@@ -97,6 +97,8 @@ interface RequestsManagerProps {
     /** Admin / Head of Sales (+ grants): remove payment lines from a request. */
     canDeleteRequestPayments?: boolean;
     currency?: CurrencyCode;
+    /** Property staff (Settings assignments); used for "Created by" search filter. */
+    assignableUsersForProperty?: { id: string; name: string }[];
 }
 
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
@@ -217,6 +219,7 @@ export default function RequestsManager({
     currentUser,
     canDeleteRequestPayments: canDeletePaymentsProp,
     currency = 'SAR',
+    assignableUsersForProperty = [],
 }: RequestsManagerProps) {
     const colors = theme.colors;
     /** Saturated status row fills only when the shell is a dark theme (luxury / colorful). */
@@ -436,7 +439,21 @@ export default function RequestsManager({
     const handleSaveAccountFromModal = (accountData: any) => {
         if (readOnlyOperational) return;
         if (!accountData?.name) return;
-        const newAccount = { id: `A${Date.now()}`, ...accountData };
+        const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
+        const act = {
+            id: `acct-${Date.now()}`,
+            at: new Date().toISOString(),
+            title: 'Account created',
+            body: 'Account created from Requests.',
+            user: u,
+        };
+        const newAccount = {
+            id: `A${Date.now()}`,
+            ...accountData,
+            propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
+            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            activities: [...(accountData.activities || []), act],
+        };
         setAccounts((prev: any[]) => [newAccount, ...prev]);
         setShowAddAccountModal(false);
         setAccountSearch(newAccount.name);
@@ -5104,7 +5121,18 @@ export default function RequestsManager({
             const arrivalMatch = !arrivalFilter || reqStart >= arrivalFilter;
             const departureMatch = !departureFilter || reqEnd <= departureFilter;
 
-            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch;
+            const createdByFilter = String(params?.createdByUserId || '').trim();
+            let createdByMatch = true;
+            if (createdByFilter) {
+                const creatorRow = assignableUsersForProperty.find((u) => String(u.id) === createdByFilter);
+                if (creatorRow) {
+                    createdByMatch = createdByMatchesUser(req?.createdByUserId, creatorRow);
+                } else {
+                    createdByMatch = String(req?.createdByUserId || '').trim() === createdByFilter;
+                }
+            }
+
+            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch && createdByMatch;
         });
     };
 
@@ -5691,9 +5719,6 @@ export default function RequestsManager({
                         <h2 className="text-lg font-bold" style={{ color: colors.textMain }}>
                             {gridMode === 'cxl' ? 'CXL Grid' : 'Grid'}
                         </h2>
-                        <p className="text-xs opacity-70" style={{ color: colors.textMuted }}>
-                            Rooms-only monthly grid by property and year.
-                        </p>
                     </div>
                     <div className="flex items-center gap-2">
                         <label className="text-xs font-bold uppercase" style={{ color: colors.textMuted }}>Year</label>
@@ -5976,7 +6001,7 @@ export default function RequestsManager({
                                     </div>
                                 </div>
 
-                                <div className="flex flex-col sm:flex-row flex-wrap justify-center items-stretch sm:items-end gap-4 w-full max-w-xl sm:max-w-2xl mx-auto">
+                                <div className="flex flex-col sm:flex-row flex-wrap justify-center items-stretch sm:items-end gap-4 w-full max-w-xl sm:max-w-5xl mx-auto">
                                     <div className="w-full sm:flex-1 sm:min-w-[11rem] sm:max-w-[14rem]">
                                         <label className="text-xs font-bold uppercase tracking-wider mb-2 block text-center sm:text-left" style={{ color: colors.textMuted }}>Arrival / Start Date</label>
                                         <input
@@ -5994,6 +6019,22 @@ export default function RequestsManager({
                                             onChange={(e) => updateSearchParams({ departure: e.target.value })}
                                             className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
                                             style={{ borderColor: colors.border, color: colors.textMain }} placeholder="mm/dd/yyyy" />
+                                    </div>
+                                    <div className="w-full sm:flex-1 sm:min-w-[11rem] sm:max-w-[16rem]">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block text-center sm:text-left" style={{ color: colors.textMuted }}>Created by</label>
+                                        <select
+                                            value={searchParams?.createdByUserId ?? ''}
+                                            onChange={(e) => updateSearchParams({ createdByUserId: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            <option value="">All users</option>
+                                            {assignableUsersForProperty.map((u) => (
+                                                <option key={u.id} value={u.id}>
+                                                    {u.name}
+                                                </option>
+                                            ))}
+                                        </select>
                                     </div>
                                 </div>
 

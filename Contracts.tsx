@@ -11,6 +11,7 @@ import {
     Trash2,
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
+import { resolveUserAttributionId } from './userProfileMetrics';
 import {
     CONTRACTS_CHANGED_EVENT,
     attachSignedContractFile,
@@ -242,7 +243,21 @@ export default function Contracts({
 
     const handleAddAccount = (accountData: any) => {
         if (!accountData?.name) return;
-        const newAcc = { id: `A${Date.now()}`, ...accountData };
+        const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
+        const act = {
+            id: `acct-${Date.now()}`,
+            at: new Date().toISOString(),
+            title: 'Account created',
+            body: 'Account created from Contracts.',
+            user: u,
+        };
+        const newAcc = {
+            id: `A${Date.now()}`,
+            ...accountData,
+            propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
+            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            activities: [...(accountData.activities || []), act],
+        };
         setAccounts((prev: any[]) => [newAcc, ...prev]);
         setSelectedAccountId(String(newAcc.id));
         setShowAddAccountModal(false);
