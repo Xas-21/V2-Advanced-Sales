@@ -429,7 +429,7 @@ export function calculateAccFinancialsForRequest(
 
     let paymentStatus = 'Unpaid';
     if (totalCostWithTax > 0) {
-        if (paidAmountVal >= totalCostWithTax) paymentStatus = 'Paid';
+        if (paymentsMeetOrExceedTotal(paidAmountVal, totalCostWithTax)) paymentStatus = 'Paid';
         else if (paidAmountVal > 0) paymentStatus = 'Deposit';
     }
 
@@ -469,10 +469,10 @@ export function getBeoScopeGrandTotalInclTax(fin: any, _requestTypeRaw?: string 
 export function deriveBeoPaymentView(paidRaw: number, scopeTotalInclTax: number) {
     const paid = Number(paidRaw || 0);
     const total = Math.max(0, Number(scopeTotalInclTax || 0));
-    const remaining = Math.max(0, total - paid);
+    const remaining = Math.max(0, Math.round((total - paid) * 100) / 100);
     let paymentStatus = 'Unpaid';
     if (total > 0) {
-        if (paid >= total) paymentStatus = 'Paid';
+        if (paymentsMeetOrExceedTotal(paid, total)) paymentStatus = 'Paid';
         else if (paid > 0) paymentStatus = 'Deposit';
     } else if (paid > 0) {
         paymentStatus = 'Paid';

@@ -1006,6 +1006,11 @@ export default function RequestsManager({
                 paymentSum > 0 &&
                 paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost) &&
                 canAutoDefiniteFromStatus(initialPipelineStatus);
+            const resolvedPaymentStatus = paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost)
+                ? 'Paid'
+                : paymentSum > 0
+                  ? 'Deposit'
+                  : 'Unpaid';
             const eventWindow = getEventDateWindow(formData || {});
             const requestTypeLabelForProbe =
                 normalizedType === 'event_rooms'
@@ -1022,7 +1027,7 @@ export default function RequestsManager({
                 totalCost: resolvedTotalCost.toFixed(2),
                 payments: paymentsForStatus,
                 paidAmount: paymentSum.toFixed(2),
-                paymentStatus: fin.paymentStatus,
+                paymentStatus: resolvedPaymentStatus,
                 checkIn: resolvedCheckInForProbe || formData.checkIn,
                 eventStart: String(formData.eventStart || eventWindow.start || '').slice(0, 10),
             };
@@ -1089,7 +1094,7 @@ export default function RequestsManager({
                         ? String(eventWindow.end || eventWindow.start || formData.checkOut || '').slice(0, 10)
                         : formData.checkOut,
                 logs: updatedLogs,
-                paymentStatus: fin.paymentStatus, // Unpaid, Deposit, Paid
+                paymentStatus: resolvedPaymentStatus,
                 segment: resolvedSegment,
                 ...(createdByUserIdOut != null ? { createdByUserId: createdByUserIdOut } : {}),
             };
@@ -1310,7 +1315,7 @@ export default function RequestsManager({
 
         let paymentStatus = 'Unpaid';
         if (totalCostWithTax > 0) {
-            if (paidAmountVal >= totalCostWithTax) paymentStatus = 'Paid';
+            if (paymentsMeetOrExceedTotal(paidAmountVal, totalCostWithTax)) paymentStatus = 'Paid';
             else if (paidAmountVal > 0) paymentStatus = 'Deposit';
         }
 

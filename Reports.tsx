@@ -19,6 +19,7 @@ import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { canReportsPreviewSourceRows, canReportsUseDataSource } from './userPermissions';
+import { paymentsMeetOrExceedTotal } from './beoShared';
 
 interface ReportsProps {
     theme: any;
@@ -484,7 +485,7 @@ export default function Reports({
                 : parseFloat(String(r?.paidAmount ?? 0).replace(/,/g, '')) || 0;
             const unpaid = Math.max(0, total - paid);
             const status = String(r?.paymentStatus || '').trim()
-                || (paid >= total && total > 0 ? 'Paid' : paid > 0 ? 'Deposit' : 'Unpaid');
+                || (paymentsMeetOrExceedTotal(paid, total) ? 'Paid' : paid > 0 ? 'Deposit' : 'Unpaid');
             return { paid, unpaid, status };
         };
 
