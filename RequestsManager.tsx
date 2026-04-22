@@ -116,7 +116,7 @@ function screenLuminanceFromHex(hex: string): number {
     return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Draft', 'Cancelled'] as const;
+const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'] as const;
 const DEFAULT_CXL_REASONS = ['Price too high', 'Changed dates', 'Destination change', 'Budget issues', 'Group cancelled', 'Competitor offer', 'Other'];
 const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
 const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
@@ -177,7 +177,7 @@ function sanitizeRequestRoomsForSave(rooms: unknown): any[] {
 
 const initialEvent = {
     requestName: '', leadId: '', accountId: '', confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000), requestDate: new Date().toISOString().split('T')[0],
-    status: 'Draft', offerDate: '', depositDate: '', paymentDate: '',
+    status: 'Inquiry', offerDate: '', depositDate: '', paymentDate: '',
     agenda: [{
         id: 1,
         startDate: '', endDate: '', venue: '', shape: 'Theater',
@@ -343,9 +343,27 @@ export default function RequestsManager({
         'total_cost',
     ]);
     const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
-    /** Optional list columns (defaults on); toggled via gear above the table */
-    const [listShowAccountTypeCol, setListShowAccountTypeCol] = useState(true);
-    const [listShowRequestSegmentCol, setListShowRequestSegmentCol] = useState(true);
+    /** Per-column visibility for the request list table (options column always shown). Toggled via gear on All Requests and Search. */
+    const [listColumnVisible, setListColumnVisible] = useState<Record<string, boolean>>(() => {
+        const o: Record<string, boolean> = {};
+        for (const k of [
+            'details',
+            'requestName',
+            'account',
+            'account_type',
+            'request_segment',
+            'type',
+            'meal',
+            'status',
+            'dates',
+            'stay_info',
+            'paid_amount',
+            'total_cost',
+        ]) {
+            o[k] = k !== 'account_type' && k !== 'request_segment';
+        }
+        return o;
+    });
     const [listColumnSettingsOpen, setListColumnSettingsOpen] = useState(false);
     const listColumnSettingsRef = useRef<HTMLDivElement | null>(null);
 
@@ -370,14 +388,32 @@ export default function RequestsManager({
         return () => document.removeEventListener('pointerdown', onDown, true);
     }, [listColumnSettingsOpen]);
 
+    const listColumnVisibilityKeys = useMemo(
+        () =>
+            new Set([
+                'details',
+                'requestName',
+                'account',
+                'account_type',
+                'request_segment',
+                'type',
+                'meal',
+                'status',
+                'dates',
+                'stay_info',
+                'paid_amount',
+                'total_cost',
+            ]),
+        []
+    );
     const visibleColumnOrder = useMemo(
         () =>
-            columnOrder.filter(
-                (c) =>
-                    (c !== 'account_type' || listShowAccountTypeCol) &&
-                    (c !== 'request_segment' || listShowRequestSegmentCol)
-            ),
-        [columnOrder, listShowAccountTypeCol, listShowRequestSegmentCol]
+            columnOrder.filter((c) => {
+                if (c === 'options') return true;
+                if (listColumnVisibilityKeys.has(c)) return listColumnVisible[c] !== false;
+                return true;
+            }),
+        [columnOrder, listColumnVisible, listColumnVisibilityKeys]
     );
     const [expandedLog, setExpandedLog] = useState<number | null>(null);
     const [selectedRequest, setSelectedRequest] = useState<any>(null);
@@ -1018,7 +1054,7 @@ export default function RequestsManager({
                     ? formData.accommodation.payments
                     : [];
             const paymentSum = paymentsForStatus.reduce((acc: number, p: any) => acc + Number(p?.amount || 0), 0);
-            const defaultPipelineStatus = normalizedType === 'event' ? 'Draft' : 'Inquiry';
+            const defaultPipelineStatus = 'Inquiry';
             const initialPipelineStatus =
                 String(formData.status || formData.accommodation?.status || defaultPipelineStatus).trim() ||
                 defaultPipelineStatus;
@@ -2998,7 +3034,7 @@ export default function RequestsManager({
                         <div>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Request status</label>
                             <select
-                                value={evtForm.status || 'Draft'}
+                                value={evtForm.status || 'Inquiry'}
                                 onChange={(e) => setEvtForm({ ...evtForm, status: e.target.value })}
                                 className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
                                 style={{ borderColor: colors.border, color: colors.textMain }}
@@ -5511,6 +5547,14 @@ export default function RequestsManager({
 
     type TableBlockScrollMode = 'fixed' | 'flow';
 
+    type RequestTableBlockOptions = {
+        /** Denser cells/padding like the paginated All Requests table (e.g. Search Results). */
+        useCompactTable?: boolean;
+        /** Search box, per-page, filter — only for All Requests. */
+        allRequestsHeaderWidgets?: boolean;
+        showColumnSettingsButton?: boolean;
+    };
+
     const renderRequestsTableBlock = (
         requestList: any[],
         title: string,
@@ -5523,10 +5567,12 @@ export default function RequestsManager({
             totalPages: number;
             setPage: (p: number) => void;
             setPageSize: (s: 20 | 50 | 100) => void;
-        } | null
+        } | null,
+        blockOptions?: RequestTableBlockOptions
     ) => {
+        const { useCompactTable = false, allRequestsHeaderWidgets = false, showColumnSettingsButton = true } = blockOptions || {};
         const fixedHeight = scrollMode === 'fixed';
-        const compact = !!listPagination;
+        const compact = !!listPagination || useCompactTable;
         const theadPx = compact ? 'px-3' : 'px-6';
         const theadPy = compact ? 'py-1.5' : 'py-2';
         const theadText = compact ? 'text-[10px]' : 'text-[11px]';
@@ -5541,6 +5587,57 @@ export default function RequestsManager({
             listPagination && listPagination.totalItems > 0
                 ? Math.min(listPagination.page * listPagination.pageSize, listPagination.totalItems)
                 : 0;
+        const listColumnSettingsControl = showColumnSettingsButton ? (
+            <div className="relative shrink-0" ref={listColumnSettingsRef}>
+                <button
+                    type="button"
+                    className="p-2.5 rounded-xl border hover:bg-white/5 transition-colors flex items-center justify-center"
+                    style={{ borderColor: colors.border, color: colors.textMain }}
+                    title="List column settings"
+                    onClick={() => setListColumnSettingsOpen((o) => !o)}
+                >
+                    <Settings size={18} />
+                </button>
+                {listColumnSettingsOpen ? (
+                    <div
+                        className="absolute right-0 top-full mt-2 z-50 w-[min(100vw-1.5rem,280px)] max-h-[min(70vh,22rem)] overflow-y-auto p-3 rounded-xl border shadow-xl"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: colors.textMuted }}>
+                            Visible columns
+                        </p>
+                        <p className="text-[9px] opacity-60 mb-2" style={{ color: colors.textMuted }}>
+                            Row actions (OPTS) always stay visible. Drag column headers to reorder.
+                        </p>
+                        {columnOrder
+                            .filter((c) => listColumnVisibilityKeys.has(c))
+                            .map((colKey) => (
+                                <label
+                                    key={colKey}
+                                    className="flex items-center gap-2 cursor-pointer py-1.5 text-sm"
+                                    style={{ color: colors.textMain }}
+                                >
+                                    <input
+                                        type="checkbox"
+                                        checked={listColumnVisible[colKey] !== false}
+                                        onChange={(e) =>
+                                            setListColumnVisible((prev) => ({
+                                                ...prev,
+                                                [colKey]: e.target.checked,
+                                            }))
+                                        }
+                                        className="w-4 h-4 rounded shrink-0"
+                                        style={{ accentColor: colors.primary }}
+                                    />
+                                    <span className="truncate" title={columnLabels[colKey]}>
+                                        {columnLabels[colKey] || colKey}
+                                    </span>
+                                </label>
+                            ))}
+                    </div>
+                ) : null}
+            </div>
+        ) : null;
         return (
         <div className={fixedHeight ? 'flex flex-col flex-1 min-h-0 w-full' : 'flex flex-col w-full'}>
             <div className={`shrink-0 ${headPad} border-b`} style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -5554,7 +5651,7 @@ export default function RequestsManager({
                             ) : null}
                         </p>
                     </div>
-                    {title === 'All Requests' && (
+                    {allRequestsHeaderWidgets && (
                         <div className="flex flex-wrap items-center gap-3">
                             <div className="relative group flex-1 min-w-[200px] max-w-md">
                                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-30 group-focus-within:text-primary transition-colors" />
@@ -5582,51 +5679,16 @@ export default function RequestsManager({
                                     </select>
                                 </div>
                             )}
-                            <div className="relative shrink-0" ref={listColumnSettingsRef}>
-                                <button
-                                    type="button"
-                                    className="p-2.5 rounded-xl border hover:bg-white/5 transition-colors flex items-center justify-center"
-                                    style={{ borderColor: colors.border, color: colors.textMain }}
-                                    title="List column settings"
-                                    onClick={() => setListColumnSettingsOpen((o) => !o)}
-                                >
-                                    <Settings size={18} />
-                                </button>
-                                {listColumnSettingsOpen ? (
-                                    <div
-                                        className="absolute right-0 top-full mt-2 z-50 min-w-[220px] p-3 rounded-xl border shadow-xl"
-                                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
-                                    >
-                                        <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: colors.textMuted }}>
-                                            Columns
-                                        </p>
-                                        <label className="flex items-center gap-2 cursor-pointer py-1.5 text-sm" style={{ color: colors.textMain }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={listShowAccountTypeCol}
-                                                onChange={(e) => setListShowAccountTypeCol(e.target.checked)}
-                                                className="w-4 h-4 rounded"
-                                                style={{ accentColor: colors.primary }}
-                                            />
-                                            Account type
-                                        </label>
-                                        <label className="flex items-center gap-2 cursor-pointer py-1.5 text-sm" style={{ color: colors.textMain }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={listShowRequestSegmentCol}
-                                                onChange={(e) => setListShowRequestSegmentCol(e.target.checked)}
-                                                className="w-4 h-4 rounded"
-                                                style={{ accentColor: colors.primary }}
-                                            />
-                                            Request segment
-                                        </label>
-                                    </div>
-                                ) : null}
-                            </div>
+                            {listColumnSettingsControl}
                             <button type="button" className="px-4 py-2 rounded-xl border hover:bg-white/5 transition-colors flex items-center gap-2 text-sm font-bold shrink-0"
                                 style={{ borderColor: colors.border, color: colors.textMain }}>
                                 <Filter size={16} /> Filter
                             </button>
+                        </div>
+                    )}
+                    {!allRequestsHeaderWidgets && listColumnSettingsControl && (
+                        <div className="flex flex-wrap items-center justify-end gap-2 w-full min-w-0 sm:w-auto">
+                            {listColumnSettingsControl}
                         </div>
                     )}
                 </div>
@@ -6293,12 +6355,14 @@ export default function RequestsManager({
                 </div>
 
                 {searchResults !== null && (
-                    <div className="mt-4 px-1">
+                    <div className="mt-4 w-full min-w-0 px-2 sm:px-4 md:px-6 max-w-[1800px] mx-auto">
                         {renderRequestsTableBlock(
                             searchResults,
                             'Search Results',
                             `${searchResults.length} requests match your criteria`,
-                            'flow'
+                            'flow',
+                            null,
+                            { useCompactTable: true, allRequestsHeaderWidgets: false, showColumnSettingsButton: true }
                         )}
                     </div>
                 )}
@@ -6326,7 +6390,8 @@ export default function RequestsManager({
                         setListPageSize(s);
                         setListCurrentPage(1);
                     },
-                }
+                },
+                { allRequestsHeaderWidgets: true, showColumnSettingsButton: true }
             )}
             {renderGlobalModals()}
         </div>

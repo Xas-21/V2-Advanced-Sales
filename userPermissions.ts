@@ -348,6 +348,11 @@ export function hasGranularReportsDataPermission(user: any): boolean {
  */
 export function canReportsUseDataSource(user: any, entityLabel: string): boolean {
     if (!canAccessReports(user)) return false;
+    /** Full Report uses both Rooms and MICE datasets; require both grants when data sources are split. */
+    if (entityLabel === 'Full Report') {
+        if (!hasGranularReportsDataPermission(user)) return true;
+        return can(user, 'reports.dataRequests') && can(user, 'reports.dataMice');
+    }
     if (!hasGranularReportsDataPermission(user)) return true;
     const p = REPORT_ENTITY_TO_PERM[entityLabel];
     return p ? can(user, p) : false;

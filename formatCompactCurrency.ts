@@ -2,6 +2,7 @@ import { type CurrencyCode, convertSarToCurrency, resolveCurrencyCode } from './
 
 /**
  * Compact money display: no K/M below 1,000; K for [1,000 .. 999,999]; M from 1,000,000.
+ * Millions use up to three significant figures (e.g. SAR 2.56M, SAR 2.00M) for dashboard readability.
  */
 
 export function coerceMoneyNumber(value: unknown): number {
@@ -18,7 +19,21 @@ function formatScaledUnit(unit: number): string {
     return r1.toFixed(1).replace(/\.0$/, '');
 }
 
-/** Number + optional K/M only (e.g. "0", "500", "1.5K", "2.1M"). */
+/** Mantissa for millions: always up to 3 significant figures (e.g. "2.00", "2.56", "12.3", "256"). */
+function formatMillionMantissa(unit: number): string {
+    const x = Math.abs(unit);
+    if (x === 0) return '0';
+    if (x >= 1000) {
+        return x % 1 === 0 ? String(Math.round(x)) : x.toFixed(1);
+    }
+    const str = x.toPrecision(3);
+    if (str.includes('e') || str.includes('E')) {
+        return x >= 100 ? String(Math.round(x)) : x.toFixed(2);
+    }
+    return str;
+}
+
+/** Number + optional K/M only (e.g. "0", "500", "1.5K", "2.56M"). */
 export function formatCompactAmount(value: number): string {
     const v = coerceMoneyNumber(value);
     if (v === 0) return '0';
@@ -31,7 +46,7 @@ export function formatCompactAmount(value: number): string {
     if (n < 1_000_000) {
         return `${sign}${formatScaledUnit(n / 1000)}K`;
     }
-    return `${sign}${formatScaledUnit(n / 1_000_000)}M`;
+    return `${sign}${formatMillionMantissa(n / 1_000_000)}M`;
 }
 
 /** Same rules with "SAR " prefix; zero → "SAR 0". */

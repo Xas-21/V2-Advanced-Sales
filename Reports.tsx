@@ -15,6 +15,7 @@ import {
     Users,
     PhoneCall,
     LineChart,
+    Layers,
 } from 'lucide-react';
 import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
@@ -23,6 +24,7 @@ import { canReportsPreviewSourceRows, canReportsUseDataSource } from './userPerm
 import { paymentsMeetOrExceedTotal } from './beoShared';
 import {
     buildYearOptionsForReports,
+    buildFullVsLyMatrix,
     buildVsLyMatrix,
     defaultVsReportYear,
     exportVsLyMatrixCsv,
@@ -30,10 +32,20 @@ import {
     type VsLyMatrixRow,
 } from './reportsVsLastYear';
 import { resolveAccountTypesForProperty, resolveSegmentsForProperty } from './propertyTaxonomy';
+import {
+    buildReportSegmentsForRequest,
+    computeRequestRevenueBreakdownNoTax,
+    inDateRangeYMD,
+    segmentLineTotalExTax,
+    requestTouchesOperationalDateRange,
+    type ReportSegment,
+} from './operationalSegmentRevenue';
 
 interface ReportsProps {
     theme: any;
     activeProperty?: any;
+    /** Loaded from `/api/taxes` in AS; preferred over `activeProperty.taxes` for with-tax totals */
+    propertyTaxes?: any[];
     sharedRequests?: any[];
     accounts?: any[];
     crmLeads?: Record<string, any[]>;
@@ -44,7 +56,15 @@ interface ReportsProps {
 
 const initialSavedReports: any[] = [];
 
-type ReportEntity = 'Requests' | 'Accounts' | 'MICE' | 'Tasks' | 'Sales Calls' | 'Rooms vs LY' | 'MICE vs LY';
+type ReportEntity =
+    | 'Requests'
+    | 'Accounts'
+    | 'MICE'
+    | 'Tasks'
+    | 'Sales Calls'
+    | 'Rooms vs LY'
+    | 'MICE vs LY'
+    | 'Full Report';
 
 function normalizeRequestTypeKey(raw: string = '') {
     const t = String(raw || '').toLowerCase().trim();
@@ -63,148 +83,17 @@ function requestTypeLabel(raw: string = '') {
     return 'Accommodation';
 }
 
-function requestTotalValue(r: any): number {
-    return parseFloat(String(r.totalCost ?? r.grandTotalWithTax ?? r.totalCostWithTax ?? 0).replace(/,/g, '')) || 0;
-}
-
 function requestPrimaryDate(r: any): string {
     const d = r.receivedDate || r.requestDate || r.checkIn || (typeof r.createdAt === 'string' ? r.createdAt.split('T')[0] : '');
     return String(d || '').slice(0, 10);
-}
-
-function inDateRangeYMD(dateStr: string, start: string, end: string): boolean {
-    const d = String(dateStr || '').slice(0, 10);
-    if (!start || !end) return true;
-    if (!d) return false;
-    return d >= start && d <= end;
-}
-
-/** Earliest agenda start and latest agenda end (YYYY-MM-DD). */
-function agendaSpanFromRequest(r: any): { start: string; end: string } {
-    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
-    let minS = '';
-    let maxE = '';
-    for (const row of agenda) {
-        const s = parseYmdAgenda(row?.startDate);
-        const e = parseYmdAgenda(row?.endDate || row?.startDate) || s;
-        if (s && (!minS || s < minS)) minS = s;
-        if (e && (!maxE || e > maxE)) maxE = e;
-    }
-    return { start: minS, end: maxE || minS };
-}
-
-function rangesOverlapYmd(aStart: string, aEnd: string, filterStart: string, filterEnd: string): boolean {
-    if (!filterStart || !filterEnd) return true;
-    const as = aStart || aEnd;
-    const ae = aEnd || aStart;
-    if (!as && !ae) return false;
-    return !(ae < filterStart || as > filterEnd);
-}
-
-function inclusiveAgendaDayCount(startYmd: string, endYmd: string): number {
-    if (!startYmd || !endYmd) return 0;
-    const a = new Date(`${startYmd}T00:00:00`).getTime();
-    const b = new Date(`${endYmd}T00:00:00`).getTime();
-    if (Number.isNaN(a) || Number.isNaN(b)) return 0;
-    return Math.max(1, Math.floor((b - a) / 86400000) + 1);
-}
-
-function parseYmdAgenda(v: any): string {
-    const raw = String(v || '').trim().slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-    const dt = new Date(raw);
-    if (Number.isNaN(dt.getTime())) return '';
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, '0');
-    const d = String(dt.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
-function calculateNights(inDate: string, outDate: string) {
-    if (!inDate || !outDate) return 0;
-    const diff = new Date(outDate).getTime() - new Date(inDate).getTime();
-    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
 }
 
 function asNumberReport(v: any): number {
     return parseFloat(String(v ?? 0).replace(/,/g, '')) || 0;
 }
 
-/**
- * Rooms + event + transport line revenue without tax (same rules as operational dashboard).
- * When lines are empty but a stored no-tax total exists: MICE-like types attribute to event;
- * other types attribute the full stored amount to rooms.
- */
-function computeRequestRevenueBreakdownNoTax(r: any): {
-    roomsRevenue: number;
-    eventRevenue: number;
-    transportRevenue: number;
-    totalLineNoTax: number;
-} {
-    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
-    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
-    const transport = Array.isArray(r?.transportation) ? r.transportation : [];
-    const reqNights = (() => {
-        const inDate = parseYmdAgenda(r?.checkIn);
-        const outDate = parseYmdAgenda(r?.checkOut);
-        if (!inDate || !outDate) return 0;
-        const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
-        if (Number.isNaN(ms)) return 0;
-        return Math.max(0, Math.ceil(ms / 86400000));
-    })();
-    const roomsRevenue = rooms.reduce((sum: number, row: any) => {
-        const count = Number(row?.count || 0);
-        const rate = Number(row?.rate || 0);
-        const inDate = parseYmdAgenda(row?.arrival || r?.checkIn);
-        const outDate = parseYmdAgenda(row?.departure || r?.checkOut);
-        let nights = reqNights;
-        if (inDate && outDate) {
-            const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
-            if (!Number.isNaN(ms)) nights = Math.max(0, Math.ceil(ms / 86400000));
-        }
-        return sum + count * rate * nights;
-    }, 0);
-    let eventRevenue = agenda.reduce((sum: number, item: any) => {
-        const start = parseYmdAgenda(item?.startDate);
-        const end = parseYmdAgenda(item?.endDate || item?.startDate);
-        let rowDays = 1;
-        if (start && end) {
-            const ms = new Date(`${end}T00:00:00`).getTime() - new Date(`${start}T00:00:00`).getTime();
-            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
-        }
-        const rowCost = (Number(item?.rate || 0) * Number(item?.pax || 0)) + Number(item?.rental || 0);
-        return sum + rowCost * rowDays;
-    }, 0);
-    const transportRevenue = transport.reduce((sum: number, row: any) => sum + Number(row?.costPerWay || 0), 0);
-    let lineSum = roomsRevenue + eventRevenue + transportRevenue;
-    const storedNoTax = asNumberReport(
-        r?.grandTotalNoTax ?? r?.totalCostNoTax ?? r?.totalCost ?? r?.grandTotal ?? r?.totalAmount ?? 0
-    );
-    if (lineSum <= 0 && storedNoTax > 0) {
-        const t = String(r?.requestType || '').toLowerCase();
-        const miceLike =
-            t === 'event' ||
-            t === 'event_rooms' ||
-            t.includes('series') ||
-            t.includes('event with');
-        if (miceLike) {
-            eventRevenue = storedNoTax;
-            lineSum = roomsRevenue + eventRevenue + transportRevenue;
-        } else {
-            return {
-                roomsRevenue: storedNoTax,
-                eventRevenue: 0,
-                transportRevenue: 0,
-                totalLineNoTax: storedNoTax,
-            };
-        }
-    }
-    return {
-        roomsRevenue,
-        eventRevenue,
-        transportRevenue,
-        totalLineNoTax: lineSum,
-    };
+function requestTotalValue(r: any): number {
+    return computeRequestRevenueBreakdownNoTax(r).totalLineNoTax;
 }
 
 function isEventOrEventRoomsType(r: any): boolean {
@@ -220,6 +109,32 @@ function matchesStatusFilter(selected: string[], rawStatus: string): boolean {
         if (sl === 'inquiry' && (r === 'draft' || r === 'inquiry')) return true;
         return sl === r;
     });
+}
+
+/** Apply property tax rules to a slice of no-tax line amounts (same as dashboard AS.tsx). */
+function lineAmountsExTaxToWithTax(
+    roomsEx: number,
+    eventEx: number,
+    transEx: number,
+    taxes: { rate?: number; scope?: { accommodation?: boolean; events?: boolean; foodAndBeverage?: boolean; transport?: boolean } }[]
+): number {
+    if (!Array.isArray(taxes) || !taxes.length) {
+        return Math.max(0, roomsEx) + Math.max(0, eventEx) + Math.max(0, transEx);
+    }
+    let roomsTax = 0;
+    let eventTax = 0;
+    let transTax = 0;
+    for (const tax of taxes) {
+        const tr = Number(tax?.rate || 0) / 100;
+        if (tax?.scope?.accommodation) roomsTax += tr;
+        if (tax?.scope?.events || tax?.scope?.foodAndBeverage) eventTax += tr;
+        if (tax?.scope?.transport) transTax += tr;
+    }
+    return (
+        Math.max(0, roomsEx) * (1 + roomsTax) +
+        Math.max(0, eventEx) * (1 + eventTax) +
+        Math.max(0, transEx) * (1 + transTax)
+    );
 }
 
 function defaultMonthRange() {
@@ -256,6 +171,7 @@ function triggerDownload(content: BlobPart, fileName: string, type: string) {
 export default function Reports({
     theme,
     activeProperty,
+    propertyTaxes: propertyTaxesFromApi = [],
     sharedRequests = [],
     accounts = [],
     crmLeads = {},
@@ -296,6 +212,13 @@ export default function Reports({
         () => resolveAccountTypesForProperty(String(pid || ''), activeProperty),
         [pid, activeProperty]
     );
+    const propertyTaxes = useMemo(() => {
+        const fromApi = Array.isArray(propertyTaxesFromApi) ? propertyTaxesFromApi : [];
+        if (fromApi.length) {
+            return fromApi as { rate?: number; scope?: { accommodation?: boolean; events?: boolean; foodAndBeverage?: boolean; transport?: boolean } }[];
+        }
+        return (Array.isArray(activeProperty?.taxes) ? activeProperty.taxes : []) as { rate?: number; scope?: { accommodation?: boolean; events?: boolean; foodAndBeverage?: boolean; transport?: boolean } }[];
+    }, [propertyTaxesFromApi, activeProperty]);
 
     const scopedRequests = useMemo(() => {
         return (sharedRequests || []).filter(
@@ -327,11 +250,13 @@ export default function Reports({
         { id: 'MICE' as ReportEntity, icon: Wine, label: 'MICE' },
         { id: 'Rooms vs LY' as ReportEntity, icon: LineChart, label: 'Rooms vs LY' },
         { id: 'MICE vs LY' as ReportEntity, icon: BarChart3, label: 'MICE vs LY' },
+        { id: 'Full Report' as ReportEntity, icon: Layers, label: 'Full Report' },
         { id: 'Tasks' as ReportEntity, icon: Users, label: 'Tasks' },
         { id: 'Sales Calls' as ReportEntity, icon: PhoneCall, label: 'Sales Calls' },
     ];
 
-    const isVsLySource = selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY';
+    const isVsLySource =
+        selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY' || selectedEntity === 'Full Report';
 
     useEffect(() => {
         setVsLyRowHidden(new Set());
@@ -359,6 +284,8 @@ export default function Reports({
             'Event Revenue',
             'Rooms Revenue',
             'Rooms + Event',
+            'Total (ex. tax)',
+            'Total (incl. tax)',
             'Amount',
         ],
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
@@ -367,6 +294,7 @@ export default function Reports({
             'Line',
             'Client',
             'Request Type',
+            'Segment date',
             'Agenda start',
             'Agenda end',
             'Agenda days',
@@ -375,8 +303,11 @@ export default function Reports({
             'PAX',
             'DDR',
             'Event Revenue',
+            'Rooms Revenue',
             'Paid Amount',
             'Unpaid Amount',
+            'Total (ex. tax)',
+            'Total (incl. tax)',
             'Amount',
         ],
         Tasks: ['ID', 'Task', 'Client', 'Due Date', 'Priority', 'Assignee'],
@@ -400,6 +331,7 @@ export default function Reports({
         ],
         'Rooms vs LY': [],
         'MICE vs LY': [],
+        'Full Report': [],
     };
 
     useEffect(() => {
@@ -454,8 +386,40 @@ export default function Reports({
     };
 
     const reportPack = useMemo(() => {
-        if (selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY') {
+        if (selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY' || selectedEntity === 'Full Report') {
             const y = Number(filters.vsReportYear) || new Date().getFullYear();
+            const vsOpts = {
+                propertyRequestSegments,
+                propertyAccountTypes,
+                includeRequestSegments: Boolean(filters.vsLyByRequestSegment),
+                includeAccountTypes: Boolean(filters.vsLyByAccountType),
+            };
+            if (selectedEntity === 'Full Report') {
+                const { rows: vsRows, yearLy } = buildFullVsLyMatrix(
+                    scopedRequests,
+                    accounts || [],
+                    y,
+                    selectedCurrency,
+                    vsOpts
+                );
+                return {
+                    rows: [] as any[],
+                    summary: {
+                        'Report year (CY)': y,
+                        'Vs last year (LY)': yearLy,
+                        'Revenue basis':
+                            'Identical to standalone Rooms vs LY and MICE vs LY: stay-night and agenda-day proration, excl. cancelled.',
+                        'Definite + Actual': 'CY / LY columns per month and YTD',
+                        OTB: 'All statuses except Definite+Actual, Cancelled, Lost (pipeline + any other; chosen year).',
+                        Structure:
+                            'Part A = Rooms vs LY. Part B = MICE vs LY. Part C = Other Revenue. Part D = Total Hotel Revenue.',
+                    } as Record<string, string | number>,
+                    exportColumns: [] as string[],
+                    vsLyRows: vsRows,
+                    vsLyMeta: { kind: 'full' as const, year: y, yearLy },
+                    isVsLyMatrix: true,
+                };
+            }
             const kind = selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice';
             const { rows: vsRows, yearLy } = buildVsLyMatrix(
                 kind,
@@ -463,12 +427,7 @@ export default function Reports({
                 accounts || [],
                 y,
                 selectedCurrency,
-                {
-                    propertyRequestSegments,
-                    propertyAccountTypes,
-                    includeRequestSegments: Boolean(filters.vsLyByRequestSegment),
-                    includeAccountTypes: Boolean(filters.vsLyByAccountType),
-                }
+                vsOpts
             );
             return {
                 rows: [] as any[],
@@ -477,7 +436,7 @@ export default function Reports({
                     'Vs last year (LY)': yearLy,
                     'Revenue basis': 'Line-based (excl. cancelled from all slices)',
                     'Definite + Actual': 'CY / LY comparison columns',
-                    OTB: 'Inquiry + Accepted + Tentative (chosen year; excl. cancelled)',
+                    OTB: 'All except Def+Act, Cancelled, Lost (aligned with dashboard; chosen year).',
                 } as Record<string, string | number>,
                 exportColumns: [] as string[],
                 vsLyRows: vsRows,
@@ -497,63 +456,8 @@ export default function Reports({
             if (!matchesStatusFilter(st, r.status)) return false;
             const amt = requestTotalValue(r);
             if (amt < vmin || amt > vmax) return false;
-            if (miceOnly) {
-                const span = agendaSpanFromRequest(r);
-                if (!span.start) return false;
-                if (!rangesOverlapYmd(span.start, span.end, start, end)) return false;
-            } else if (!inDateRangeYMD(requestPrimaryDate(r), start, end)) {
-                return false;
-            }
-            return true;
-        };
-
-        const calculateRoomBlock = (r: any) => {
-            const rooms = Array.isArray(r.rooms) ? r.rooms : [];
-            const reqNights = calculateNights(String(r.checkIn || ''), String(r.checkOut || ''));
-            let roomNights = 0;
-            let roomRevenue = 0;
-            let weightedRate = 0;
-            for (const room of rooms) {
-                const count = Number(room?.count || 0);
-                const rate = Number(room?.rate || 0);
-                const nights = normalizeRequestTypeKey(r.requestType) === 'series'
-                    ? calculateNights(String(room?.arrival || ''), String(room?.departure || ''))
-                    : reqNights;
-                const n = Math.max(0, nights) * Math.max(0, count);
-                roomNights += n;
-                roomRevenue += n * rate;
-                weightedRate += rate * n;
-            }
-            const avgAdr = roomNights > 0 ? weightedRate / roomNights : 0;
-            const ratePerNight = roomNights > 0 ? roomRevenue / roomNights : 0;
-            return { roomNights, roomRevenue, avgAdr, ratePerNight, reqNights };
-        };
-
-        const calculateEventBlock = (r: any) => {
-            const agenda = Array.isArray(r.agenda) ? r.agenda : [];
-            const pax = agenda.reduce((sum: number, row: any) => sum + (Number(row?.pax || 0) || 0), 0);
-            const eventRevenue = agenda.reduce((sum: number, row: any) => {
-                const sd = parseYmdAgenda(row?.startDate);
-                const ed = parseYmdAgenda(row?.endDate || row?.startDate);
-                let rowDays = 1;
-                if (sd && ed) {
-                    const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
-                    if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
-                }
-                const rowCost = (Number(row?.rate || 0) * Number(row?.pax || 0)) + Number(row?.rental || 0);
-                return sum + rowCost * rowDays;
-            }, 0);
-            const ddr = pax > 0 ? eventRevenue / pax : 0;
-            const span = agendaSpanFromRequest(r);
-            const agendaDays = inclusiveAgendaDayCount(span.start, span.end);
-            return {
-                pax,
-                eventRevenue,
-                ddr,
-                agendaStart: span.start,
-                agendaEnd: span.end,
-                agendaDays,
-            };
+            if (!start || !end) return true;
+            return requestTouchesOperationalDateRange(r, start, end);
         };
 
         const paymentBlock = (r: any) => {
@@ -644,112 +548,149 @@ export default function Reports({
             const rows: any[] = [];
 
             let totalAmount = 0;
+            let totalAmountInclTax = 0;
             let totalPax = 0;
+            let totalRoomRevSeg = 0;
             let totalRoomNights = 0;
-            let weightedAdrSum = 0;
             let totalPaid = 0;
             let totalUnpaid = 0;
             let totalEventRevenue = 0;
             let totalMiceEventRevNoTax = 0;
             let totalMiceRoomsRevNoTax = 0;
-            let requestCount = 0;
+            let lineItemCount = 0;
             const typeCounter: Record<string, number> = {
                 accommodation: 0,
                 event: 0,
                 event_rooms: 0,
                 series: 0,
             };
+            const typeSeen = new Set<string>();
 
             for (const r of source) {
-                requestCount += 1;
+                const segs = start && end ? buildReportSegmentsForRequest(r, start, end) : [];
+                if (!segs.length) continue;
+
                 const typeKey = normalizeRequestTypeKey(r.requestType);
-                typeCounter[typeKey] = (typeCounter[typeKey] || 0) + 1;
+                const rid = String(r.id);
+                if (!typeSeen.has(rid)) {
+                    typeSeen.add(rid);
+                    typeCounter[typeKey] = (typeCounter[typeKey] || 0) + 1;
+                }
 
                 const status = r.status || '—';
                 const client = r.account || r.accountName || '—';
-                const total = requestTotalValue(r);
-                totalAmount += total;
-
-                const roomBlock = calculateRoomBlock(r);
-                const eventBlock = calculateEventBlock(r);
                 const pay = paymentBlock(r);
-                totalPax += eventBlock.pax;
-                totalRoomNights += roomBlock.roomNights;
-                weightedAdrSum += roomBlock.avgAdr * roomBlock.roomNights;
-                totalEventRevenue += eventBlock.eventRevenue;
-                totalPaid += pay.paid;
-                totalUnpaid += pay.unpaid;
+                const br0 = computeRequestRevenueBreakdownNoTax(r);
 
-                if (selectedEntity === 'MICE') {
-                    const revNoTax = computeRequestRevenueBreakdownNoTax(r);
-                    totalMiceEventRevNoTax += revNoTax.eventRevenue;
-                    totalMiceRoomsRevNoTax += revNoTax.roomsRevenue;
-                    rows.push({
-                        'Request ID': r.id || '—',
-                        Line: 'Single',
-                        Client: client,
-                        'Request Type': requestTypeLabel(r.requestType),
-                        'Agenda start': eventBlock.agendaStart || '—',
-                        'Agenda end': eventBlock.agendaEnd || '—',
-                        'Agenda days': eventBlock.agendaDays || 0,
-                        Status: status,
-                        'Payment Status': pay.status,
-                        PAX: eventBlock.pax || 0,
-                        DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
-                        'Event Revenue': eventBlock.eventRevenue ? formatSar(eventBlock.eventRevenue, selectedCurrency) : '—',
-                        'Paid Amount': formatSar(pay.paid, selectedCurrency),
-                        'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
-                        Amount: formatSar(total, selectedCurrency),
-                    });
-                } else {
-                    const date = requestPrimaryDate(r) || '—';
-                    const revNoTax = computeRequestRevenueBreakdownNoTax(r);
-                    const isEv = isEventOrEventRoomsType(r);
-                    const fmtNoTax = (n: number) => formatSar(Number(n) || 0, selectedCurrency);
-                    const roomsEvSum = (Number(revNoTax.roomsRevenue) || 0) + (Number(revNoTax.eventRevenue) || 0);
-                    rows.push({
-                        'Request ID': r.id || '—',
-                        Line: 'Single',
-                        Client: client,
-                        'Request Type': requestTypeLabel(r.requestType),
-                        Date: date,
-                        Status: status,
-                        'Payment Status': pay.status,
-                        Nights: roomBlock.reqNights || 0,
-                        'Room Nights': roomBlock.roomNights || 0,
-                        PAX: eventBlock.pax || 0,
-                        DDR: eventBlock.ddr ? formatSar(eventBlock.ddr, selectedCurrency) : '—',
-                        'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
-                        'Paid Amount': formatSar(pay.paid, selectedCurrency),
-                        'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
-                        'Event Revenue': isEv ? fmtNoTax(revNoTax.eventRevenue) : '—',
-                        'Rooms Revenue': fmtNoTax(revNoTax.roomsRevenue),
-                        'Rooms + Event': isEv ? fmtNoTax(roomsEvSum) : '—',
-                        Amount: formatSar(total, selectedCurrency),
-                    });
+                for (let si = 0; si < segs.length; si += 1) {
+                    const seg = segs[si];
+                    lineItemCount += 1;
+                    const tPart = si === 0 ? br0.transportRevenue : 0;
+                    const exNoTax = segmentLineTotalExTax(seg, tPart);
+                    const inclTax = lineAmountsExTaxToWithTax(seg.roomRev, seg.eventRev, tPart, propertyTaxes);
+                    const ddrSeg =
+                        seg.pax > 0 && seg.eventRev > 0
+                            ? seg.eventRev / seg.pax
+                            : 0;
+                    const roomNightsDisplay = seg.roomNights;
+                    const adrForCol =
+                        roomNightsDisplay > 0 && seg.roomRev > 0
+                            ? seg.roomRev / roomNightsDisplay
+                            : 0;
+                    const isFirstSeg = si === 0;
+
+                    totalAmount += exNoTax;
+                    totalAmountInclTax += inclTax;
+                    totalPax += seg.pax;
+                    totalRoomNights += roomNightsDisplay;
+                    totalRoomRevSeg += seg.roomRev;
+                    totalEventRevenue += seg.eventRev;
+                    if (selectedEntity === 'MICE') {
+                        totalMiceEventRevNoTax += seg.eventRev;
+                        totalMiceRoomsRevNoTax += seg.roomRev;
+                    }
+
+                    if (isFirstSeg) {
+                        totalPaid += pay.paid;
+                        totalUnpaid += pay.unpaid;
+                    }
+
+                    if (selectedEntity === 'MICE') {
+                        rows.push({
+                            'Request ID': r.id || '—',
+                            Line: seg.line,
+                            Client: client,
+                            'Request Type': requestTypeLabel(r.requestType),
+                            'Segment date': seg.displayDate,
+                            'Agenda start': seg.agendaStart || '—',
+                            'Agenda end': seg.agendaEnd || '—',
+                            'Agenda days': seg.agendaDays || 0,
+                            Status: status,
+                            'Payment Status': pay.status,
+                            PAX: seg.pax || 0,
+                            DDR: ddrSeg > 0 ? formatSar(ddrSeg, selectedCurrency) : '—',
+                            'Event Revenue': seg.eventRev > 0 ? formatSar(seg.eventRev, selectedCurrency) : '—',
+                            'Rooms Revenue': seg.roomRev > 0 ? formatSar(seg.roomRev, selectedCurrency) : '—',
+                            'Paid Amount': isFirstSeg ? formatSar(pay.paid, selectedCurrency) : '—',
+                            'Unpaid Amount': isFirstSeg ? formatSar(pay.unpaid, selectedCurrency) : '—',
+                            'Total (ex. tax)': formatSar(exNoTax, selectedCurrency),
+                            'Total (incl. tax)': formatSar(inclTax, selectedCurrency),
+                            Amount: formatSar(exNoTax, selectedCurrency),
+                        });
+                    } else {
+                        const isEv = isEventOrEventRoomsType(r);
+                        const fmtNoTax = (n: number) => formatSar(Number(n) || 0, selectedCurrency);
+                        const evShow = (isEv && seg.eventRev > 0) || (!isEv && false);
+                        rows.push({
+                            'Request ID': r.id || '—',
+                            Line: seg.line,
+                            Client: client,
+                            'Request Type': requestTypeLabel(r.requestType),
+                            Date: seg.displayDate,
+                            Status: status,
+                            'Payment Status': pay.status,
+                            Nights: seg.stayNights,
+                            'Room Nights': roomNightsDisplay,
+                            PAX: seg.pax,
+                            DDR: ddrSeg > 0 ? formatSar(ddrSeg, selectedCurrency) : '—',
+                            'AVG ADR': seg.roomRev > 0 && adrForCol > 0 ? formatSar(adrForCol, selectedCurrency) : '—',
+                            'Paid Amount': isFirstSeg ? formatSar(pay.paid, selectedCurrency) : '—',
+                            'Unpaid Amount': isFirstSeg ? formatSar(pay.unpaid, selectedCurrency) : '—',
+                            'Event Revenue': evShow ? fmtNoTax(seg.eventRev) : '—',
+                            'Rooms Revenue': fmtNoTax(seg.roomRev),
+                            'Rooms + Event': isEv && (seg.eventRev > 0 || seg.roomRev > 0)
+                                ? fmtNoTax(seg.roomRev + seg.eventRev)
+                                : '—',
+                            'Total (ex. tax)': formatSar(exNoTax, selectedCurrency),
+                            'Total (incl. tax)': formatSar(inclTax, selectedCurrency),
+                            Amount: formatSar(exNoTax, selectedCurrency),
+                        });
+                    }
                 }
             }
 
-            const avgAdr = totalRoomNights > 0 ? weightedAdrSum / totalRoomNights : 0;
-            const avgValue = requestCount > 0 ? totalAmount / requestCount : 0;
+            const avgAdr = totalRoomNights > 0 && totalRoomRevSeg > 0 ? totalRoomRevSeg / totalRoomNights : 0;
+            const avgValue = lineItemCount > 0 ? totalAmount / lineItemCount : 0;
             const avgDdr = totalPax > 0 ? totalEventRevenue / totalPax : 0;
 
             const baseSummary: Record<string, string | number> = {
-                [selectedEntity === 'MICE' ? 'Total MICE requests' : 'Total requests']: requestCount,
-                'Total value': formatSar(totalAmount, selectedCurrency),
-                'AVG Value': formatSar(avgValue, selectedCurrency),
+                'Line items': lineItemCount,
+                'Unique requests': typeSeen.size,
+                'Total value (ex. tax)': formatSar(totalAmount, selectedCurrency),
+                'Total value (incl. tax)': formatSar(totalAmountInclTax, selectedCurrency),
+                'AVG Value (per line)': formatSar(avgValue, selectedCurrency),
                 'Total PAX': totalPax.toLocaleString(),
                 'AVG DDR': formatSar(avgDdr, selectedCurrency),
-                'Total paid': formatSar(totalPaid, selectedCurrency),
-                'Total unpaid': formatSar(totalUnpaid, selectedCurrency),
+                'Total paid (recorded)': formatSar(totalPaid, selectedCurrency),
+                'Total unpaid (recorded)': formatSar(totalUnpaid, selectedCurrency),
             };
             if (selectedEntity === 'MICE') {
                 baseSummary['Event Revenue'] = formatSar(totalMiceEventRevNoTax, selectedCurrency);
                 baseSummary['Rooms Revenue'] = formatSar(totalMiceRoomsRevNoTax, selectedCurrency);
-                baseSummary['MICE total'] = formatSar(totalMiceEventRevNoTax + totalMiceRoomsRevNoTax, selectedCurrency);
+                baseSummary['MICE total (ex. tax)'] = formatSar(totalMiceEventRevNoTax + totalMiceRoomsRevNoTax, selectedCurrency);
             }
             if (selectedEntity === 'Requests') {
-                baseSummary['AVG ADR'] = formatSar(avgAdr, selectedCurrency);
+                baseSummary['AVG ADR (room lines)'] = formatSar(avgAdr, selectedCurrency);
                 baseSummary.Accommodation = typeCounter.accommodation || 0;
                 baseSummary['Event only'] = typeCounter.event || 0;
                 baseSummary['Event with rooms'] = typeCounter.event_rooms || 0;
@@ -764,6 +705,7 @@ export default function Reports({
                           'Line',
                           'Client',
                           'Request Type',
+                          'Segment date',
                           'Agenda start',
                           'Agenda end',
                           'Agenda days',
@@ -772,8 +714,11 @@ export default function Reports({
                           'PAX',
                           'DDR',
                           'Event Revenue',
+                          'Rooms Revenue',
                           'Paid Amount',
                           'Unpaid Amount',
+                          'Total (ex. tax)',
+                          'Total (incl. tax)',
                           'Amount',
                       ]
                     : [
@@ -794,6 +739,8 @@ export default function Reports({
                           'Event Revenue',
                           'Rooms Revenue',
                           'Rooms + Event',
+                          'Total (ex. tax)',
+                          'Total (incl. tax)',
                           'Amount',
                       ],
                 isVsLyMatrix: false,
@@ -867,11 +814,21 @@ export default function Reports({
         filters.vsLyByRequestSegment,
         filters.vsLyByAccountType,
         selectedCurrency,
+        propertyTaxes,
     ]);
 
     const previewData = reportPack.rows;
     const reportPackAny = reportPack as any;
     const isVsMatrixPack = Boolean(reportPackAny.isVsLyMatrix);
+    const vsSummaryEntries = useMemo(() => {
+        if (!isVsMatrixPack) return [] as Array<[string, string | number]>;
+        const y = reportPackAny.vsLyMeta?.year;
+        const ly = reportPackAny.vsLyMeta?.yearLy;
+        return [
+            ['Report year (CY)', y ?? '—'],
+            ['Vs last year (LY)', ly ?? '—'],
+        ];
+    }, [isVsMatrixPack, reportPackAny.vsLyMeta?.year, reportPackAny.vsLyMeta?.yearLy]);
 
     const vsLyRowsAll: VsLyMatrixRow[] = reportPackAny.vsLyRows || [];
     const vsLyColumnToggleItems = useMemo(() => {
@@ -930,7 +887,10 @@ export default function Reports({
             if (!vsRows.length) return;
             const stamp = new Date().toISOString().slice(0, 10);
             const y = reportPackAny.vsLyMeta?.year || 'year';
-            const base = `${selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice'}-vs-ly-${y}-${stamp}`;
+            const base =
+                selectedEntity === 'Full Report'
+                    ? `full-report-vs-ly-${y}-${stamp}`
+                    : `${selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice'}-vs-ly-${y}-${stamp}`;
             const meta = reportPackAny.vsLyMeta;
             const propName = activeProperty?.name || 'All properties';
             if (exportFormat === 'csv') {
@@ -1118,11 +1078,11 @@ export default function Reports({
                         </p>
                     </div>
                 ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 max-w-7xl mx-auto">
-                    <div className="lg:col-span-1 space-y-4">
+                <div className="grid grid-cols-1 gap-4 max-w-[96rem] mx-auto w-full">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <h3 className="text-sm font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Data Source</h3>
-                            <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
                                 {entities.map((entity) => {
                                     const Icon = entity.icon;
                                     const allowed = canReportsUseDataSource(currentUser, entity.id);
@@ -1132,14 +1092,14 @@ export default function Reports({
                                             type="button"
                                             disabled={!allowed}
                                             onClick={() => allowed && handleEntityChange(entity.id)}
-                                            className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${selectedEntity === entity.id ? 'border-2' : ''} disabled:opacity-40 disabled:cursor-not-allowed`}
+                                            className={`w-full flex items-center gap-2 p-2 rounded-lg border transition-all ${selectedEntity === entity.id ? 'border-2' : ''} disabled:opacity-40 disabled:cursor-not-allowed`}
                                             style={{
                                                 borderColor: selectedEntity === entity.id ? colors.primary : colors.border,
                                                 backgroundColor: selectedEntity === entity.id ? colors.primary + '10' : colors.bg,
                                             }}
                                         >
-                                            <Icon size={20} style={{ color: selectedEntity === entity.id ? colors.primary : colors.textMuted }} />
-                                            <span className="font-medium" style={{ color: colors.textMain }}>{entity.label}</span>
+                                            <Icon size={16} style={{ color: selectedEntity === entity.id ? colors.primary : colors.textMuted }} />
+                                            <span className="font-medium text-sm leading-tight" style={{ color: colors.textMain }}>{entity.label}</span>
                                         </button>
                                     );
                                 })}
@@ -1270,32 +1230,34 @@ export default function Reports({
                                     <p className="text-xs mb-2" style={{ color: colors.textMuted }}>
                                         Check which rows to include in the preview and in CSV, Excel, and PDF exports.
                                     </p>
-                                    {vsLyColumnToggleItems.map((item) => (
-                                        <label
-                                            key={item.key}
-                                            className="flex items-start gap-2 cursor-pointer rounded-md px-1 py-0.5 hover:bg-white/5"
-                                        >
-                                            <input
-                                                type="checkbox"
-                                                checked={!vsLyRowHidden.has(item.key)}
-                                                onChange={() => toggleVsLyRowInReport(item.key)}
-                                                className="w-4 h-4 rounded mt-0.5 shrink-0"
-                                                style={{ accentColor: colors.primary }}
-                                            />
-                                            <span className="text-xs leading-snug break-words" style={{ color: colors.textMain }}>
-                                                {item.isSectionHeader ? (
-                                                    <span className="font-bold uppercase tracking-wide" style={{ color: colors.primary }}>
-                                                        {item.label}
-                                                    </span>
-                                                ) : (
-                                                    item.label
-                                                )}
-                                            </span>
-                                        </label>
-                                    ))}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                        {vsLyColumnToggleItems.map((item) => (
+                                            <label
+                                                key={item.key}
+                                                className="flex items-start gap-2 cursor-pointer rounded-md px-1 py-0.5 hover:bg-white/5"
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={!vsLyRowHidden.has(item.key)}
+                                                    onChange={() => toggleVsLyRowInReport(item.key)}
+                                                    className="w-4 h-4 rounded mt-0.5 shrink-0"
+                                                    style={{ accentColor: colors.primary }}
+                                                />
+                                                <span className="text-xs leading-snug break-words" style={{ color: colors.textMain }}>
+                                                    {item.isSectionHeader ? (
+                                                        <span className="font-bold uppercase tracking-wide" style={{ color: colors.primary }}>
+                                                            {item.label}
+                                                        </span>
+                                                    ) : (
+                                                        item.label
+                                                    )}
+                                                </span>
+                                            </label>
+                                        ))}
+                                    </div>
                                 </div>
                             ) : (
-                            <div className="space-y-2">
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
                                 {availableColumns[selectedEntity]?.map((column: string) => (
                                     <label key={column} className="flex items-center gap-2 cursor-pointer">
                                         <input
@@ -1313,7 +1275,7 @@ export default function Reports({
                         </div>
                     </div>
 
-                    <div className="lg:col-span-2 space-y-4">
+                    <div className="space-y-4">
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                                 <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Data preview</h3>
@@ -1338,13 +1300,13 @@ export default function Reports({
 
                         {isVsMatrixPack && canUseSelectedSource && showPreview && vsLyRowsAll.length > 0 && (() => {
                             const vHead = vsLyRowsAll[0];
-                            const dataColCount = 4 * (vHead?.months?.length || 12) + 4;
+                            const dataColCount = 5 * (vHead?.months?.length || 12) + 5;
                             const itemAndDataColSpan = 1 + dataColCount;
                             return (
                             <div className="p-4 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                 <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Year vs last year (monthly)</h3>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                                    {Object.entries(reportPack.summary).map(([label, value]) => (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {vsSummaryEntries.map(([label, value]) => (
                                         <div key={label} className="p-3 rounded-lg border bg-black/10" style={{ borderColor: colors.border }}>
                                             <p className="text-[10px] font-bold uppercase opacity-60" style={{ color: colors.textMuted }}>{label}</p>
                                             <p className="text-sm font-bold mt-1 break-words" style={{ color: colors.textMain }}>{String(value)}</p>
@@ -1360,7 +1322,7 @@ export default function Reports({
                                     className="overflow-x-auto rounded-lg border"
                                     style={{ borderColor: colors.border, backgroundColor: colors.card }}
                                 >
-                                    <table className="w-full min-w-[1400px] text-xs" style={{ color: colors.textMain }}>
+                                    <table className="w-full min-w-[1750px] text-xs" style={{ color: colors.textMain }}>
                                         <thead>
                                             <tr style={{ backgroundColor: colors.bg }}>
                                                 <th
@@ -1373,7 +1335,7 @@ export default function Reports({
                                                 {vHead.months.map((mo: { month: number; monthLabel: string }) => (
                                                     <th
                                                         key={mo.month}
-                                                        colSpan={4}
+                                                        colSpan={5}
                                                         className="text-center p-2 border-b font-bold"
                                                         style={{
                                                             color: colors.primary,
@@ -1385,7 +1347,7 @@ export default function Reports({
                                                     </th>
                                                 ))}
                                                 <th
-                                                    colSpan={4}
+                                                    colSpan={5}
                                                     className="text-center p-2 font-bold"
                                                     style={{
                                                         color: colors.primary,
@@ -1423,9 +1385,15 @@ export default function Reports({
                                                         >
                                                             OTB
                                                         </th>
+                                                        <th
+                                                            className="p-1.5 text-[10px] font-semibold"
+                                                            style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}
+                                                        >
+                                                            CY+OTB v LY
+                                                        </th>
                                                     </React.Fragment>
                                                 ))}
-                                                {['CY', 'LY', '%', 'OTB'].map((h) => (
+                                                {['CY', 'LY', '%', 'OTB', 'CY+OTB v LY'].map((h) => (
                                                     <th
                                                         key={h}
                                                         className="p-1.5 text-[10px] font-bold"
@@ -1475,12 +1443,14 @@ export default function Reports({
                                                             <td className="p-1.5 font-mono align-top whitespace-pre-wrap" style={{ color: colors.textMain, maxWidth: '8rem' }}>{mo.ly}</td>
                                                             <td className="p-1.5 font-mono align-top font-bold" style={pctClass(mo.pct)}>{mo.pct}</td>
                                                             <td className="p-1.5 font-mono align-top whitespace-pre-wrap" style={{ color: colors.textMain, maxWidth: '8rem' }}>{mo.otb}</td>
+                                                            <td className="p-1.5 font-mono align-top font-bold" style={pctClass(mo.cyOtbVsLyPct)}>{mo.cyOtbVsLyPct}</td>
                                                         </React.Fragment>
                                                     ))}
                                                     <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.cy}</td>
                                                     <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.ly}</td>
                                                     <td className="p-1.5 font-mono font-bold" style={{ ...pctClass(r.ytd.pct), backgroundColor: ytdBg }}>{r.ytd.pct}</td>
                                                     <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.otb}</td>
+                                                    <td className="p-1.5 font-mono font-bold" style={{ ...pctClass(r.ytd.cyOtbVsLyPct), backgroundColor: ytdBg }}>{r.ytd.cyOtbVsLyPct}</td>
                                                 </tr>
                                                 );
                                             })}
@@ -1581,3 +1551,4 @@ export default function Reports({
         </div>
     );
 }
+

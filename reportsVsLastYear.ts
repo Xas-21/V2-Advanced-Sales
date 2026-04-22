@@ -8,6 +8,8 @@ import {
     UNMAPPED_TAXONOMY_LABEL,
 } from './propertyTaxonomy';
 
+export type VsLyKind = 'rooms' | 'mice' | 'full';
+
 const MONTHS = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ] as const;
@@ -43,6 +45,214 @@ function bucketYmdForRequest(r: any): string {
     return requestPrimaryDate(r);
 }
 
+function dateAtYmd(ymd: string): Date | null {
+    const s = String(ymd || '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const d = new Date(`${s}T12:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** [arrival, departure) hotel nights — each calendar night. */
+function forEachStayNight(arrival: Date, departure: Date, fn: (d: Date) => void) {
+    const c = new Date(arrival.getTime());
+    c.setHours(0, 0, 0, 0);
+    const end = new Date(departure.getTime());
+    end.setHours(0, 0, 0, 0);
+    if (!(end.getTime() > c.getTime())) return;
+    const cur = new Date(c.getTime());
+    while (cur < end) {
+        fn(new Date(cur.getTime()));
+        cur.setDate(cur.getDate() + 1);
+    }
+}
+
+function countNightsInStayWindow(arrival: Date, departure: Date): number {
+    let n = 0;
+    forEachStayNight(arrival, departure, () => {
+        n += 1;
+    });
+    return n;
+}
+
+/**
+ * Rooms revenue and room-nights in a specific calendar month (per room line; series groups each use their own window).
+ * Falls back to prorated {@link computeRequestRevenueBreakdownNoTax} across check-in→check-out nights, then single bucket month.
+ */
+function getRoomsRevAndNightsInMonth(
+    r: any,
+    year: number,
+    month1to12: number
+): { rev: number; roomNights: number } {
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    const reqIn = parseYmd(r?.checkIn);
+    const reqOut = parseYmd(r?.checkOut);
+    const reqA = dateAtYmd(reqIn);
+    const reqB = dateAtYmd(reqOut);
+    const reqNights =
+        reqA && reqB && reqB.getTime() > reqA.getTime() ? countNightsInStayWindow(reqA, reqB) : 0;
+    const bucket = parseYmd(bucketYmdForRequest(r));
+    let rev = 0;
+    let roomNights = 0;
+    let hasUndatedRoomRows = false;
+    for (const row of rooms) {
+        const count = Math.max(0, Number(row?.count || 0));
+        const rate = Number(row?.rate || 0);
+        if (count <= 0) continue;
+        const rowArrival = parseYmd(row?.arrival);
+        const rowDeparture = parseYmd(row?.departure);
+        if (!rowArrival || !rowDeparture) {
+            hasUndatedRoomRows = true;
+            if (bucket) {
+                const yb = parseInt(bucket.slice(0, 4), 10);
+                const mo = parseInt(bucket.slice(5, 7), 10);
+                if (yb === year && mo === month1to12 && reqNights > 0) {
+                    rev += count * rate * reqNights;
+                    roomNights += count * reqNights;
+                }
+            }
+            continue;
+        }
+        const inStr = parseYmd(rowArrival || reqIn);
+        const outStr = parseYmd(rowDeparture || reqOut);
+        if (!inStr || !outStr) continue;
+        const a = dateAtYmd(inStr);
+        const b = dateAtYmd(outStr);
+        if (!a || !b) continue;
+        forEachStayNight(a, b, (d) => {
+            if (d.getFullYear() === year && d.getMonth() + 1 === month1to12) {
+                rev += count * rate;
+                roomNights += count;
+            }
+        });
+    }
+    if (rev > 0 || roomNights > 0) {
+        return { rev, roomNights };
+    }
+    if (rooms.length > 0 && hasUndatedRoomRows) {
+        return { rev: 0, roomNights: 0 };
+    }
+    const ntax = computeRequestRevenueBreakdownNoTax(r);
+    if (ntax.roomsRevenue <= 0) {
+        return { rev: 0, roomNights: 0 };
+    }
+    const a = dateAtYmd(parseYmd(r?.checkIn));
+    const b = dateAtYmd(parseYmd(r?.checkOut));
+    if (a && b && b.getTime() > a.getTime()) {
+        const totalN = countNightsInStayWindow(a, b);
+        if (totalN > 0) {
+            const perNight = ntax.roomsRevenue / totalN;
+            const br = calculateRoomBlockForReport(r);
+            const rnPerCalNight = br.roomNights / totalN;
+            forEachStayNight(a, b, (d) => {
+                if (d.getFullYear() === year && d.getMonth() + 1 === month1to12) {
+                    rev += perNight;
+                    roomNights += rnPerCalNight;
+                }
+            });
+            if (rev > 0 || roomNights > 0) {
+                return { rev, roomNights };
+            }
+        }
+    }
+    if (bucket) {
+        const yb = parseInt(bucket.slice(0, 4), 10);
+        const mo = parseInt(bucket.slice(5, 7), 10);
+        if (yb === year && mo === month1to12) {
+            const br = calculateRoomBlockForReport(r);
+            return { rev: ntax.roomsRevenue, roomNights: br.roomNights };
+        }
+    }
+    return { rev: 0, roomNights: 0 };
+}
+
+/** Event revenue in calendar month: each agenda day gets (rate*pax+rental); multi-day = rowCost per calendar day. */
+function getEventRevInMonth(r: any, year: number, month1to12: number): number {
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    let ev = 0;
+    for (const item of agenda) {
+        if (!item || typeof item !== 'object') continue;
+        const startS = parseYmd(item.startDate);
+        const endS = parseYmd(item.endDate || item.startDate);
+        if (!startS) continue;
+        const start = dateAtYmd(startS);
+        const end = dateAtYmd(endS || startS);
+        if (!start || !end) continue;
+        const ms = end.getTime() - start.getTime();
+        const rowDays = Number.isNaN(ms) ? 1 : Math.max(1, Math.floor(ms / 86400000) + 1);
+        const rowCost = Number(item.rate || 0) * Number(item.pax || 0) + Number(item.rental || 0);
+        const c = new Date(start.getTime());
+        c.setHours(0, 0, 0, 0);
+        const endInc = new Date(end.getTime());
+        endInc.setHours(0, 0, 0, 0);
+        const cursor = new Date(c.getTime());
+        while (cursor <= endInc) {
+            if (cursor.getFullYear() === year && cursor.getMonth() + 1 === month1to12) {
+                ev += rowCost;
+            }
+            cursor.setDate(cursor.getDate() + 1);
+        }
+    }
+    if (ev > 0) return ev;
+    const ntax = computeRequestRevenueBreakdownNoTax(r);
+    if (ntax.eventRevenue > 0) {
+        const b = parseYmd(bucketYmdForRequest(r));
+        if (b) {
+            const y = parseInt(b.slice(0, 4), 10);
+            const mo = parseInt(b.slice(5, 7), 10);
+            if (y === year && mo === month1to12) return ntax.eventRevenue;
+        }
+    }
+    return 0;
+}
+
+function getEventPaxInMonth(r: any, year: number, month1to12: number): number {
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    let w = 0;
+    for (const item of agenda) {
+        if (!item || typeof item !== 'object') continue;
+        const startS = parseYmd(item.startDate);
+        const endS = parseYmd(item.endDate || item.startDate);
+        if (!startS) continue;
+        const start = dateAtYmd(startS);
+        const end = dateAtYmd(endS || startS);
+        if (!start || !end) continue;
+        const ms = end.getTime() - start.getTime();
+        const rowDays = Number.isNaN(ms) ? 1 : Math.max(1, Math.floor(ms / 86400000) + 1);
+        let inMonth = 0;
+        const cursor = new Date(start.getTime());
+        cursor.setHours(0, 0, 0, 0);
+        const endInc = new Date(end.getTime());
+        endInc.setHours(0, 0, 0, 0);
+        while (cursor <= endInc) {
+            if (cursor.getFullYear() === year && cursor.getMonth() + 1 === month1to12) inMonth += 1;
+            cursor.setDate(cursor.getDate() + 1);
+        }
+        if (inMonth > 0 && rowDays > 0) {
+            w += (Number(item.pax || 0) * inMonth) / rowDays;
+        }
+    }
+    return w;
+}
+
+function requestHasRoomsActivityInMonth(r: any, year: number, month1to12: number): boolean {
+    return getRoomsRevAndNightsInMonth(r, year, month1to12).roomNights > 0;
+}
+
+function requestHasMiceActivityInMonth(r: any, year: number, month1to12: number): boolean {
+    if (getRoomsRevAndNightsInMonth(r, year, month1to12).rev > 0) return true;
+    if (getEventRevInMonth(r, year, month1to12) > 0) return true;
+    return false;
+}
+
+function requestTouchesYear(r: any, y: number, kind: VsLyKind): boolean {
+    for (let m = 1; m <= 12; m += 1) {
+        if (kind === 'rooms' ? requestHasRoomsActivityInMonth(r, y, m) : requestHasMiceActivityInMonth(r, y, m)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function isExcludedCancelled(r: any): boolean {
     const s = String(r?.status || '')
         .trim()
@@ -57,12 +267,16 @@ function isDefAct(r: any): boolean {
     return s === 'definite' || s === 'actual';
 }
 
+/**
+ * “Pipeline / OTB” = every non-won, non-actualized request (same bucket as the rest of the hotel after D&A),
+ * not only inquiry / accepted / tentative. Aligns with dashboard + Requests report: all non-excluded
+ * statuses that are not Definite or Actual (excl. cancelled and lost; anything else, e.g. custom DB status,
+ * counts here so it is not dropped from the matrix).
+ */
 function isOtbPipeline(r: any): boolean {
-    const s = String(r?.status || '')
-        .trim()
-        .toLowerCase();
-    if (s === 'cancelled' || s === 'lost') return false;
-    return s === 'inquiry' || s === 'draft' || s === 'accepted' || s === 'tentative';
+    if (isExcludedCancelled(r)) return false;
+    if (isDefAct(r)) return false;
+    return true;
 }
 
 function asNumber(v: any): number {
@@ -191,7 +405,10 @@ function fmtPct(cy: number, ly: number): string {
     return '-';
 }
 
-export type VsLyKind = 'rooms' | 'mice';
+/** % change of (definite+actual + OTB pipeline) vs same month LY (additive metrics only). */
+function fmtCyOtbVsLyPct(cy: number, otb: number, ly: number): string {
+    return fmtPct(cy + otb, ly);
+}
 
 export interface VsLyMonthCol {
     month: number;
@@ -202,8 +419,10 @@ export interface VsLyMonthCol {
     ly: string;
     /** % change vs LY (numeric rows only) */
     pct: string;
-    /** OTB: Inquiry, Accepted, Tentative (chosen year, same month) */
+    /** OTB: non–Definite/Actual pipeline (all other non-cancelled lost-excluded statuses; chosen year, same month) */
     otb: string;
+    /** (CY D&A + OTB) vs LY D&A — % (additive rows only; '-' for non-additive e.g. ADR) */
+    cyOtbVsLyPct: string;
 }
 
 export interface VsLyYtdCol {
@@ -211,6 +430,7 @@ export interface VsLyYtdCol {
     ly: string;
     pct: string;
     otb: string;
+    cyOtbVsLyPct: string;
 }
 
 export interface VsLyMatrixRow {
@@ -271,20 +491,20 @@ function segmentKeyForRequest(
     );
 }
 
-function collectByMonthYear(
+function collectRequestsTouchingMonth(
     pool: any[],
     year: number,
     month1to12: number,
-    statusPick: (r: any) => boolean
+    statusPick: (r: any) => boolean,
+    kind: VsLyKind
 ) {
     return pool.filter((r) => {
         if (isExcludedCancelled(r)) return false;
         if (!statusPick(r)) return false;
-        const ymd = bucketYmdForRequest(r);
-        if (!ymd || ymd.length < 10) return false;
-        const y = parseInt(ymd.slice(0, 4), 10);
-        const m = parseInt(ymd.slice(5, 7), 10);
-        return y === year && m === month1to12;
+        if (kind === 'rooms') {
+            return requestHasRoomsActivityInMonth(r, year, month1to12);
+        }
+        return requestHasMiceActivityInMonth(r, year, month1to12);
     });
 }
 
@@ -300,15 +520,20 @@ function buildSegMaps(reqs: any[], accounts: any[], which: 'account' | 'request'
     return map;
 }
 
-function roomsMetrics(reqs: any[], accounts: any[], _currency: CurrencyCode) {
-    const rb = (r: any) => calculateRoomBlockForReport(r);
+/** Definite/Actual or OTB slice for one calendar month (revenue prorated by night / agenda day). */
+function roomsMetrics(
+    reqs: any[],
+    accounts: any[],
+    _currency: CurrencyCode,
+    year: number,
+    month1to12: number
+) {
     let roomNights = 0;
     let roomsRev = 0;
     for (const r of reqs) {
-        const br = rb(r);
-        const ntax = computeRequestRevenueBreakdownNoTax(r);
-        roomNights += br.roomNights;
-        roomsRev += ntax.roomsRevenue;
+        const s = getRoomsRevAndNightsInMonth(r, year, month1to12);
+        roomNights += s.roomNights;
+        roomsRev += s.rev;
     }
     const adr = roomNights > 0 ? roomsRev / roomNights : 0;
     const count = reqs.length;
@@ -316,24 +541,66 @@ function roomsMetrics(reqs: any[], accounts: any[], _currency: CurrencyCode) {
     return { rev: roomsRev, roomNights, adr, count, avg, acc: buildSegMaps(reqs, accounts, 'account'), req: buildSegMaps(reqs, accounts, 'request') };
 }
 
-function miceMetrics(reqs: any[], accounts: any[], _currency: CurrencyCode) {
+function miceMetrics(
+    reqs: any[],
+    accounts: any[],
+    _currency: CurrencyCode,
+    year: number,
+    month1to12: number
+) {
     let eventRev = 0;
     let roomsRev = 0;
     let pax = 0;
     let roomNights = 0;
     for (const r of reqs) {
-        const n = computeRequestRevenueBreakdownNoTax(r);
-        eventRev += n.eventRevenue;
-        roomsRev += n.roomsRevenue;
-        pax += calculateEventPax(r);
-        const br = calculateRoomBlockForReport(r);
-        roomNights += br.roomNights;
+        const s = getRoomsRevAndNightsInMonth(r, year, month1to12);
+        roomsRev += s.rev;
+        eventRev += getEventRevInMonth(r, year, month1to12);
+        pax += getEventPaxInMonth(r, year, month1to12);
+        roomNights += s.roomNights;
     }
     const comb = eventRev + roomsRev;
     const count = reqs.length;
     const adr = roomNights > 0 ? roomsRev / roomNights : 0;
     const avg = count > 0 ? comb / count : 0;
     return { eventRev, roomsRev, comb, pax, adr, roomNights, count, avg, acc: buildSegMaps(reqs, accounts, 'account'), req: buildSegMaps(reqs, accounts, 'request') };
+}
+
+function roomsMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number) {
+    let roomNights = 0;
+    let roomsRev = 0;
+    for (let mo = 1; mo <= 12; mo += 1) {
+        for (const r of pool) {
+            const s = getRoomsRevAndNightsInMonth(r, y, mo);
+            roomNights += s.roomNights;
+            roomsRev += s.rev;
+        }
+    }
+    const adr = roomNights > 0 ? roomsRev / roomNights : 0;
+    const count = pool.length;
+    const avg = count > 0 ? roomsRev / count : 0;
+    return { rev: roomsRev, roomNights, adr, count, avg, acc: buildSegMaps(pool, accounts, 'account'), req: buildSegMaps(pool, accounts, 'request') };
+}
+
+function miceMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number) {
+    let eventRev = 0;
+    let roomsRev = 0;
+    let pax = 0;
+    let roomNights = 0;
+    for (let mo = 1; mo <= 12; mo += 1) {
+        for (const r of pool) {
+            const s = getRoomsRevAndNightsInMonth(r, y, mo);
+            roomsRev += s.rev;
+            eventRev += getEventRevInMonth(r, y, mo);
+            pax += getEventPaxInMonth(r, y, mo);
+            roomNights += s.roomNights;
+        }
+    }
+    const comb = eventRev + roomsRev;
+    const count = pool.length;
+    const adr = roomNights > 0 ? roomsRev / roomNights : 0;
+    const avg = count > 0 ? comb / count : 0;
+    return { eventRev, roomsRev, comb, pax, adr, roomNights, count, avg, acc: buildSegMaps(pool, accounts, 'account'), req: buildSegMaps(pool, accounts, 'request') };
 }
 
 function filterTypeRooms(r: any) {
@@ -384,7 +651,7 @@ function countInSegment(
     ).length;
 }
 
-/** Rooms vs LY: rooms revenue only. MICE vs LY segment totals: events + rooms (no transport). */
+/** Rooms vs LY: rooms revenue only. MICE vs LY segment totals: events + rooms (no transport), prorated by month. */
 function sumSegmentRevenue(
     reqs: any[],
     seg: string,
@@ -392,7 +659,9 @@ function sumSegmentRevenue(
     accounts: any[],
     revBasis: 'rooms' | 'comb',
     propertyAccountTypes: string[],
-    propertyRequestSegments: string[]
+    propertyRequestSegments: string[],
+    year: number,
+    month1to12: number
 ): number {
     let sum = 0;
     for (const r of reqs) {
@@ -401,9 +670,12 @@ function sumSegmentRevenue(
         ) {
             continue;
         }
-        const n = computeRequestRevenueBreakdownNoTax(r);
-        const v = revBasis === 'rooms' ? n.roomsRevenue : n.roomsRevenue + n.eventRevenue;
-        sum += v;
+        const rooms = getRoomsRevAndNightsInMonth(r, year, month1to12).rev;
+        if (revBasis === 'rooms') {
+            sum += rooms;
+        } else {
+            sum += rooms + getEventRevInMonth(r, year, month1to12);
+        }
     }
     return sum;
 }
@@ -444,6 +716,7 @@ function makeSectionHeaderRow(id: string, label: string): VsLyMatrixRow {
             ly: '',
             pct: '',
             otb: '',
+            cyOtbVsLyPct: '',
         });
     }
     return {
@@ -451,7 +724,7 @@ function makeSectionHeaderRow(id: string, label: string): VsLyMatrixRow {
         label,
         isNumeric: false,
         months,
-        ytd: { cy: '', ly: '', pct: '', otb: '' },
+        ytd: { cy: '', ly: '', pct: '', otb: '', cyOtbVsLyPct: '' },
         rowKind: 'sectionHeader',
     };
 }
@@ -465,7 +738,9 @@ function buildSegmentRevenueRows(
     currency: CurrencyCode,
     revBasis: 'rooms' | 'comb',
     propertyAccountTypes: string[],
-    propertyRequestSegments: string[]
+    propertyRequestSegments: string[],
+    yearCy: number,
+    yearLy: number
 ): VsLyMatrixRow[] {
     const propList = which === 'account' ? propertyAccountTypes : propertyRequestSegments;
     const names = orderedSegmentRowNames(
@@ -491,7 +766,9 @@ function buildSegmentRevenueRows(
                 accounts,
                 revBasis,
                 propertyAccountTypes,
-                propertyRequestSegments
+                propertyRequestSegments,
+                yearCy,
+                m
             );
             const revLy = sumSegmentRevenue(
                 dLy,
@@ -500,7 +777,9 @@ function buildSegmentRevenueRows(
                 accounts,
                 revBasis,
                 propertyAccountTypes,
-                propertyRequestSegments
+                propertyRequestSegments,
+                yearLy,
+                m
             );
             const revO = sumSegmentRevenue(
                 otb,
@@ -509,7 +788,9 @@ function buildSegmentRevenueRows(
                 accounts,
                 revBasis,
                 propertyAccountTypes,
-                propertyRequestSegments
+                propertyRequestSegments,
+                yearCy,
+                m
             );
             tCy += revCy;
             tLy += revLy;
@@ -521,6 +802,7 @@ function buildSegmentRevenueRows(
                 ly: fmtMoney(revLy, currency),
                 pct: fmtPct(revCy, revLy),
                 otb: fmtMoney(revO, currency),
+                cyOtbVsLyPct: fmtCyOtbVsLyPct(revCy, revO, revLy),
             });
         }
         const segLabel = String(seg).trim() || (which === 'account' ? 'Account' : 'Segment');
@@ -534,6 +816,7 @@ function buildSegmentRevenueRows(
                 ly: fmtMoney(tLy, currency),
                 pct: fmtPct(tCy, tLy),
                 otb: fmtMoney(tO, currency),
+                cyOtbVsLyPct: fmtCyOtbVsLyPct(tCy, tO, tLy),
             },
             segmentGroupKey: `${which === 'account' ? 'acc' : 'req'}:${segLabel}`,
             rowKind: which === 'account' ? 'segmentAccountRev' : 'segmentRequestRev',
@@ -581,6 +864,7 @@ function buildSegmentCountRows(
                 ly: String(cLy),
                 pct: fmtPct(cCy, cLy),
                 otb: String(cO),
+                cyOtbVsLyPct: fmtCyOtbVsLyPct(cCy, cO, cLy),
             });
         }
         const segLabelCt = String(seg).trim() || (which === 'account' ? 'Account' : 'Segment');
@@ -594,6 +878,7 @@ function buildSegmentCountRows(
                 ly: String(tLy),
                 pct: fmtPct(tCy, tLy),
                 otb: String(tO),
+                cyOtbVsLyPct: fmtCyOtbVsLyPct(tCy, tO, tLy),
             },
             segmentGroupKey: `${which === 'account' ? 'acc' : 'req'}:${segLabelCt}`,
             rowKind: which === 'account' ? 'segmentAccountCount' : 'segmentRequestCount',
@@ -602,7 +887,13 @@ function buildSegmentCountRows(
     return out;
 }
 
-type MetricsPickR = (a: any, b: any, o: any) => { cy: string; ly: string; pct: string; otb: string };
+type MetricsPickR = (a: any, b: any, o: any) => {
+    cy: string;
+    ly: string;
+    pct: string;
+    otb: string;
+    cyOtbVsLyPct: string;
+};
 
 function buildCoreRow(
     id: string,
@@ -615,14 +906,25 @@ function buildCoreRow(
     rowKind: VsLyMatrixRow['rowKind'],
     ytdFullCy: any,
     ytdFullLy: any,
-    ytdFullOtb: any
+    ytdFullOtb: any,
+    yearCy: number,
+    yearLy: number
 ): VsLyMatrixRow {
     const months: VsLyMonthCol[] = [];
     for (let m = 1; m <= 12; m += 1) {
         const { dCy, dLy, otb } = def(m);
-        const a = kind === 'rooms' ? roomsMetrics(dCy, accounts, currency) : miceMetrics(dCy, accounts, currency);
-        const b = kind === 'rooms' ? roomsMetrics(dLy, accounts, currency) : miceMetrics(dLy, accounts, currency);
-        const c = kind === 'rooms' ? roomsMetrics(otb, accounts, currency) : miceMetrics(otb, accounts, currency);
+        const a =
+            kind === 'rooms'
+                ? roomsMetrics(dCy, accounts, currency, yearCy, m)
+                : miceMetrics(dCy, accounts, currency, yearCy, m);
+        const b =
+            kind === 'rooms'
+                ? roomsMetrics(dLy, accounts, currency, yearLy, m)
+                : miceMetrics(dLy, accounts, currency, yearLy, m);
+        const c =
+            kind === 'rooms'
+                ? roomsMetrics(otb, accounts, currency, yearCy, m)
+                : miceMetrics(otb, accounts, currency, yearCy, m);
         const cell = pick(a, b, c);
         months.push({ month: m, monthLabel: MONTHS[m - 1], ...cell });
     }
@@ -665,31 +967,49 @@ export function buildVsLyMatrix(
     const pool = allRequests.filter((r) => (kind === 'rooms' ? filterTypeRooms(r) : filterTypeMice(r)));
 
     const def = (m: number) => {
-        const dCy = collectByMonthYear(pool, selectedYear, m, (r) => isDefAct(r) && !isExcludedCancelled(r));
-        const dLy = collectByMonthYear(pool, yearLy, m, (r) => isDefAct(r) && !isExcludedCancelled(r));
-        const otb = collectByMonthYear(pool, selectedYear, m, (r) => isOtbPipeline(r) && !isExcludedCancelled(r));
+        const dCy = collectRequestsTouchingMonth(
+            pool,
+            selectedYear,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            kind
+        );
+        const dLy = collectRequestsTouchingMonth(
+            pool,
+            yearLy,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            kind
+        );
+        const otb = collectRequestsTouchingMonth(
+            pool,
+            selectedYear,
+            m,
+            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+            kind
+        );
         return { dCy, dLy, otb };
     };
 
-    function inYearBucket(r: any, y: number): boolean {
-        const ymd = bucketYmdForRequest(r);
-        if (!ymd || ymd.length < 10) return false;
-        return parseInt(ymd.slice(0, 4), 10) === y;
-    }
-
     const ytdDefActCy = (y: number) =>
-        pool.filter((r) => !isExcludedCancelled(r) && isDefAct(r) && inYearBucket(r, y));
+        pool.filter(
+            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, y, kind)
+        );
     const ytdDefActLy = (y: number) =>
-        pool.filter((r) => !isExcludedCancelled(r) && isDefAct(r) && inYearBucket(r, y));
+        pool.filter(
+            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, y, kind)
+        );
     const ytdOtbY = (y: number) =>
-        pool.filter((r) => !isExcludedCancelled(r) && isOtbPipeline(r) && inYearBucket(r, y));
+        pool.filter(
+            (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, y, kind)
+        );
 
-    const roomsYtdCy = roomsMetrics(ytdDefActCy(selectedYear), accounts, currency);
-    const roomsYtdLy = roomsMetrics(ytdDefActLy(yearLy), accounts, currency);
-    const roomsYtdOtb = roomsMetrics(ytdOtbY(selectedYear), accounts, currency);
-    const miceYtdCy = miceMetrics(ytdDefActCy(selectedYear), accounts, currency);
-    const miceYtdLy = miceMetrics(ytdDefActLy(yearLy), accounts, currency);
-    const miceYtdOtb = miceMetrics(ytdOtbY(selectedYear), accounts, currency);
+    const roomsYtdCy = roomsMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear);
+    const roomsYtdLy = roomsMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy);
+    const roomsYtdOtb = roomsMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear);
+    const miceYtdCy = miceMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear);
+    const miceYtdLy = miceMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy);
+    const miceYtdOtb = miceMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear);
 
     const rows: VsLyMatrixRow[] = [];
 
@@ -708,7 +1028,9 @@ export function buildVsLyMatrix(
                     currency,
                     'rooms',
                     propertyAccountTypes,
-                    propertyRequestSegments
+                    propertyRequestSegments,
+                    selectedYear,
+                    yearLy
                 )
             );
         }
@@ -726,7 +1048,9 @@ export function buildVsLyMatrix(
                     currency,
                     'rooms',
                     propertyAccountTypes,
-                    propertyRequestSegments
+                    propertyRequestSegments,
+                    selectedYear,
+                    yearLy
                 )
             );
         }
@@ -743,11 +1067,14 @@ export function buildVsLyMatrix(
                     ly: fmtMoney(b.adr, currency),
                     pct: fmtPct(a.adr, b.adr),
                     otb: fmtMoney(o.adr, currency),
+                    cyOtbVsLyPct: '-',
                 }),
                 'core',
                 roomsYtdCy,
                 roomsYtdLy,
-                roomsYtdOtb
+                roomsYtdOtb,
+                selectedYear,
+                yearLy
             )
         );
         rows.push(
@@ -763,11 +1090,14 @@ export function buildVsLyMatrix(
                     ly: String(Math.round(b.roomNights || 0)),
                     pct: fmtPct(a.roomNights, b.roomNights),
                     otb: String(Math.round(o.roomNights || 0)),
+                    cyOtbVsLyPct: fmtCyOtbVsLyPct(a.roomNights || 0, o.roomNights || 0, b.roomNights || 0),
                 }),
                 'core',
                 roomsYtdCy,
                 roomsYtdLy,
-                roomsYtdOtb
+                roomsYtdOtb,
+                selectedYear,
+                yearLy
             )
         );
         rows.push(
@@ -783,11 +1113,14 @@ export function buildVsLyMatrix(
                     ly: fmtMoney(b.avg, currency),
                     pct: fmtPct(a.avg, b.avg),
                     otb: fmtMoney(o.avg, currency),
+                    cyOtbVsLyPct: '-',
                 }),
                 'core',
                 roomsYtdCy,
                 roomsYtdLy,
-                roomsYtdOtb
+                roomsYtdOtb,
+                selectedYear,
+                yearLy
             )
         );
         const lastPickRooms = (a: any, b: any, o: any) => ({
@@ -795,14 +1128,15 @@ export function buildVsLyMatrix(
             ly: fmtMoney(b.rev, currency),
             pct: fmtPct(a.rev, b.rev),
             otb: fmtMoney(o.rev, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(a.rev, o.rev, b.rev),
         });
         {
             const months: VsLyMonthCol[] = [];
             for (let m = 1; m <= 12; m += 1) {
                 const { dCy, dLy, otb } = def(m);
-                const a = roomsMetrics(dCy, accounts, currency);
-                const b = roomsMetrics(dLy, accounts, currency);
-                const c = roomsMetrics(otb, accounts, currency);
+                const a = roomsMetrics(dCy, accounts, currency, selectedYear, m);
+                const b = roomsMetrics(dLy, accounts, currency, yearLy, m);
+                const c = roomsMetrics(otb, accounts, currency, selectedYear, m);
                 const cell = lastPickRooms(a, b, c);
                 months.push({ month: m, monthLabel: MONTHS[m - 1], ...cell });
             }
@@ -862,11 +1196,14 @@ export function buildVsLyMatrix(
                     ly: String(b.count),
                     pct: fmtPct(a.count, b.count),
                     otb: String(o.count),
+                    cyOtbVsLyPct: fmtCyOtbVsLyPct(a.count, o.count, b.count),
                 }),
                 'core',
                 roomsYtdCy,
                 roomsYtdLy,
-                roomsYtdOtb
+                roomsYtdOtb,
+                selectedYear,
+                yearLy
             )
         );
     } else {
@@ -884,7 +1221,9 @@ export function buildVsLyMatrix(
                     currency,
                     'comb',
                     propertyAccountTypes,
-                    propertyRequestSegments
+                    propertyRequestSegments,
+                    selectedYear,
+                    yearLy
                 )
             );
         }
@@ -902,7 +1241,9 @@ export function buildVsLyMatrix(
                     currency,
                     'comb',
                     propertyAccountTypes,
-                    requestSegmentsForMatrix
+                    requestSegmentsForMatrix,
+                    selectedYear,
+                    yearLy
                 )
             );
         }
@@ -911,26 +1252,29 @@ export function buildVsLyMatrix(
             ly: fmtMoney(b.eventRev, currency),
             pct: fmtPct(a.eventRev, b.eventRev),
             otb: fmtMoney(o.eventRev, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(a.eventRev, o.eventRev, b.eventRev),
         });
         const lastPickMiceRooms = (a: any, b: any, o: any) => ({
             cy: fmtMoney(a.roomsRev, currency),
             ly: fmtMoney(b.roomsRev, currency),
             pct: fmtPct(a.roomsRev, b.roomsRev),
             otb: fmtMoney(o.roomsRev, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(a.roomsRev, o.roomsRev, b.roomsRev),
         });
         const lastPickComb = (a: any, b: any, o: any) => ({
             cy: fmtMoney(a.comb, currency),
             ly: fmtMoney(b.comb, currency),
             pct: fmtPct(a.comb, b.comb),
             otb: fmtMoney(o.comb, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(a.comb, o.comb, b.comb),
         });
         {
             const months: VsLyMonthCol[] = [];
             for (let m = 1; m <= 12; m += 1) {
                 const { dCy, dLy, otb } = def(m);
-                const a = miceMetrics(dCy, accounts, currency);
-                const b = miceMetrics(dLy, accounts, currency);
-                const c = miceMetrics(otb, accounts, currency);
+                const a = miceMetrics(dCy, accounts, currency, selectedYear, m);
+                const b = miceMetrics(dLy, accounts, currency, yearLy, m);
+                const c = miceMetrics(otb, accounts, currency, selectedYear, m);
                 months.push({ month: m, monthLabel: MONTHS[m - 1], ...lastPickEvt(a, b, c) });
             }
             const ytd = lastPickEvt(miceYtdCy, miceYtdLy, miceYtdOtb);
@@ -947,9 +1291,9 @@ export function buildVsLyMatrix(
             const months: VsLyMonthCol[] = [];
             for (let m = 1; m <= 12; m += 1) {
                 const { dCy, dLy, otb } = def(m);
-                const a = miceMetrics(dCy, accounts, currency);
-                const b = miceMetrics(dLy, accounts, currency);
-                const c = miceMetrics(otb, accounts, currency);
+                const a = miceMetrics(dCy, accounts, currency, selectedYear, m);
+                const b = miceMetrics(dLy, accounts, currency, yearLy, m);
+                const c = miceMetrics(otb, accounts, currency, selectedYear, m);
                 months.push({ month: m, monthLabel: MONTHS[m - 1], ...lastPickMiceRooms(a, b, c) });
             }
             const ytd = lastPickMiceRooms(miceYtdCy, miceYtdLy, miceYtdOtb);
@@ -966,9 +1310,9 @@ export function buildVsLyMatrix(
             const months: VsLyMonthCol[] = [];
             for (let m = 1; m <= 12; m += 1) {
                 const { dCy, dLy, otb } = def(m);
-                const a = miceMetrics(dCy, accounts, currency);
-                const b = miceMetrics(dLy, accounts, currency);
-                const c = miceMetrics(otb, accounts, currency);
+                const a = miceMetrics(dCy, accounts, currency, selectedYear, m);
+                const b = miceMetrics(dLy, accounts, currency, yearLy, m);
+                const c = miceMetrics(otb, accounts, currency, selectedYear, m);
                 months.push({ month: m, monthLabel: MONTHS[m - 1], ...lastPickComb(a, b, c) });
             }
             const ytd = lastPickComb(miceYtdCy, miceYtdLy, miceYtdOtb);
@@ -990,6 +1334,7 @@ export function buildVsLyMatrix(
                     ly: String(Math.round(b.pax || 0)),
                     pct: fmtPct(a.pax, b.pax),
                     otb: String(Math.round(o.pax || 0)),
+                    cyOtbVsLyPct: fmtCyOtbVsLyPct(a.pax || 0, o.pax || 0, b.pax || 0),
                 }),
             },
             {
@@ -1000,6 +1345,7 @@ export function buildVsLyMatrix(
                     ly: fmtMoney(b.adr, currency),
                     pct: fmtPct(a.adr, b.adr),
                     otb: fmtMoney(o.adr, currency),
+                    cyOtbVsLyPct: '-',
                 }),
             },
             {
@@ -1010,6 +1356,7 @@ export function buildVsLyMatrix(
                     ly: fmtMoney(b.avg, currency),
                     pct: fmtPct(a.avg, b.avg),
                     otb: fmtMoney(o.avg, currency),
+                    cyOtbVsLyPct: '-',
                 }),
             },
         ];
@@ -1026,7 +1373,9 @@ export function buildVsLyMatrix(
                     'core',
                     miceYtdCy,
                     miceYtdLy,
-                    miceYtdOtb
+                    miceYtdOtb,
+                    selectedYear,
+                    yearLy
                 )
             );
         }
@@ -1076,16 +1425,287 @@ export function buildVsLyMatrix(
                     ly: String(b.count),
                     pct: fmtPct(a.count, b.count),
                     otb: String(o.count),
+                    cyOtbVsLyPct: fmtCyOtbVsLyPct(a.count, o.count, b.count),
                 }),
                 'core',
                 miceYtdCy,
                 miceYtdLy,
-                miceYtdOtb
+                miceYtdOtb,
+                selectedYear,
+                yearLy
             )
         );
     }
 
     return { rows, yearLy };
+}
+
+/**
+ * One combined D&A + OTB row: same unduplication as standalone parts — Part A rooms + Part B event only.
+ * Does **not** add Part B "Total rooms revenue" / B room OTB (repeats event+rooms room $ in Part A).
+ */
+function buildGrandHotelCombinedRevenueRow(
+    allRequests: any[],
+    accounts: any[],
+    selectedYear: number,
+    yearLy: number,
+    currency: CurrencyCode
+): VsLyMatrixRow {
+    const poolRooms = allRequests.filter((r) => filterTypeRooms(r));
+    const poolMice = allRequests.filter((r) => filterTypeMice(r));
+    const defR = (m: number) => {
+        const dCy = collectRequestsTouchingMonth(
+            poolRooms,
+            selectedYear,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            'rooms'
+        );
+        const dLy = collectRequestsTouchingMonth(
+            poolRooms,
+            yearLy,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            'rooms'
+        );
+        return { dCy, dLy };
+    };
+    const defM = (m: number) => {
+        const dCy = collectRequestsTouchingMonth(
+            poolMice,
+            selectedYear,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            'mice'
+        );
+        const dLy = collectRequestsTouchingMonth(
+            poolMice,
+            yearLy,
+            m,
+            (r) => isDefAct(r) && !isExcludedCancelled(r),
+            'mice'
+        );
+        return { dCy, dLy };
+    };
+    const ytdRCy = poolRooms.filter(
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, selectedYear, 'rooms')
+    );
+    const ytdRLy = poolRooms.filter(
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, yearLy, 'rooms')
+    );
+    const ytdMCy = poolMice.filter(
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, selectedYear, 'mice')
+    );
+    const ytdMLy = poolMice.filter(
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, yearLy, 'mice')
+    );
+    const roomYtdCy = roomsMetricsYtd(ytdRCy, accounts, currency, selectedYear);
+    const roomYtdLy = roomsMetricsYtd(ytdRLy, accounts, currency, yearLy);
+    const evYtdCy = miceMetricsYtd(ytdMCy, accounts, currency, selectedYear);
+    const evYtdLy = miceMetricsYtd(ytdMLy, accounts, currency, yearLy);
+    const ytdOtbR = poolRooms.filter(
+        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, selectedYear, 'rooms')
+    );
+    const ytdOtbM = poolMice.filter(
+        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, selectedYear, 'mice')
+    );
+    const roomOtbYtd = roomsMetricsYtd(ytdOtbR, accounts, currency, selectedYear);
+    const evOtbYtd = miceMetricsYtd(ytdOtbM, accounts, currency, selectedYear);
+    const trYtdCy = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isDefAct(r));
+    const trYtdLy = transportRevenueYtdForRequests(allRequests, yearLy, (r) => isDefAct(r));
+    const trYtdOtb = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isOtbPipeline(r));
+    const tOtb = roomOtbYtd.rev + evOtbYtd.eventRev + trYtdOtb;
+    const months: VsLyMonthCol[] = [];
+    for (let m = 1; m <= 12; m += 1) {
+        const { dCy: dRCy, dLy: dRLy } = defR(m);
+        const { dCy: dMCy, dLy: dMLy } = defM(m);
+        const rvCy = roomsMetrics(dRCy, accounts, currency, selectedYear, m).rev;
+        const rvLy = roomsMetrics(dRLy, accounts, currency, yearLy, m).rev;
+        const eventCy = miceMetrics(dMCy, accounts, currency, selectedYear, m).eventRev;
+        const eventLy = miceMetrics(dMLy, accounts, currency, yearLy, m).eventRev;
+        const trCy = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r));
+        const trLy = transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r));
+        const gCy = rvCy + eventCy + trCy;
+        const gLy = rvLy + eventLy + trLy;
+        const otbR = collectRequestsTouchingMonth(
+            poolRooms,
+            selectedYear,
+            m,
+            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+            'rooms'
+        );
+        const otbM = collectRequestsTouchingMonth(
+            poolMice,
+            selectedYear,
+            m,
+            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+            'mice'
+        );
+        const oRv = roomsMetrics(otbR, accounts, currency, selectedYear, m).rev;
+        const oEv = miceMetrics(otbM, accounts, currency, selectedYear, m).eventRev;
+        const oTr = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r));
+        const oSum = oRv + oEv + oTr;
+        months.push({
+            month: m,
+            monthLabel: MONTHS[m - 1],
+            cy: fmtMoney(gCy, currency),
+            ly: fmtMoney(gLy, currency),
+            pct: fmtPct(gCy, gLy),
+            otb: fmtMoney(oSum, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(gCy, oSum, gLy),
+        });
+    }
+    const tCy = roomYtdCy.rev + evYtdCy.eventRev + trYtdCy;
+    const tLy = roomYtdLy.rev + evYtdLy.eventRev + trYtdLy;
+    return {
+        id: 'full-grand-hotel-total',
+        label: 'Total Hotel Revenue',
+        isNumeric: true,
+        months,
+        ytd: {
+            cy: fmtMoney(tCy, currency),
+            ly: fmtMoney(tLy, currency),
+            pct: fmtPct(tCy, tLy),
+            otb: fmtMoney(tOtb, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(tCy, tOtb, tLy),
+        },
+        rowKind: 'totalRevenue',
+        segmentGroupKey: 'full:grand:total',
+    };
+}
+
+function transportRevenueInMonthForRequests(
+    allRequests: any[],
+    year: number,
+    month1to12: number,
+    statusPick: (r: any) => boolean
+): number {
+    let sum = 0;
+    for (const r of allRequests) {
+        if (isExcludedCancelled(r) || !statusPick(r)) continue;
+        const b = parseYmd(bucketYmdForRequest(r));
+        if (!b) continue;
+        const y = parseInt(b.slice(0, 4), 10);
+        const mo = parseInt(b.slice(5, 7), 10);
+        if (y !== year || mo !== month1to12) continue;
+        sum += computeRequestRevenueBreakdownNoTax(r).transportRevenue;
+    }
+    return sum;
+}
+
+function transportRevenueYtdForRequests(
+    allRequests: any[],
+    year: number,
+    statusPick: (r: any) => boolean
+): number {
+    let sum = 0;
+    for (const r of allRequests) {
+        if (isExcludedCancelled(r) || !statusPick(r)) continue;
+        const b = parseYmd(bucketYmdForRequest(r));
+        if (!b) continue;
+        const y = parseInt(b.slice(0, 4), 10);
+        if (y !== year) continue;
+        sum += computeRequestRevenueBreakdownNoTax(r).transportRevenue;
+    }
+    return sum;
+}
+
+function buildOtherRevenueRow(
+    allRequests: any[],
+    selectedYear: number,
+    yearLy: number,
+    currency: CurrencyCode
+): VsLyMatrixRow {
+    const months: VsLyMonthCol[] = [];
+    let tCy = 0;
+    let tLy = 0;
+    let tOtb = 0;
+    for (let m = 1; m <= 12; m += 1) {
+        const cy = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r));
+        const ly = transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r));
+        const otb = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r));
+        tCy += cy;
+        tLy += ly;
+        tOtb += otb;
+        months.push({
+            month: m,
+            monthLabel: MONTHS[m - 1],
+            cy: fmtMoney(cy, currency),
+            ly: fmtMoney(ly, currency),
+            pct: fmtPct(cy, ly),
+            otb: fmtMoney(otb, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(cy, otb, ly),
+        });
+    }
+    return {
+        id: 'full-other-revenue',
+        label: 'Other Revenue',
+        isNumeric: true,
+        months,
+        ytd: {
+            cy: fmtMoney(tCy, currency),
+            ly: fmtMoney(tLy, currency),
+            pct: fmtPct(tCy, tLy),
+            otb: fmtMoney(tOtb, currency),
+            cyOtbVsLyPct: fmtCyOtbVsLyPct(tCy, tOtb, tLy),
+        },
+        rowKind: 'core',
+    };
+}
+
+/**
+ * CEO / executive pack: the exact same matrices as "Rooms vs LY" and "MICE vs LY", concatenated.
+ * No new formulas — only presentation. Event+rooms requests are included in both Part A and Part B
+ * (same as running the two reports separately); do not add the two section grand totals.
+ */
+function prefixVsLyMatrixPart(
+    part: 'rooms' | 'mice',
+    rows: VsLyMatrixRow[]
+): VsLyMatrixRow[] {
+    return rows.map((row) => ({
+        ...row,
+        id: `full-${part}-${row.id}`,
+        segmentGroupKey:
+            row.segmentGroupKey != null && String(row.segmentGroupKey).length
+                ? `full:${part}:${row.segmentGroupKey}`
+                : row.segmentGroupKey,
+    }));
+}
+
+export function buildFullVsLyMatrix(
+    allRequests: any[],
+    accounts: any[],
+    selectedYear: number,
+    currency: CurrencyCode,
+    opts: Partial<VsLyMatrixBuildOptions> = {}
+): { rows: VsLyMatrixRow[]; yearLy: number } {
+    const roomsR = buildVsLyMatrix('rooms', allRequests, accounts, selectedYear, currency, opts);
+    const miceR = buildVsLyMatrix('mice', allRequests, accounts, selectedYear, currency, opts);
+    const a = prefixVsLyMatrixPart('rooms', roomsR.rows);
+    const b = prefixVsLyMatrixPart('mice', miceR.rows);
+    const title = makeSectionHeaderRow('full-executive-intro', 'Full Report');
+    const partA = makeSectionHeaderRow('full-part-rooms', 'Part A — Rooms portfolio');
+    const partB = makeSectionHeaderRow('full-part-mice', 'Part B — MICE portfolio');
+    const yearLy = roomsR.yearLy;
+    const partC = makeSectionHeaderRow('full-part-other', 'C. Other Revenue');
+    const other = buildOtherRevenueRow(
+        allRequests,
+        selectedYear,
+        yearLy,
+        currency
+    );
+    const partD = makeSectionHeaderRow('full-part-grand', 'D. Total Hotel Revenue');
+    const grand = buildGrandHotelCombinedRevenueRow(
+        allRequests,
+        accounts,
+        selectedYear,
+        yearLy,
+        currency
+    );
+    return {
+        rows: [title, partA, ...a, partB, ...b, partC, other, partD, grand],
+        yearLy,
+    };
 }
 
 export function defaultVsReportYear(available: number[]): number {
@@ -1120,17 +1740,19 @@ export function exportVsLyMatrixCsv(
             `${m.monthLabel} ${meta.year} (CY)`,
             `${m.monthLabel} ${meta.yearLy} (LY)`,
             `${m.monthLabel} %`,
-            `${m.monthLabel} OTB`
+            `${m.monthLabel} OTB`,
+            `${m.monthLabel} CY+OTB vs LY %`
         );
     }
     h.push(
         `YTD ${meta.year} (CY)`,
         `YTD ${meta.yearLy} (LY)`,
         'YTD %',
-        'YTD OTB'
+        'YTD OTB',
+        'YTD CY+OTB vs LY %'
     );
     const lines: string[] = [h.map((x) => csvEscape(x)).join(',')];
-    const dataColCount = (rows[0]?.months?.length || 12) * 4 + 4;
+    const dataColCount = (rows[0]?.months?.length || 12) * 5 + 5;
     for (const row of rows) {
         if (row.rowKind === 'sectionHeader') {
             const cells = [csvEscape(row.label), ...Array(dataColCount).fill('""')];
@@ -1143,7 +1765,8 @@ export function exportVsLyMatrixCsv(
                 csvEscape(mo.cy),
                 csvEscape(mo.ly),
                 csvEscape(asciiSafeForExport(mo.pct)),
-                csvEscape(mo.otb)
+                csvEscape(mo.otb),
+                csvEscape(asciiSafeForExport(mo.cyOtbVsLyPct))
             );
         }
         const y = row.ytd;
@@ -1151,11 +1774,17 @@ export function exportVsLyMatrixCsv(
             csvEscape(y.cy),
             csvEscape(y.ly),
             csvEscape(asciiSafeForExport(y.pct)),
-            csvEscape(y.otb)
+            csvEscape(y.otb),
+            csvEscape(asciiSafeForExport(y.cyOtbVsLyPct))
         );
         lines.push(cells.map((c) => c).join(','));
     }
-    const title = `${meta.kind === 'rooms' ? 'Rooms vs LY' : 'MICE vs LY'} | ${propertyName}`;
+    const title =
+        meta.kind === 'rooms'
+            ? `Rooms vs LY | ${propertyName}`
+            : meta.kind === 'mice'
+              ? `MICE vs LY | ${propertyName}`
+              : `Full report (Rooms + MICE) vs LY | ${propertyName}`;
     return '\ufeff' + [`# ${title}`, ...lines].join('\r\n');
 }
 
@@ -1175,9 +1804,11 @@ export function exportVsLyMatrixExcelHtml(
     const headText = '#ffffff';
     const subHeadBg = '#e2e8f0';
     const ytdFill = '#f1f5f9';
-    const reportTitle = meta.kind === 'rooms' ? 'Rooms vs LY' : 'MICE vs LY';
+    const reportTitle =
+        meta.kind === 'rooms' ? 'Rooms vs LY' : meta.kind === 'mice' ? 'MICE vs LY' : 'Full report (Rooms + MICE) vs LY';
+    const fullDisclaimer = '';
     const nMo = rows[0]?.months?.length || 12;
-    const dataColCount = 4 * nMo + 4;
+    const dataColCount = 5 * nMo + 5;
     const tableColSpan = 1 + dataColCount;
 
     const pctTdStyle = (pctRaw: string) => {
@@ -1193,26 +1824,30 @@ export function exportVsLyMatrixExcelHtml(
 
     const monthCells = (mo: VsLyMonthCol) => {
         const s = pctTdStyle(mo.pct);
+        const s2 = pctTdStyle(mo.cyOtbVsLyPct);
         return [
             `<td style="${baseTd('white-space:pre-wrap;')}">${escHtml(mo.cy)}</td>`,
             `<td style="${baseTd('white-space:pre-wrap;')}">${escHtml(mo.ly)}</td>`,
             `<td style="${baseTd(s)}">${escHtml(asciiSafeForExport(mo.pct))}</td>`,
             `<td style="${baseTd('')}">${escHtml(mo.otb)}</td>`,
+            `<td style="${baseTd(s2)}">${escHtml(asciiSafeForExport(mo.cyOtbVsLyPct))}</td>`,
         ].join('');
     };
     const ytdCells = (row: VsLyMatrixRow) => {
         const y = row.ytd;
         const s = pctTdStyle(y.pct);
+        const s2 = pctTdStyle(y.cyOtbVsLyPct);
         return [
             `<td style="${baseTd(`background:${ytdFill};`)}">${escHtml(y.cy)}</td>`,
             `<td style="${baseTd(`background:${ytdFill};`)}">${escHtml(y.ly)}</td>`,
             `<td style="${baseTd(`background:${ytdFill};` + s)}">${escHtml(asciiSafeForExport(y.pct))}</td>`,
             `<td style="${baseTd(`background:${ytdFill};`)}">${escHtml(y.otb)}</td>`,
+            `<td style="${baseTd(`background:${ytdFill};` + s2)}">${escHtml(asciiSafeForExport(y.cyOtbVsLyPct))}</td>`,
         ].join('');
     };
 
     const subHeads = (ytd: boolean) =>
-        ['CY', 'LY', '% v LY', 'OTB']
+        ['CY', 'LY', '% v LY', 'OTB', 'CY+OTB v LY %']
             .map(
                 (lab) =>
                     `<th style="border:1px solid ${border};padding:4px 6px;background:${subHeadBg};color:${text};font:8px Arial;font-weight:700;">${escHtml(
@@ -1226,13 +1861,13 @@ export function exportVsLyMatrixExcelHtml(
     ];
     for (const m of rows[0]?.months || []) {
         headRow1.push(
-            `<th colspan="4" style="border:1px solid ${border};padding:6px 8px;background:${headBg};color:${headText};font:10px Arial;">${escHtml(
+            `<th colspan="5" style="border:1px solid ${border};padding:6px 8px;background:${headBg};color:${headText};font:10px Arial;">${escHtml(
                 `${m.monthLabel} (CY ${meta.year} / LY ${meta.yearLy})`
             )}</th>`
         );
     }
     headRow1.push(
-        `<th colspan="4" style="border:1px solid ${border};padding:6px 8px;background:${headBg};color:#fef08a;font:10px Arial;">Full year / YTD</th>`
+        `<th colspan="5" style="border:1px solid ${border};padding:6px 8px;background:${headBg};color:#fef08a;font:10px Arial;">Full year / YTD</th>`
     );
 
     const headRow2: string[] = [];
@@ -1268,6 +1903,7 @@ export function exportVsLyMatrixExcelHtml(
             const tds = row.months
                 .map((mo) => {
                     const s = pctTdStyle(mo.pct);
+                    const s2 = pctTdStyle(mo.cyOtbVsLyPct);
                     return [
                         `<td style="border:1px solid ${border};padding:6px 8px;${trBg}${dataBg}font:11px Arial;white-space:pre-wrap;color:${text};">${escHtml(
                             mo.cy
@@ -1281,11 +1917,15 @@ export function exportVsLyMatrixExcelHtml(
                         `<td style="border:1px solid ${border};padding:6px 8px;${trBg}${dataBg}font:11px Arial;color:${text};">${escHtml(
                             mo.otb
                         )}</td>`,
+                        `<td style="border:1px solid ${border};padding:6px 8px;${trBg}${dataBg}font:11px Arial;${s2}">${escHtml(
+                            asciiSafeForExport(mo.cyOtbVsLyPct)
+                        )}</td>`,
                     ].join('');
                 })
                 .join('');
             const y = row.ytd;
             const yp = pctTdStyle(y.pct);
+            const yp2 = pctTdStyle(y.cyOtbVsLyPct);
             const ytdRow = [
                 `<td style="border:1px solid ${border};padding:6px 8px;background:${ytdFill};font:11px Arial;font-weight:700;color:${text};">${escHtml(
                     y.cy
@@ -1298,6 +1938,9 @@ export function exportVsLyMatrixExcelHtml(
                 )}</td>`,
                 `<td style="border:1px solid ${border};padding:6px 8px;background:${ytdFill};font:11px Arial;font-weight:700;color:${text};">${escHtml(
                     y.otb
+                )}</td>`,
+                `<td style="border:1px solid ${border};padding:6px 8px;background:${ytdFill};font:11px Arial;font-weight:800;${yp2}">${escHtml(
+                    asciiSafeForExport(y.cyOtbVsLyPct)
                 )}</td>`,
             ].join('');
 
@@ -1320,6 +1963,7 @@ export function exportVsLyMatrixExcelHtml(
     <p style="font:12px Arial;color:${mutedN};margin:0 0 18px 0;">${escHtml(
         propertyName
     )} &ndash; CY ${meta.year} vs LY ${meta.yearLy} (green = up vs LY, red = down)</p>
+    ${fullDisclaimer}
     <table style="border-collapse:collapse;width:100%;min-width:1600px;">
       <thead>
         <tr>${headRow1.join('')}</tr>
@@ -1337,3 +1981,4 @@ function escHtml(s: string): string {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
 }
+

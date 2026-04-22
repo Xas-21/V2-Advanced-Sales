@@ -129,6 +129,12 @@ import {
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
+    buildReportSegmentsForRequest,
+    computeRequestRevenueBreakdownNoTax,
+    segmentLineTotalExTax,
+    sumRequestSegmentRevenueExTaxInRange,
+} from './operationalSegmentRevenue';
+import {
     can,
     canAccessReports,
     canShowAccountsNavItem,
@@ -343,8 +349,14 @@ const normalizeStatus = (status: any): string => {
     return '';
 };
 
-/** Dashboard KPIs, revenue, rooms, and MICE exclude Cancelled; status breakdown widgets still count them. */
-const isDashboardExcludedRequest = (req: any) => normalizeStatus(req?.status) === 'Cancelled';
+/** Dashboard KPIs, revenue, rooms, and MICE: same as Requests / vs LY (exclude cancelled and lost; status chips still list them). */
+const isDashboardExcludedRequest = (req: any) => {
+    const raw = String(req?.status || '')
+        .trim()
+        .toLowerCase();
+    if (raw === 'cancelled' || raw === 'lost') return true;
+    return normalizeStatus(req?.status) === 'Cancelled';
+};
 
 const isSeriesRequest = (req: any) => String(req?.requestType || '').toLowerCase().includes('series');
 
@@ -4019,6 +4031,8 @@ export default function AdvancedSalesDashboard() {
     const [dismissMap, setDismissMap] = useState<Record<string, string>>({});
     const [properties, setProperties] = useState<any[]>([]);
     const [activeProperty, setActiveProperty] = useState<any>(null);
+    /** Per-property tax config from `/api/taxes` (Reports, dashboard-caliber with-tax figures). */
+    const [propertyTaxes, setPropertyTaxes] = useState<any[]>([]);
 
     const [systemUsers, setSystemUsers] = useState<any[]>([]);
 
@@ -4353,6 +4367,19 @@ export default function AdvancedSalesDashboard() {
             cancelled = true;
         };
     }, [activeProperty?.id, currentView]);
+
+    useEffect(() => {
+        if (!activeProperty?.id) {
+            setPropertyTaxes([]);
+            return;
+        }
+        fetch(apiUrl(`/api/taxes?propertyId=${encodeURIComponent(activeProperty.id)}`))
+            .then((r) => r.json())
+            .then((d) => {
+                if (Array.isArray(d)) setPropertyTaxes(d);
+            })
+            .catch(() => setPropertyTaxes([]));
+    }, [activeProperty?.id]);
 
     useEffect(() => {
         let cancelled = false;
@@ -4741,9 +4768,9 @@ export default function AdvancedSalesDashboard() {
         let totalRevenue = 0;
         let paidRevenue = 0;
         let cancelledRevenue = 0;
-        /** Unique non-cancelled requests touching the range (KPI "Total Requests"). */
+        /** Non-cancelled requests with at least one operational segment in range (aligns with Reports). */
         let requestCount = 0;
-        /** In-range operational count dates (series segments, etc.) — for charts, not the headline count. */
+        /** Total segment rows in range (series / multi-line = multiple units). */
         let requestUnits = 0;
         const callsCount = flattenCrmLeads(crmLeads).filter((lead: any) => {
             const dt = parseYmd(lead?.lastContact || lead?.date);
@@ -4752,18 +4779,21 @@ export default function AdvancedSalesDashboard() {
 
         for (const req of scopedRequests) {
             if (!requestTouchesOperationalRange(req, range)) continue;
-            const breakdown = computeRequestCostBreakdown(req);
             const st = normalizeStatus(req?.status);
             if (st) {
                 statusCounts[st] += 1;
-                if (st === 'Cancelled') cancelledRevenue += breakdown.totalRevenue;
+                if (st === 'Cancelled') {
+                    cancelledRevenue += sumRequestSegmentRevenueExTaxInRange(req, range.start, range.end);
+                }
             }
             if (isDashboardExcludedRequest(req)) continue;
+            const segs = buildReportSegmentsForRequest(req, range.start, range.end);
+            if (segs.length === 0) continue;
+            const segTotal = sumRequestSegmentRevenueExTaxInRange(req, range.start, range.end);
             requestCount += 1;
-            totalRevenue += breakdown.totalRevenue;
+            totalRevenue += segTotal;
             paidRevenue += asNumber(req?.paidAmount || 0);
-            const unitDates = getRequestCountDates(req).filter((d) => isIsoInRange(d, range));
-            requestUnits += unitDates.length > 0 ? unitDates.length : 1;
+            requestUnits += segs.length;
         }
 
         const avgValue = requestCount > 0 ? totalRevenue / requestCount : 0;
@@ -4853,24 +4883,25 @@ export default function AdvancedSalesDashboard() {
         for (const req of scopedRequests) {
             if (!requestTouchesOperationalRange(req, dashboardCurrentRange)) continue;
 
-            const breakdown = computeRequestCostBreakdown(req);
             const skipPerf = isDashboardExcludedRequest(req);
             const unitDates = getRequestCountDates(req);
             const countDatesInRange = unitDates.filter((d) => isIsoInRange(d, dashboardCurrentRange));
+            const dRange = dashboardCurrentRange;
+            const segs = !skipPerf && dRange.start && dRange.end
+                ? buildReportSegmentsForRequest(req, dRange.start, dRange.end)
+                : [];
+            const br0 =
+                !skipPerf && segs.length > 0 ? computeRequestRevenueBreakdownNoTax(req) : null;
 
-            if (!skipPerf) {
-                if (countDatesInRange.length > 0) {
-                    const revShare = breakdown.totalRevenue / countDatesInRange.length;
-                    for (const d of countDatesInRange) {
-                        const mr = byMonth.get(keyFor(d));
-                        if (mr) mr.revenue += revShare;
-                    }
-                } else {
-                    const pd = getPrimaryOperationalDate(req);
-                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
-                        const mr = byMonth.get(keyFor(pd));
-                        if (mr) mr.revenue += breakdown.totalRevenue;
-                    }
+            if (!skipPerf && br0 && segs.length) {
+                for (let si = 0; si < segs.length; si += 1) {
+                    const seg = segs[si];
+                    const d = parseYmd(seg.displayDate);
+                    if (!d) continue;
+                    const cell = byMonth.get(keyFor(d));
+                    if (!cell) continue;
+                    const tPart = si === 0 ? br0.transportRevenue : 0;
+                    cell.revenue += segmentLineTotalExTax(seg, tPart);
                 }
             }
 
@@ -4915,97 +4946,30 @@ export default function AdvancedSalesDashboard() {
                 }
             }
 
-            if (!skipPerf && isEventsCateringEligibleRequest(req)) {
-                const ev = Number(breakdown.eventRevenue || 0);
-                const miceDays = getMiceAttributionDatesInRange(req, dashboardCurrentRange);
-                if (miceDays.length > 0) {
-                    const dayCount = miceDays.length;
-                    const daysByMonth = new Map<string, number>();
-                    for (const d of miceDays) {
-                        const mk = keyFor(d);
-                        daysByMonth.set(mk, (daysByMonth.get(mk) || 0) + 1);
-                    }
-                    for (const [mk, n] of daysByMonth) {
-                        const mr = byMonth.get(mk);
-                        if (mr) {
-                            mr.miceRequests += 1;
-                            if (ev > 0) mr.miceRevenue += ev * (n / dayCount);
-                        }
-                    }
-                } else if (countDatesInRange.length > 0) {
-                    const total = countDatesInRange.length;
-                    const daysByMonth = new Map<string, number>();
-                    for (const d of countDatesInRange) {
-                        const mk = keyFor(d);
-                        daysByMonth.set(mk, (daysByMonth.get(mk) || 0) + 1);
-                    }
-                    for (const [mk, n] of daysByMonth) {
-                        const mr = byMonth.get(mk);
-                        if (mr) {
-                            mr.miceRequests += 1;
-                            if (ev > 0) mr.miceRevenue += ev * (n / total);
-                        }
-                    }
-                } else {
-                    const pd = getPrimaryOperationalDate(req);
-                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
-                        const mr = byMonth.get(keyFor(pd));
-                        if (mr) {
-                            mr.miceRevenue += ev;
-                            mr.miceRequests += 1;
-                        }
+            if (!skipPerf && isEventsCateringEligibleRequest(req) && segs.length && br0) {
+                for (const seg of segs) {
+                    if (!seg.eventRev || seg.eventRev <= 0) continue;
+                    const d = parseYmd(seg.displayDate);
+                    if (!d) continue;
+                    const mr = byMonth.get(keyFor(d));
+                    if (mr) {
+                        mr.miceRevenue += seg.eventRev;
+                        mr.miceRequests += 1;
                     }
                 }
             }
 
-            if (!skipPerf && shouldIncludeRequestInRoomsChart(req)) {
-                const roomRows = Array.isArray(req?.rooms) ? req.rooms : [];
-                let roomContributed = false;
-                let roomRevenueAllocated = 0;
-                for (const rr of roomRows) {
-                    const roomDate = parseYmd(rr?.arrival || req?.checkIn);
-                    if (!roomDate || !isIsoInRange(roomDate, dashboardCurrentRange)) continue;
-                    const rrMonth = byMonth.get(keyFor(roomDate));
-                    if (!rrMonth) continue;
-                    const count = Number(rr?.count || 0);
-                    const rate = Number(rr?.rate || 0);
-                    const inDate = parseYmd(rr?.arrival || req?.checkIn);
-                    const outDate = parseYmd(rr?.departure || req?.checkOut);
-                    let rowNights = Number(req?.nights || 0);
-                    if (inDate && outDate) {
-                        const ms = new Date(`${outDate}T00:00:00`).getTime() - new Date(`${inDate}T00:00:00`).getTime();
-                        if (!Number.isNaN(ms)) rowNights = Math.max(0, Math.ceil(ms / 86400000));
-                    }
-                    rrMonth.rooms += count;
-                    rrMonth.roomNights += count * Math.max(0, rowNights);
-                    const rowRevenue = count * rate * Math.max(0, rowNights);
-                    rrMonth.roomsRevenue += rowRevenue;
-                    roomRevenueAllocated += rowRevenue;
-                    roomContributed = true;
-                }
-                if (!roomContributed) {
-                    const fallbackRoomDate = parseYmd(req?.checkIn);
-                    if (
-                        fallbackRoomDate &&
-                        isIsoInRange(fallbackRoomDate, dashboardCurrentRange) &&
-                        (Number(req?.totalRooms || 0) > 0 || Number(breakdown.roomsRevenue || 0) > 0)
-                    ) {
-                        const fallbackMonth = byMonth.get(keyFor(fallbackRoomDate));
-                        if (fallbackMonth) {
-                            const totalRooms = Number(req?.totalRooms || 0);
-                            const totalRoomNights = Number(req?.totalRoomNights || 0);
-                            const nights = Number(req?.nights || 0);
-                            fallbackMonth.rooms += totalRooms;
-                            fallbackMonth.roomNights += totalRoomNights > 0 ? totalRoomNights : totalRooms * Math.max(0, nights);
-                            fallbackMonth.roomsRevenue += Number(breakdown.roomsRevenue || 0);
-                        }
-                    }
-                } else if (roomRevenueAllocated <= 0 && Number(breakdown.roomsRevenue || 0) > 0) {
-                    const fallbackRoomDate = parseYmd(req?.checkIn);
-                    if (fallbackRoomDate && isIsoInRange(fallbackRoomDate, dashboardCurrentRange)) {
-                        const fallbackMonth = byMonth.get(keyFor(fallbackRoomDate));
-                        if (fallbackMonth) fallbackMonth.roomsRevenue += Number(breakdown.roomsRevenue || 0);
-                    }
+            if (!skipPerf && shouldIncludeRequestInRoomsChart(req) && segs.length) {
+                for (const seg of segs) {
+                    if (!seg.roomRev || seg.roomRev <= 0) continue;
+                    const d = parseYmd(seg.displayDate);
+                    if (!d) continue;
+                    const acc = byMonth.get(keyFor(d));
+                    if (!acc) continue;
+                    const rns = Math.max(0, Number(seg.roomNights) || 0);
+                    acc.rooms += 1;
+                    acc.roomNights += rns;
+                    acc.roomsRevenue += seg.roomRev;
                 }
             }
         }
@@ -5089,10 +5053,16 @@ export default function AdvancedSalesDashboard() {
             if (!requestTouchesOperationalRange(req, range)) continue;
             if (isDashboardExcludedRequest(req)) continue;
             if (normalizeStatus(req?.status) !== 'Actual') continue;
-            if (!shouldIncludeRequestInRoomsChart(req)) continue;
-            const breakdown = computeRequestCostBreakdown(req);
-            if (breakdown.roomsRevenue > 0) roomsActual += breakdown.roomsRevenue;
-            if (breakdown.eventRevenue > 0) fnbActual += breakdown.eventRevenue;
+            const segsA = buildReportSegmentsForRequest(req, range.start, range.end);
+            if (!segsA.length) continue;
+            if (shouldIncludeRequestInRoomsChart(req)) {
+                for (const seg of segsA) {
+                    if (seg.roomRev > 0) roomsActual += seg.roomRev;
+                }
+            }
+            for (const seg of segsA) {
+                if (seg.eventRev > 0) fnbActual += seg.eventRev;
+            }
         }
 
         const pct = (value: number, base: number) => (base > 0 ? (value / base) * 100 : 0);
@@ -5136,7 +5106,9 @@ export default function AdvancedSalesDashboard() {
             })
             .slice(0, 80);
         const mapped = list.map((r: any, i: number) => {
-            const raw = computeRequestCostBreakdown(r).totalRevenue;
+            const r0 = dashboardCurrentRange.start;
+            const r1 = dashboardCurrentRange.end;
+            const raw = r0 && r1 ? sumRequestSegmentRevenueExTaxInRange(r, r0, r1) : computeRequestCostBreakdown(r).totalRevenue;
             const amount = formatCompactAmount(raw);
             return {
                 id: r.id ?? `req-${i}`,
@@ -6637,6 +6609,7 @@ export default function AdvancedSalesDashboard() {
                         <Reports
                             theme={theme}
                             activeProperty={activeProperty}
+                            propertyTaxes={propertyTaxes}
                             sharedRequests={sharedRequests}
                             accounts={accounts}
                             crmLeads={crmLeads}
