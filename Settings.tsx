@@ -419,7 +419,9 @@ export default function Settings({
                 else setVenues([...venues, saved]);
             });
         } else if (modalType === 'user') {
-            const isEditing = !!editingItem;
+            // Only treat as edit when opening an existing row (has id). Prefill payloads like `{ propertyId }`
+            // from "Add staff" under a property must stay create-mode or we strip password / skip new id.
+            const isEditing = !!(editingItem && editingItem.id);
             const userData: any = isEditing
                 ? { ...editingItem, ...modalFormData }
                 : { ...modalFormData, id: 'U' + Math.random().toString(36).substr(2, 9), status: 'Active' };
@@ -2635,7 +2637,14 @@ export default function Settings({
                     >
                         <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b flex items-center justify-between gap-3" style={{ borderColor: colors.border }}>
                             <h3 className="text-lg sm:text-xl font-bold font-mono tracking-tighter" style={{ color: colors.primary }}>
-                                {editingItem ? 'EDIT' : 'ADD'} {modalType?.toUpperCase()}
+                                {modalType === 'user'
+                                    ? editingItem?.id
+                                        ? 'EDIT'
+                                        : 'ADD'
+                                    : editingItem
+                                      ? 'EDIT'
+                                      : 'ADD'}{' '}
+                                {modalType?.toUpperCase()}
                             </h3>
                             <button onClick={() => setShowModal(false)} className="p-2 rounded-xl hover:bg-white/10 shrink-0" style={{ color: colors.textMuted }}>
                                 <X size={22} />
@@ -3036,7 +3045,7 @@ export default function Settings({
                                         </div>
                                     </div>
 
-                                    {!editingItem ? (
+                                    {!editingItem?.id ? (
                                         <div>
                                             <label className="text-[10px] uppercase font-bold tracking-widest mb-0.5 block opacity-50">Initial Password</label>
                                             <input type="password" placeholder="••••••••" className="w-full p-2.5 bg-black/20 border rounded-lg outline-none text-sm" style={{ borderColor: colors.border, color: colors.textMain }}
@@ -3158,7 +3167,14 @@ export default function Settings({
                         <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-t flex justify-end gap-2 sm:gap-3" style={{ borderColor: colors.border }}>
                             <button onClick={() => setShowModal(false)} className="px-4 sm:px-6 py-2 rounded-xl text-sm font-bold border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>Cancel</button>
                             <button onClick={handleSave} className="px-5 sm:px-8 py-2 rounded-xl bg-primary text-black text-sm font-bold hover:opacity-90 transition-all shadow-lg shadow-primary/20">
-                                {editingItem ? 'Update' : 'Create'} {modalType}
+                                {modalType === 'user'
+                                    ? editingItem?.id
+                                        ? 'Update'
+                                        : 'Create'
+                                    : editingItem
+                                      ? 'Update'
+                                      : 'Create'}{' '}
+                                {modalType}
                             </button>
                         </div>
                     </div>

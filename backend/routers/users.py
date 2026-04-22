@@ -21,38 +21,61 @@ def get_users():
         out.append(row)
     return out
 
+
 @router.post("")
 def create_or_update_user(user_data: dict):
     users = read_json_file(USERS_FILE)
-    
-    # Check if user exists (by ID)
-    existing_idx = next((i for i, u in enumerate(users) if u.get("id") == user_data.get("id")), -1)
-    
-    # Standardize data structure
-    if "password" not in user_data:
-        user_data["password"] = "password123" # Default password for new users
-        
-    if "username" not in user_data:
-        user_data["username"] = user_data.get("name", "").split(" ")[0].lower()
-        
+
+    raw_id = user_data.get("id")
+    has_stable_id = raw_id is not None and str(raw_id).strip() != ""
+
+    existing_idx = -1
+    if has_stable_id:
+        rid = str(raw_id)
+        for i, u in enumerate(users):
+            if str(u.get("id", "")) == rid:
+                existing_idx = i
+                break
+
+    if not str(user_data.get("username", "")).strip():
+        nm = str(user_data.get("name") or "").strip()
+        user_data["username"] = (
+            nm.split()[0].lower()
+            if nm
+            else f"user_{uuid.uuid4().hex[:6]}"
+        )
+
     if existing_idx >= 0:
         prev = users[existing_idx]
-        # Preserve existing passwords if untouched
-        if "password" not in user_data or user_data["password"] == "":
-            user_data["password"] = prev.get("password", "password123")
-        else:
-            new_pw = user_data["password"]
-            old_pw = prev.get("password", "password123")
+        payload = dict(user_data)
+        new_pw_raw = payload.pop("password", None)
+        merged = {**prev, **payload}
+        if new_pw_raw is not None and str(new_pw_raw).strip() != "":
+            new_pw = str(new_pw_raw)
+            old_pw = str(prev.get("password", "password123"))
+            merged["password"] = new_pw
             if new_pw != old_pw:
-                user_data["sessionVersion"] = _next_session_version(prev)
-        users[existing_idx] = {**prev, **user_data}
+                merged["sessionVersion"] = _next_session_version(prev)
+        else:
+            merged["password"] = prev.get("password", "password123")
+
+        users[existing_idx] = merged
     else:
-        if not user_data.get("id"):
-            user_data["id"] = f"U-{uuid.uuid4().hex[:10]}"
-        users.append(user_data)
-        
+        row = dict(user_data)
+        pw = row.get("password")
+        if pw is None or str(pw).strip() == "":
+            row["password"] = "password123"
+        if not str(row.get("id", "")).strip():
+            row["id"] = f"U-{uuid.uuid4().hex[:10]}"
+        users.append(row)
+
     write_json_file(USERS_FILE, users)
-    return {"message": "User saved successfully", "user": {k: v for k, v in user_data.items() if k != "password"}}
+    saved = users[existing_idx] if existing_idx >= 0 else users[-1]
+    out_user = {k: v for k, v in saved.items() if k != "password"}
+    out_user["sessionVersion"] = int(saved.get("sessionVersion") or 0)
+
+    return {"message": "User saved successfully", "user": out_user}
+
 
 @router.delete("/{user_id}")
 def delete_user(user_id: str):
