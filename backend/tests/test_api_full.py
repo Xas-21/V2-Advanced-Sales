@@ -98,6 +98,26 @@ def test_get_users():
         assert isinstance(u.get("sessionVersion"), int)
 
 
+def test_patch_user_property_id_preserves_session_version():
+    """Assigning property must not invalidate sessions (no password POST / no session bump)."""
+    r = client.get("/api/users")
+    assert r.status_code == 200
+    users = r.json()
+    u = next((x for x in users if str(x.get("username", "")).lower() == "abdullah"), None)
+    assert u and u.get("id")
+    uid = str(u["id"])
+    v0 = int(u.get("sessionVersion") or 0)
+    pid = str(u.get("propertyId") or "P1xzg03n5m")
+    r2 = client.patch(f"/api/users/{uid}", json={"propertyId": pid})
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body.get("user", {}).get("propertyId") == pid
+    r3 = client.get("/api/users")
+    u2 = next((x for x in r3.json() if str(x.get("id")) == uid), None)
+    assert u2 is not None
+    assert int(u2.get("sessionVersion") or 0) == v0
+
+
 def test_get_properties():
     r = client.get("/api/properties")
     assert r.status_code == 200

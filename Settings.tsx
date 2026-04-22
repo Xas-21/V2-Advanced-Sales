@@ -452,8 +452,11 @@ export default function Settings({
                 }
             } else {
                 const pw = String(modalFormData.password || '').trim();
-                if (pw) userData.password = pw;
-                else delete userData.password;
+                if (!pw || pw.length < 4) {
+                    alert('Please set an initial password of at least 4 characters for the new user.');
+                    return;
+                }
+                userData.password = pw;
             }
 
             const roleNorm = normalizeUserRole({ role: userData.role });
@@ -499,19 +502,19 @@ export default function Settings({
                 }).catch(err => console.error("Error saving property assignment:", err));
             }
 
-            // Sync user's propertyId as requested
+            // Sync primary propertyId on each user — PATCH only (never POST full user without password).
             selectedUserIds.forEach((uid: string) => {
-                const usr = users.find(u => u.id === uid);
+                const idStr = String(uid ?? '').trim();
+                if (!idStr) return;
+                const usr = users.find((u) => String(u?.id ?? '') === idStr);
                 if (usr) {
                     const updatedUser = { ...usr, propertyId: propertyId };
-                    // Apply to local state immediately
-                    setUsers(prev => prev.map(u => u.id === uid ? updatedUser : u));
-                    // Push to backend
-                    fetch(apiUrl('/api/users'), {
-                        method: 'POST',
+                    setUsers((prev) => prev.map((u) => (String(u?.id ?? '') === idStr ? updatedUser : u)));
+                    fetch(apiUrl(`/api/users/${encodeURIComponent(idStr)}`), {
+                        method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(updatedUser)
-                    });
+                        body: JSON.stringify({ propertyId }),
+                    }).catch((err) => console.error('Error patching user propertyId:', err));
                 }
             });
         } else if (modalType === 'field') {
@@ -602,15 +605,18 @@ export default function Settings({
         }).catch(err => console.error("Error unassigning user from property:", err));
 
         // Also check if the user's primary propertyId is this one, if so, clear it
-        const user = users.find(u => u.id === userId);
+        const uidStr = String(userId ?? '').trim();
+        const user = users.find((u) => String(u?.id ?? '') === uidStr);
         if (user && user.propertyId === propId) {
             const updatedUser = { ...user, propertyId: '' };
-            setUsers(prevUsers => prevUsers.map(u => u.id === userId ? updatedUser : u));
-            fetch(apiUrl('/api/users'), {
-                method: 'POST',
+            setUsers((prevUsers) =>
+                prevUsers.map((u) => (String(u?.id ?? '') === uidStr ? updatedUser : u)),
+            );
+            fetch(apiUrl(`/api/users/${encodeURIComponent(uidStr)}`), {
+                method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updatedUser)
-            }).catch(err => console.error("Error updating user after unassign:", err));
+                body: JSON.stringify({ propertyId: '' }),
+            }).catch((err) => console.error('Error updating user after unassign:', err));
         }
     };
 
