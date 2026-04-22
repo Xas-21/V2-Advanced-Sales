@@ -14,12 +14,22 @@ import {
     BedDouble,
     Users,
     PhoneCall,
+    LineChart,
 } from 'lucide-react';
 import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { canReportsPreviewSourceRows, canReportsUseDataSource } from './userPermissions';
 import { paymentsMeetOrExceedTotal } from './beoShared';
+import {
+    buildYearOptionsForReports,
+    buildVsLyMatrix,
+    defaultVsReportYear,
+    exportVsLyMatrixCsv,
+    exportVsLyMatrixExcelHtml,
+    type VsLyMatrixRow,
+} from './reportsVsLastYear';
+import { resolveAccountTypesForProperty, resolveSegmentsForProperty } from './propertyTaxonomy';
 
 interface ReportsProps {
     theme: any;
@@ -34,7 +44,7 @@ interface ReportsProps {
 
 const initialSavedReports: any[] = [];
 
-type ReportEntity = 'Requests' | 'Accounts' | 'MICE' | 'Tasks' | 'Sales Calls';
+type ReportEntity = 'Requests' | 'Accounts' | 'MICE' | 'Tasks' | 'Sales Calls' | 'Rooms vs LY' | 'MICE vs LY';
 
 function normalizeRequestTypeKey(raw: string = '') {
     const t = String(raw || '').toLowerCase().trim();
@@ -262,6 +272,10 @@ export default function Reports({
         dateRange: { start: month.start, end: month.end },
         statuses: [] as string[],
         valueRange: { min: 0, max: 500_000_000 },
+        vsReportYear: new Date().getFullYear(),
+        /** Rooms / MICE vs LY: show request-segment and/or account-type breakdown rows */
+        vsLyByRequestSegment: true,
+        vsLyByAccountType: true,
     });
     const [selectedColumns, setSelectedColumns] = useState<string[]>([
         'Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Paid Amount', 'Unpaid Amount', 'Amount',
@@ -269,8 +283,19 @@ export default function Reports({
     const [exportFormat, setExportFormat] = useState<'pdf' | 'excel' | 'csv'>('pdf');
     const [showPreview, setShowPreview] = useState(false);
     const [savedReports] = useState(initialSavedReports);
+    /** Vs LY: row id or segmentGroupKey to exclude from preview + export (unchecked in Columns) */
+    const [vsLyRowHidden, setVsLyRowHidden] = useState<Set<string>>(() => new Set());
 
     const pid = activeProperty?.id;
+
+    const propertyRequestSegments = useMemo(
+        () => resolveSegmentsForProperty(String(pid || ''), activeProperty),
+        [pid, activeProperty]
+    );
+    const propertyAccountTypes = useMemo(
+        () => resolveAccountTypesForProperty(String(pid || ''), activeProperty),
+        [pid, activeProperty]
+    );
 
     const scopedRequests = useMemo(() => {
         return (sharedRequests || []).filter(
@@ -300,9 +325,17 @@ export default function Reports({
         { id: 'Requests' as ReportEntity, icon: BedDouble, label: 'Requests' },
         { id: 'Accounts' as ReportEntity, icon: Briefcase, label: 'Accounts' },
         { id: 'MICE' as ReportEntity, icon: Wine, label: 'MICE' },
+        { id: 'Rooms vs LY' as ReportEntity, icon: LineChart, label: 'Rooms vs LY' },
+        { id: 'MICE vs LY' as ReportEntity, icon: BarChart3, label: 'MICE vs LY' },
         { id: 'Tasks' as ReportEntity, icon: Users, label: 'Tasks' },
         { id: 'Sales Calls' as ReportEntity, icon: PhoneCall, label: 'Sales Calls' },
     ];
+
+    const isVsLySource = selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY';
+
+    useEffect(() => {
+        setVsLyRowHidden(new Set());
+    }, [selectedEntity, filters.vsReportYear]);
 
     const canUseSelectedSource = canReportsUseDataSource(currentUser, selectedEntity);
     const canPreviewRows = canReportsPreviewSourceRows(currentUser);
@@ -323,9 +356,9 @@ export default function Reports({
             'AVG ADR',
             'Paid Amount',
             'Unpaid Amount',
-            'Event Revenue (no tax)',
-            'Rooms Revenue (no tax)',
-            'Rooms + Event (no tax)',
+            'Event Revenue',
+            'Rooms Revenue',
+            'Rooms + Event',
             'Amount',
         ],
         Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
@@ -365,6 +398,8 @@ export default function Reports({
             'Expected Revenue',
             'Owner',
         ],
+        'Rooms vs LY': [],
+        'MICE vs LY': [],
     };
 
     useEffect(() => {
@@ -376,6 +411,17 @@ export default function Reports({
             setShowPreview(false);
         }
     }, [currentUser, selectedEntity]);
+
+    const yearOptionsForVs = useMemo(() => buildYearOptionsForReports(scopedRequests), [scopedRequests]);
+
+    useEffect(() => {
+        if (!isVsLySource) return;
+        if (!yearOptionsForVs.length) return;
+        const y = Number(filters.vsReportYear);
+        if (!yearOptionsForVs.includes(y)) {
+            setFilters((f: any) => ({ ...f, vsReportYear: defaultVsReportYear(yearOptionsForVs) }));
+        }
+    }, [isVsLySource, yearOptionsForVs, filters.vsReportYear]);
 
     const statusOptions = selectedEntity === 'Sales Calls'
         ? ['Upcoming Sales Calls', 'Waiting list', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
@@ -408,6 +454,38 @@ export default function Reports({
     };
 
     const reportPack = useMemo(() => {
+        if (selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY') {
+            const y = Number(filters.vsReportYear) || new Date().getFullYear();
+            const kind = selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice';
+            const { rows: vsRows, yearLy } = buildVsLyMatrix(
+                kind,
+                scopedRequests,
+                accounts || [],
+                y,
+                selectedCurrency,
+                {
+                    propertyRequestSegments,
+                    propertyAccountTypes,
+                    includeRequestSegments: Boolean(filters.vsLyByRequestSegment),
+                    includeAccountTypes: Boolean(filters.vsLyByAccountType),
+                }
+            );
+            return {
+                rows: [] as any[],
+                summary: {
+                    'Report year (CY)': y,
+                    'Vs last year (LY)': yearLy,
+                    'Revenue basis': 'Line-based (excl. cancelled from all slices)',
+                    'Definite + Actual': 'CY / LY comparison columns',
+                    OTB: 'Inquiry + Accepted + Tentative (chosen year; excl. cancelled)',
+                } as Record<string, string | number>,
+                exportColumns: [] as string[],
+                vsLyRows: vsRows,
+                vsLyMeta: { kind, year: y, yearLy },
+                isVsLyMatrix: true,
+            };
+        }
+
         const { start, end } = filters.dateRange || {};
         const st = filters.statuses || [];
         const vmin = Number(filters.valueRange?.min) || 0;
@@ -555,6 +633,9 @@ export default function Reports({
                     ),
                 },
                 exportColumns: availableColumns['Sales Calls'],
+                isVsLyMatrix: false,
+                vsLyRows: null,
+                vsLyMeta: null,
             };
         }
 
@@ -641,9 +722,9 @@ export default function Reports({
                         'AVG ADR': roomBlock.avgAdr ? formatSar(roomBlock.avgAdr, selectedCurrency) : '—',
                         'Paid Amount': formatSar(pay.paid, selectedCurrency),
                         'Unpaid Amount': formatSar(pay.unpaid, selectedCurrency),
-                        'Event Revenue (no tax)': isEv ? fmtNoTax(revNoTax.eventRevenue) : '—',
-                        'Rooms Revenue (no tax)': fmtNoTax(revNoTax.roomsRevenue),
-                        'Rooms + Event (no tax)': isEv ? fmtNoTax(roomsEvSum) : '—',
+                        'Event Revenue': isEv ? fmtNoTax(revNoTax.eventRevenue) : '—',
+                        'Rooms Revenue': fmtNoTax(revNoTax.roomsRevenue),
+                        'Rooms + Event': isEv ? fmtNoTax(roomsEvSum) : '—',
                         Amount: formatSar(total, selectedCurrency),
                     });
                 }
@@ -663,9 +744,9 @@ export default function Reports({
                 'Total unpaid': formatSar(totalUnpaid, selectedCurrency),
             };
             if (selectedEntity === 'MICE') {
-                baseSummary['Event Revenue (no tax)'] = formatSar(totalMiceEventRevNoTax, selectedCurrency);
-                baseSummary['Rooms Revenue (no tax)'] = formatSar(totalMiceRoomsRevNoTax, selectedCurrency);
-                baseSummary['MICE (NO TAX)'] = formatSar(totalMiceEventRevNoTax + totalMiceRoomsRevNoTax, selectedCurrency);
+                baseSummary['Event Revenue'] = formatSar(totalMiceEventRevNoTax, selectedCurrency);
+                baseSummary['Rooms Revenue'] = formatSar(totalMiceRoomsRevNoTax, selectedCurrency);
+                baseSummary['MICE total'] = formatSar(totalMiceEventRevNoTax + totalMiceRoomsRevNoTax, selectedCurrency);
             }
             if (selectedEntity === 'Requests') {
                 baseSummary['AVG ADR'] = formatSar(avgAdr, selectedCurrency);
@@ -710,11 +791,14 @@ export default function Reports({
                           'AVG ADR',
                           'Paid Amount',
                           'Unpaid Amount',
-                          'Event Revenue (no tax)',
-                          'Rooms Revenue (no tax)',
-                          'Rooms + Event (no tax)',
+                          'Event Revenue',
+                          'Rooms Revenue',
+                          'Rooms + Event',
                           'Amount',
                       ],
+                isVsLyMatrix: false,
+                vsLyRows: null,
+                vsLyMeta: null,
             };
         }
 
@@ -737,6 +821,9 @@ export default function Reports({
                     'Total bookings': rows.reduce((s, r) => s + (Number(r['Total Bookings']) || 0), 0).toLocaleString(),
                 },
                 exportColumns: availableColumns.Accounts,
+                isVsLyMatrix: false,
+                vsLyRows: null,
+                vsLyMeta: null,
             };
         }
 
@@ -760,17 +847,111 @@ export default function Reports({
                 'High priority': rows.filter((r) => String(r.Priority).toLowerCase() === 'high').length,
             },
             exportColumns: availableColumns.Tasks,
+            isVsLyMatrix: false,
+            vsLyRows: null,
+            vsLyMeta: null,
         };
-    }, [selectedEntity, scopedRequests, scopedTasks, scopedSalesCalls, accounts, filters.dateRange, filters.statuses, filters.valueRange, selectedCurrency]);
+    }, [
+        selectedEntity,
+        scopedRequests,
+        scopedTasks,
+        scopedSalesCalls,
+        accounts,
+        activeProperty,
+        propertyRequestSegments,
+        propertyAccountTypes,
+        filters.dateRange,
+        filters.statuses,
+        filters.valueRange,
+        filters.vsReportYear,
+        filters.vsLyByRequestSegment,
+        filters.vsLyByAccountType,
+        selectedCurrency,
+    ]);
 
     const previewData = reportPack.rows;
+    const reportPackAny = reportPack as any;
+    const isVsMatrixPack = Boolean(reportPackAny.isVsLyMatrix);
 
-    const showDateFilters = selectedEntity !== 'Accounts';
-    const showStatusFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls';
-    const showValueFilters = selectedEntity === 'Requests' || selectedEntity === 'MICE';
+    const vsLyRowsAll: VsLyMatrixRow[] = reportPackAny.vsLyRows || [];
+    const vsLyColumnToggleItems = useMemo(() => {
+        const seen = new Set<string>();
+        const out: { key: string; label: string; isSectionHeader: boolean }[] = [];
+        for (const row of vsLyRowsAll) {
+            if (row.rowKind === 'sectionHeader') {
+                if (seen.has(row.id)) continue;
+                seen.add(row.id);
+                out.push({ key: row.id, label: row.label, isSectionHeader: true });
+                continue;
+            }
+            const k = row.segmentGroupKey ?? row.id;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push({ key: k, label: row.label, isSectionHeader: false });
+        }
+        return out;
+    }, [vsLyRowsAll]);
+    const vsLyRowsFiltered = useMemo(() => {
+        const all = (reportPackAny.vsLyRows || []) as VsLyMatrixRow[];
+        return all.filter((r) => {
+            const k = r.segmentGroupKey ?? r.id;
+            return !vsLyRowHidden.has(k);
+        });
+    }, [reportPack, vsLyRowHidden]);
+
+    const toggleVsLyRowInReport = (rowId: string) => {
+        setVsLyRowHidden((prev) => {
+            const n = new Set(prev);
+            if (n.has(rowId)) n.delete(rowId);
+            else n.add(rowId);
+            return n;
+        });
+    };
+
+    const showDateFilters = selectedEntity !== 'Accounts' && !isVsLySource;
+    const showStatusFilters =
+        (selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls') && !isVsLySource;
+    const showValueFilters = (selectedEntity === 'Requests' || selectedEntity === 'MICE') && !isVsLySource;
+
+    const pctClass = (pct: string) => {
+        const p = String(pct || '').trim();
+        if (!p || p === '-' || p === '0%') return { color: colors.textMuted };
+        const n = parseFloat(p.replace(/%/g, ''));
+        if (Number.isNaN(n)) return { color: colors.textMuted };
+        if (n > 0) return { color: colors.green || '#22c55e' };
+        if (n < 0) return { color: colors.red || '#ef4444' };
+        return { color: colors.textMuted };
+    };
 
     const handleExport = () => {
-        if (!canReportsUseDataSource(currentUser, selectedEntity) || !reportPack.rows.length) return;
+        if (!canReportsUseDataSource(currentUser, selectedEntity)) return;
+        if (isVsMatrixPack && reportPackAny.vsLyRows?.length) {
+            const vsRows = vsLyRowsFiltered;
+            if (!vsRows.length) return;
+            const stamp = new Date().toISOString().slice(0, 10);
+            const y = reportPackAny.vsLyMeta?.year || 'year';
+            const base = `${selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice'}-vs-ly-${y}-${stamp}`;
+            const meta = reportPackAny.vsLyMeta;
+            const propName = activeProperty?.name || 'All properties';
+            if (exportFormat === 'csv') {
+                const csv = exportVsLyMatrixCsv(vsRows, meta, propName);
+                triggerDownload(csv, `${base}.csv`, 'text/csv;charset=utf-8;');
+            } else if (exportFormat === 'excel') {
+                const html = exportVsLyMatrixExcelHtml(vsRows, meta, propName);
+                triggerDownload(html, `${base}.xls`, 'application/vnd.ms-excel');
+            } else {
+                const html = exportVsLyMatrixExcelHtml(vsRows, meta, propName);
+                const w = window.open('', '_blank', 'width=1400,height=900');
+                if (w) {
+                    w.document.write(html);
+                    w.document.close();
+                    w.focus();
+                    w.print();
+                }
+            }
+            return;
+        }
+        if (!reportPack.rows.length) return;
         const stamp = new Date().toISOString().slice(0, 10);
         const base = `${String(selectedEntity).toLowerCase()}-report-${stamp}`;
         const cols = (selectedColumns && selectedColumns.length ? selectedColumns : reportPack.exportColumns)
@@ -968,6 +1149,52 @@ export default function Reports({
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <h3 className="text-sm font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Filters</h3>
 
+                            {isVsLySource && (
+                                <div className="mb-4">
+                                    <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Report year (CY)</label>
+                                    <select
+                                        value={Number(filters.vsReportYear) || new Date().getFullYear()}
+                                        onChange={(e) =>
+                                            setFilters({ ...filters, vsReportYear: Number(e.target.value) })
+                                        }
+                                        className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        {yearOptionsForVs.map((y) => (
+                                            <option key={y} value={y}>
+                                                {y}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <div className="mt-3 space-y-2">
+                                        <label className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: colors.textMain }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={Boolean(filters.vsLyByAccountType)}
+                                                onChange={(e) =>
+                                                    setFilters({ ...filters, vsLyByAccountType: e.target.checked })
+                                                }
+                                                className="w-4 h-4 rounded"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            By account type
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: colors.textMain }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={Boolean(filters.vsLyByRequestSegment)}
+                                                onChange={(e) =>
+                                                    setFilters({ ...filters, vsLyByRequestSegment: e.target.checked })
+                                                }
+                                                className="w-4 h-4 rounded"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            By request segment
+                                        </label>
+                                    </div>
+                                </div>
+                            )}
+
                             {showDateFilters && (
                                 <div className="mb-4">
                                     <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Date range</label>
@@ -1038,6 +1265,36 @@ export default function Reports({
 
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <h3 className="text-sm font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Columns</h3>
+                            {isVsLySource ? (
+                                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                                    <p className="text-xs mb-2" style={{ color: colors.textMuted }}>
+                                        Check which rows to include in the preview and in CSV, Excel, and PDF exports.
+                                    </p>
+                                    {vsLyColumnToggleItems.map((item) => (
+                                        <label
+                                            key={item.key}
+                                            className="flex items-start gap-2 cursor-pointer rounded-md px-1 py-0.5 hover:bg-white/5"
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={!vsLyRowHidden.has(item.key)}
+                                                onChange={() => toggleVsLyRowInReport(item.key)}
+                                                className="w-4 h-4 rounded mt-0.5 shrink-0"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            <span className="text-xs leading-snug break-words" style={{ color: colors.textMain }}>
+                                                {item.isSectionHeader ? (
+                                                    <span className="font-bold uppercase tracking-wide" style={{ color: colors.primary }}>
+                                                        {item.label}
+                                                    </span>
+                                                ) : (
+                                                    item.label
+                                                )}
+                                            </span>
+                                        </label>
+                                    ))}
+                                </div>
+                            ) : (
                             <div className="space-y-2">
                                 {availableColumns[selectedEntity]?.map((column: string) => (
                                     <label key={column} className="flex items-center gap-2 cursor-pointer">
@@ -1052,6 +1309,7 @@ export default function Reports({
                                     </label>
                                 ))}
                             </div>
+                            )}
                         </div>
                     </div>
 
@@ -1078,7 +1336,162 @@ export default function Reports({
                             </div>
                         </div>
 
-                        {showPreview && canPreviewRows && canUseSelectedSource && (
+                        {isVsMatrixPack && canUseSelectedSource && showPreview && vsLyRowsAll.length > 0 && (() => {
+                            const vHead = vsLyRowsAll[0];
+                            const dataColCount = 4 * (vHead?.months?.length || 12) + 4;
+                            const itemAndDataColSpan = 1 + dataColCount;
+                            return (
+                            <div className="p-4 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Year vs last year (monthly)</h3>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                                    {Object.entries(reportPack.summary).map(([label, value]) => (
+                                        <div key={label} className="p-3 rounded-lg border bg-black/10" style={{ borderColor: colors.border }}>
+                                            <p className="text-[10px] font-bold uppercase opacity-60" style={{ color: colors.textMuted }}>{label}</p>
+                                            <p className="text-sm font-bold mt-1 break-words" style={{ color: colors.textMain }}>{String(value)}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                                {vsLyRowsFiltered.length === 0 && (
+                                    <p className="text-sm font-medium" style={{ color: colors.textMuted }}>
+                                        All rows are hidden. Select at least one row in Columns to preview and export.
+                                    </p>
+                                )}
+                                <div
+                                    className="overflow-x-auto rounded-lg border"
+                                    style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                                >
+                                    <table className="w-full min-w-[1400px] text-xs" style={{ color: colors.textMain }}>
+                                        <thead>
+                                            <tr style={{ backgroundColor: colors.bg }}>
+                                                <th
+                                                    rowSpan={2}
+                                                    className="text-left p-2 sticky left-0 z-20 min-w-[11rem] border-r align-bottom"
+                                                    style={{ color: colors.textMuted, backgroundColor: colors.card, borderColor: colors.border }}
+                                                >
+                                                    Item
+                                                </th>
+                                                {vHead.months.map((mo: { month: number; monthLabel: string }) => (
+                                                    <th
+                                                        key={mo.month}
+                                                        colSpan={4}
+                                                        className="text-center p-2 border-b font-bold"
+                                                        style={{
+                                                            color: colors.primary,
+                                                            borderColor: colors.border,
+                                                            backgroundColor: colors.bg,
+                                                        }}
+                                                    >
+                                                        {mo.monthLabel} (CY {reportPackAny.vsLyMeta?.year} / LY {reportPackAny.vsLyMeta?.yearLy})
+                                                    </th>
+                                                ))}
+                                                <th
+                                                    colSpan={4}
+                                                    className="text-center p-2 font-bold"
+                                                    style={{
+                                                        color: colors.primary,
+                                                        borderColor: colors.border,
+                                                        backgroundColor: colors.bg,
+                                                    }}
+                                                >
+                                                    YTD (full year)
+                                                </th>
+                                            </tr>
+                                            <tr style={{ backgroundColor: colors.bg }}>
+                                                {vHead.months.map((mo: { month: number }) => (
+                                                    <React.Fragment key={mo.month}>
+                                                        <th
+                                                            className="p-1.5 text-[10px] font-semibold"
+                                                            style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}
+                                                        >
+                                                            CY
+                                                        </th>
+                                                        <th
+                                                            className="p-1.5 text-[10px] font-semibold"
+                                                            style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}
+                                                        >
+                                                            LY
+                                                        </th>
+                                                        <th
+                                                            className="p-1.5 text-[10px] font-semibold"
+                                                            style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}
+                                                        >
+                                                            %
+                                                        </th>
+                                                        <th
+                                                            className="p-1.5 text-[10px] font-semibold"
+                                                            style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}
+                                                        >
+                                                            OTB
+                                                        </th>
+                                                    </React.Fragment>
+                                                ))}
+                                                {['CY', 'LY', '%', 'OTB'].map((h) => (
+                                                    <th
+                                                        key={h}
+                                                        className="p-1.5 text-[10px] font-bold"
+                                                        style={{ color: colors.primary, borderColor: colors.border, backgroundColor: colors.card }}
+                                                    >
+                                                        YTD {h}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {vsLyRowsFiltered.length === 0 ? null : vsLyRowsFiltered.map((r) => {
+                                                if (r.rowKind === 'sectionHeader') {
+                                                    return (
+                                                        <tr key={r.id} style={{ backgroundColor: colors.bg }}>
+                                                            <td
+                                                                colSpan={itemAndDataColSpan}
+                                                                className="p-2 text-xs font-bold uppercase tracking-wide border-t border-r"
+                                                                style={{ color: colors.textMain, borderColor: colors.border }}
+                                                            >
+                                                                {r.label}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                }
+                                                const isTotal = r.rowKind === 'totalRevenue';
+                                                const rowBg = isTotal ? colors.primary + '22' : colors.card;
+                                                const labelBg = isTotal ? colors.primary + '2e' : colors.card;
+                                                const ytdBg = colors.bg;
+                                                return (
+                                                <tr
+                                                    key={r.id}
+                                                    style={{
+                                                        borderTop: `1px solid ${colors.border}`,
+                                                        backgroundColor: rowBg,
+                                                    }}
+                                                >
+                                                    <td
+                                                        className="p-2 font-medium text-xs align-top sticky left-0 z-10 border-r max-w-[16rem]"
+                                                        style={{ color: colors.textMain, backgroundColor: labelBg, borderColor: colors.border }}
+                                                    >
+                                                        {r.label}
+                                                    </td>
+                                                    {r.months.map((mo) => (
+                                                        <React.Fragment key={`${r.id}-m${mo.month}`}>
+                                                            <td className="p-1.5 font-mono align-top whitespace-pre-wrap" style={{ color: colors.textMain, maxWidth: '8rem' }}>{mo.cy}</td>
+                                                            <td className="p-1.5 font-mono align-top whitespace-pre-wrap" style={{ color: colors.textMain, maxWidth: '8rem' }}>{mo.ly}</td>
+                                                            <td className="p-1.5 font-mono align-top font-bold" style={pctClass(mo.pct)}>{mo.pct}</td>
+                                                            <td className="p-1.5 font-mono align-top whitespace-pre-wrap" style={{ color: colors.textMain, maxWidth: '8rem' }}>{mo.otb}</td>
+                                                        </React.Fragment>
+                                                    ))}
+                                                    <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.cy}</td>
+                                                    <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.ly}</td>
+                                                    <td className="p-1.5 font-mono font-bold" style={{ ...pctClass(r.ytd.pct), backgroundColor: ytdBg }}>{r.ytd.pct}</td>
+                                                    <td className="p-1.5 font-mono align-top" style={{ color: colors.textMain, backgroundColor: ytdBg }}>{r.ytd.otb}</td>
+                                                </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            );
+                        })()}
+
+                        {showPreview && canPreviewRows && canUseSelectedSource && !isVsMatrixPack && (
                             <div className="p-4 rounded-xl border space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                                     {Object.entries(reportPack.summary).map(([label, value]) => (
@@ -1146,13 +1559,19 @@ export default function Reports({
 
                             <button
                                 type="button"
-                                disabled={!canUseSelectedSource || !reportPack.rows.length}
+                                disabled={
+                                    !canUseSelectedSource ||
+                                    (!isVsMatrixPack && !reportPack.rows.length) ||
+                                    (isVsMatrixPack && (!vsLyRowsAll.length || !vsLyRowsFiltered.length))
+                                }
                                 onClick={handleExport}
                                 className="w-full py-3 rounded flex items-center justify-center gap-2 hover:brightness-110 transition-all disabled:opacity-50"
                                 style={{ backgroundColor: colors.green, color: '#000' }}
                             >
                                 <Download size={18} />
-                                Export as {exportFormat.toUpperCase()}
+                                {isVsMatrixPack
+                                    ? `Export (${exportFormat === 'pdf' ? 'print / PDF' : exportFormat === 'excel' ? 'Excel' : 'CSV'})`
+                                    : `Export as ${exportFormat.toUpperCase()}`}
                             </button>
                         </div>
                     </div>

@@ -3971,6 +3971,7 @@ export default function AdvancedSalesDashboard() {
                 ...accountData,
                 propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
                 createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+                accountOwnerName: u,
                 activities: [...(accountData.activities || []), act],
             },
             ...prev,

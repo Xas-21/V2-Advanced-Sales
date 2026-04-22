@@ -80,7 +80,7 @@ function accountToFormState(acc: any) {
 export default function AddAccountModal({ isOpen, onClose, onSave, theme, editingAccount, accountTypeOptions }: AddAccountModalProps) {
     const colors = theme.colors;
 
-    const typeOptions = accountTypeOptions?.length ? accountTypeOptions : ['Corporate', 'Travel Agency', 'Government', 'DMC'];
+    const typeOptions = accountTypeOptions?.length ? accountTypeOptions : ['Corporate', 'Travel Agent', 'Government', 'DMC'];
 
     const [newAccountData, setNewAccountData] = useState(defaultFormState);
 

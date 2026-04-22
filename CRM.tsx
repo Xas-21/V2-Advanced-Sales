@@ -554,6 +554,7 @@ export default function CRM({
             ...newAccountData,
             propertyId: newAccountData.propertyId || activeProperty?.id || 'P-GLOBAL',
             createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            accountOwnerName: u,
             activities: [...(newAccountData.activities || []), act],
         };
         setAccounts((prev: any[]) => [newAccount, ...prev]);

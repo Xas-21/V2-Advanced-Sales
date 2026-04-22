@@ -256,6 +256,7 @@ export default function Contracts({
             ...accountData,
             propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
             createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            accountOwnerName: u,
             activities: [...(accountData.activities || []), act],
         };
         setAccounts((prev: any[]) => [newAcc, ...prev]);

@@ -367,7 +367,15 @@ export default function CRMProfileView({
                             {initial}
                         </div>
                         <div className="min-w-0">
-                            <h1 className="text-2xl font-bold mb-1" style={{ color: colors.textMain }}>{lead.company}</h1>
+                            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-1">
+                                <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>{lead.company}</h1>
+                                <span className="text-sm" style={{ color: colors.textMuted }}>
+                                    Account owner:{' '}
+                                    <span className="font-semibold" style={{ color: colors.textMain }}>
+                                        {String((lead as any).accountOwnerName || '').trim() || '—'}
+                                    </span>
+                                </span>
+                            </div>
                             <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>
                                 Client TAX ID:{' '}
                                 <span className="font-mono normal-case tracking-normal" style={{ color: colors.textMain }}>

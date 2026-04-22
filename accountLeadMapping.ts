@@ -13,6 +13,16 @@ function withContactName(c: any) {
     return { ...c, name: contactDisplayName(c) };
 }
 
+/** Display name of the user who created the account (stored or inferred from first "Account created" activity). */
+export function resolveAccountOwnerName(account: any): string {
+    const direct = String(account?.accountOwnerName || account?.createdByName || '').trim();
+    if (direct) return direct;
+    const acts = Array.isArray(account?.activities) ? account.activities : [];
+    const created = acts.find((a: any) => String(a?.title || '').trim() === 'Account created');
+    if (created?.user) return String(created.user).trim();
+    return '';
+}
+
 /** Map stored account records to the CRM profile "lead" shape. */
 export function accountToLead(account: any): any {
     const c0raw = (account.contacts && account.contacts[0]) || {};
@@ -51,7 +61,8 @@ export function accountToLead(account: any): any {
         profileAuditLog: Array.isArray(account.profileAuditLog) ? account.profileAuditLog : [],
         winRate: account.winRate ?? 0,
         totalSpend: account.totalSpend ?? 0,
-        totalRequests: account.totalRequests ?? 0
+        totalRequests: account.totalRequests ?? 0,
+        accountOwnerName: resolveAccountOwnerName(account)
     };
 }
 
@@ -91,6 +102,7 @@ export function leadToAccount(lead: any, existing: any = {}): any {
         ...existing,
         id: aid,
         name: lead.company,
+        accountOwnerName: lead.accountOwnerName ?? existing.accountOwnerName,
         clientTaxId: lead.clientTaxId ?? existing.clientTaxId ?? '',
         type: (lead.tags && lead.tags[0]) || existing.type || 'Corporate',
         tags: tagList && tagList.length ? tagList : existing.tags,

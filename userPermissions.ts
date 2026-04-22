@@ -333,6 +333,8 @@ const REPORT_ENTITY_TO_PERM: Record<string, PermissionId | undefined> = {
     MICE: 'reports.dataMice',
     Tasks: 'reports.dataTasks',
     'Sales Calls': 'reports.dataSalesCalls',
+    'Rooms vs LY': 'reports.dataRequests',
+    'MICE vs LY': 'reports.dataMice',
 };
 
 /** True if user has any per–data-source Reports permission (restricts which sources appear). */

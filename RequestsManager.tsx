@@ -327,8 +327,58 @@ export default function RequestsManager({
     // Combined/Series forms would use similar structures or composite
 
     // Table state for All Requests view
-    const [columnOrder, setColumnOrder] = useState<string[]>(['options', 'details', 'requestName', 'account', 'type', 'meal', 'status', 'dates', 'stay_info', 'paid_amount', 'total_cost']);
+    const [columnOrder, setColumnOrder] = useState<string[]>([
+        'options',
+        'details',
+        'requestName',
+        'account',
+        'account_type',
+        'request_segment',
+        'type',
+        'meal',
+        'status',
+        'dates',
+        'stay_info',
+        'paid_amount',
+        'total_cost',
+    ]);
     const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
+    /** Optional list columns (defaults on); toggled via gear above the table */
+    const [listShowAccountTypeCol, setListShowAccountTypeCol] = useState(true);
+    const [listShowRequestSegmentCol, setListShowRequestSegmentCol] = useState(true);
+    const [listColumnSettingsOpen, setListColumnSettingsOpen] = useState(false);
+    const listColumnSettingsRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        setColumnOrder((prev) => {
+            if (prev.includes('account_type') && prev.includes('request_segment')) return prev;
+            const i = prev.indexOf('account');
+            const ins = i >= 0 ? i + 1 : prev.length;
+            const next = prev.filter((c) => c !== 'account_type' && c !== 'request_segment');
+            next.splice(ins, 0, 'account_type', 'request_segment');
+            return next;
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!listColumnSettingsOpen) return;
+        const onDown = (e: PointerEvent) => {
+            const el = listColumnSettingsRef.current;
+            if (el && !el.contains(e.target as Node)) setListColumnSettingsOpen(false);
+        };
+        document.addEventListener('pointerdown', onDown, true);
+        return () => document.removeEventListener('pointerdown', onDown, true);
+    }, [listColumnSettingsOpen]);
+
+    const visibleColumnOrder = useMemo(
+        () =>
+            columnOrder.filter(
+                (c) =>
+                    (c !== 'account_type' || listShowAccountTypeCol) &&
+                    (c !== 'request_segment' || listShowRequestSegmentCol)
+            ),
+        [columnOrder, listShowAccountTypeCol, listShowRequestSegmentCol]
+    );
     const [expandedLog, setExpandedLog] = useState<number | null>(null);
     const [selectedRequest, setSelectedRequest] = useState<any>(null);
     const [activeOptionsMenu, setActiveOptionsMenu] = useState<number | null>(null);
@@ -452,6 +502,7 @@ export default function RequestsManager({
             ...accountData,
             propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
             createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            accountOwnerName: u,
             activities: [...(accountData.activities || []), act],
         };
         setAccounts((prev: any[]) => [newAccount, ...prev]);
@@ -4940,14 +4991,32 @@ export default function RequestsManager({
         details: 'Confirmation No.',
         requestName: 'Request Name',
         account: 'Account',
+        account_type: 'Account Type',
+        request_segment: 'Request Segment',
         type: 'Type',
         meal: 'Meal',
         status: 'Status',
         dates: 'Dates',
         stay_info: 'Info',
         paid_amount: 'Paid Amount',
-        total_cost: 'Total Cost'
+        total_cost: 'Total Cost',
     };
+
+    const accountTypeFromLinkedAccount = (req: any) => {
+        const fromReq = String(req?.accountType || '').trim();
+        const aid = String(req?.accountId || '').trim();
+        const name = String(req?.accountName || req?.account || '')
+            .trim()
+            .toLowerCase();
+        const acc = (accounts || []).find(
+            (a: any) =>
+                (aid && String(a.id) === aid) || (name && String(a.name || '').trim().toLowerCase() === name)
+        );
+        const fromAcc = String(acc?.type || '').trim();
+        return fromAcc || fromReq || '—';
+    };
+
+    const requestSegmentListLabel = (req: any) => String(req?.segment || '').trim() || '—';
 
     const getInitials = (name: string) => {
         return name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
@@ -5158,7 +5227,7 @@ export default function RequestsManager({
         if (!requestList.length) {
             return (
                 <tr>
-                    <td colSpan={columnOrder.length} className={`${compact ? 'py-8 text-xs' : 'py-12 text-sm'} text-center opacity-50`} style={{ color: colors.textMuted }}>
+                    <td colSpan={visibleColumnOrder.length} className={`${compact ? 'py-8 text-xs' : 'py-12 text-sm'} text-center opacity-50`} style={{ color: colors.textMuted }}>
                         No matching requests.
                     </td>
                 </tr>
@@ -5166,19 +5235,19 @@ export default function RequestsManager({
         }
         return requestList.map((request, idx) => (
             <tr key={request.id || `row-${idx}`} className={`group transition-all duration-300 ${compact ? 'hover:translate-y-[-1px]' : 'hover:translate-y-[-2px]'}`}>
-                {columnOrder.map((column, colIdx) => {
+                {visibleColumnOrder.map((column, colIdx) => {
                     const cellStyle = {
                         backgroundColor: colors.card,
                         borderColor: colors.border
                     };
 
                     const isFirst = colIdx === 0;
-                    const isLast = colIdx === columnOrder.length - 1;
+                    const isLast = colIdx === visibleColumnOrder.length - 1;
                     const acct = accountLabel(request);
 
                     return (
                         <td key={column}
-                            className={`${cpy} ${cpx} border-y ${isFirst ? `border-l ${rFirst}` : ''} ${isLast ? `border-r ${rLast}` : ''} ${column === 'total_cost' ? 'text-right' : column === 'dates' ? 'text-left whitespace-nowrap' : 'text-center'}`}
+                            className={`${cpy} ${cpx} border-y ${isFirst ? `border-l ${rFirst}` : ''} ${isLast ? `border-r ${rLast}` : ''} ${column === 'total_cost' ? 'text-right' : column === 'dates' ? 'text-left whitespace-nowrap' : column === 'account_type' || column === 'request_segment' || column === 'account' || column === 'requestName' || column === 'details' ? 'text-left' : 'text-center'}`}
                             style={{
                                 ...cellStyle,
                                 borderLeft: isFirst ? `${borderAccent} solid ${getStatusColor(request.status)}` : `1px solid ${colors.border}`,
@@ -5265,6 +5334,30 @@ export default function RequestsManager({
                                         <span className={`${compact ? 'text-[9px]' : 'text-[10px]'} opacity-50 truncate`} style={{ color: colors.textMain }}>{request.accountType}</span>
                                     </div>
                                 </div>
+                            )}
+
+                            {column === 'account_type' &&
+                                (() => {
+                                    const at = accountTypeFromLinkedAccount(request);
+                                    return (
+                                        <span
+                                            className={`${compact ? 'text-xs' : 'text-sm'} font-medium truncate inline-block max-w-[160px]`}
+                                            style={{ color: colors.textMain }}
+                                            title={at}
+                                        >
+                                            {at}
+                                        </span>
+                                    );
+                                })()}
+
+                            {column === 'request_segment' && (
+                                <span
+                                    className={`${compact ? 'text-xs' : 'text-sm'} font-medium truncate inline-block max-w-[160px]`}
+                                    style={{ color: colors.textMain }}
+                                    title={requestSegmentListLabel(request)}
+                                >
+                                    {requestSegmentListLabel(request)}
+                                </span>
                             )}
 
                             {column === 'type' && (
@@ -5489,6 +5582,47 @@ export default function RequestsManager({
                                     </select>
                                 </div>
                             )}
+                            <div className="relative shrink-0" ref={listColumnSettingsRef}>
+                                <button
+                                    type="button"
+                                    className="p-2.5 rounded-xl border hover:bg-white/5 transition-colors flex items-center justify-center"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    title="List column settings"
+                                    onClick={() => setListColumnSettingsOpen((o) => !o)}
+                                >
+                                    <Settings size={18} />
+                                </button>
+                                {listColumnSettingsOpen ? (
+                                    <div
+                                        className="absolute right-0 top-full mt-2 z-50 min-w-[220px] p-3 rounded-xl border shadow-xl"
+                                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                    >
+                                        <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: colors.textMuted }}>
+                                            Columns
+                                        </p>
+                                        <label className="flex items-center gap-2 cursor-pointer py-1.5 text-sm" style={{ color: colors.textMain }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={listShowAccountTypeCol}
+                                                onChange={(e) => setListShowAccountTypeCol(e.target.checked)}
+                                                className="w-4 h-4 rounded"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            Account type
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer py-1.5 text-sm" style={{ color: colors.textMain }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={listShowRequestSegmentCol}
+                                                onChange={(e) => setListShowRequestSegmentCol(e.target.checked)}
+                                                className="w-4 h-4 rounded"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            Request segment
+                                        </label>
+                                    </div>
+                                ) : null}
+                            </div>
                             <button type="button" className="px-4 py-2 rounded-xl border hover:bg-white/5 transition-colors flex items-center gap-2 text-sm font-bold shrink-0"
                                 style={{ borderColor: colors.border, color: colors.textMain }}>
                                 <Filter size={16} /> Filter
@@ -5502,7 +5636,7 @@ export default function RequestsManager({
                 <table className={`w-full text-left border-separate ${spacingY}`}>
                     <thead>
                         <tr>
-                            {columnOrder.map((column) => (
+                            {visibleColumnOrder.map((column) => (
                                 <th key={column}
                                     draggable
                                     onDragStart={() => handleColumnDragStart(column)}
@@ -5751,6 +5885,12 @@ export default function RequestsManager({
                         const pinnedHeadZ = 55;
                         const pinnedBodyZ = 50;
                         const dayCellZ = 1;
+                        const totalRoomsByDay: number[] = Array.from({ length: daysInMonth }, (_, i) => {
+                            const day = i + 1;
+                            return monthRows.reduce((sum, r) => sum + (r.dayCounts[day] || 0), 0);
+                        });
+                        const totalRoomsRn = monthRows.reduce((sum, r) => sum + (r.totalRoomNights || 0), 0);
+                        const totalRoomsFooterBg = gridRoomsThemeDark ? '#1a2332' : colors.bg;
                         return (
                             <div
                                 key={`${gridYear}-${monthIndex}`}
@@ -5913,6 +6053,51 @@ export default function RequestsManager({
                                             </tr>
                                             );
                                         })}
+                                        <tr className="shrink-0" style={{ borderTop: `2px solid ${colors.primary}` }}>
+                                            <td
+                                                colSpan={2}
+                                                className="border px-2 py-1.5 sticky left-0 font-black text-center"
+                                                style={{
+                                                    borderColor: colors.border,
+                                                    backgroundColor: totalRoomsFooterBg,
+                                                    color: colors.primary,
+                                                    minWidth: companyColWidth + groupColWidth,
+                                                    width: companyColWidth + groupColWidth,
+                                                    maxWidth: companyColWidth + groupColWidth,
+                                                    textAlign: 'center',
+                                                    borderLeft: `3px solid ${colors.primary}`,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedBodyZ,
+                                                }}
+                                            >
+                                                Total Rooms
+                                            </td>
+                                            {Array.from({ length: daysInMonth }, (_, i) => {
+                                                const day = i + 1;
+                                                const value = totalRoomsByDay[i] || 0;
+                                                return (
+                                                    <td
+                                                        key={`total-rooms-m${monthIndex}-d${day}`}
+                                                        className="border px-1 py-1.5 text-center font-black"
+                                                        style={{
+                                                            borderColor: colors.border,
+                                                            color: value > 0 ? colors.textMain : colors.textMuted,
+                                                            backgroundColor: value > 0 ? totalRoomsFooterBg : colors.bg,
+                                                            zIndex: dayCellZ,
+                                                        }}
+                                                    >
+                                                        {value > 0 ? value : ''}
+                                                    </td>
+                                                );
+                                            })}
+                                            <td
+                                                className="border px-2 py-1.5 text-center font-black"
+                                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: totalRoomsFooterBg }}
+                                            >
+                                                {totalRoomsRn}
+                                            </td>
+                                            <td className="border px-2 py-1.5 text-center" colSpan={5} style={{ borderColor: colors.border, color: colors.textMuted, backgroundColor: totalRoomsFooterBg }} />
+                                        </tr>
                                     </tbody>
                                 </table>
                                 </div>

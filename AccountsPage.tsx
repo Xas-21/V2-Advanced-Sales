@@ -3,6 +3,7 @@ import { Search, Plus, Building2 } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
+import { resolveAccountTypesForProperty } from './propertyTaxonomy';
 import {
     CONTRACTS_CHANGED_EVENT,
     attachSignedContractFile,
@@ -83,6 +84,10 @@ export default function AccountsPage({
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
     const [search, setSearch] = useState('');
+    const [cityFilter, setCityFilter] = useState('');
+    const [segmentFilter, setSegmentFilter] = useState('');
+    const [filterWithContract, setFilterWithContract] = useState(false);
+    const [filterWithoutContract, setFilterWithoutContract] = useState(false);
     const [profileLead, setProfileLead] = useState<any | null>(null);
     const [showAddModal, setShowAddModal] = useState(false);
     const [showEditAccountModal, setShowEditAccountModal] = useState(false);
@@ -133,17 +138,60 @@ export default function AccountsPage({
         email: 'Email'
     };
 
+    const segmentFilterOptions = useMemo(() => {
+        const fromProp =
+            Array.isArray(accountTypeOptions) && accountTypeOptions.length
+                ? accountTypeOptions
+                : resolveAccountTypesForProperty(String(activeProperty?.id || ''), activeProperty);
+        return [...new Set(fromProp.map((x) => String(x).trim()).filter(Boolean))].sort((a, b) =>
+            a.localeCompare(b)
+        );
+    }, [accountTypeOptions, activeProperty]);
+
+    const accountIdsWithContract = useMemo(() => {
+        const set = new Set<string>();
+        for (const c of accountContracts) {
+            const aid = String(c.accountId || '').trim();
+            if (aid) set.add(aid);
+        }
+        return set;
+    }, [accountContracts]);
+
     const filtered = useMemo(() => {
         const t = search.trim().toLowerCase();
-        if (!t) return accounts;
+        const cityQ = cityFilter.trim().toLowerCase();
+        const contractNarrow = filterWithContract !== filterWithoutContract;
+
         return accounts.filter((a: any) => {
-            const c0 = (a.contacts && a.contacts[0]) || {};
-            const hay = [a.name, a.type, a.city, contactDisplayName(c0), c0.firstName, c0.lastName, c0.phone, c0.email]
-                .map((x) => String(x || '').toLowerCase())
-                .join(' ');
-            return hay.includes(t);
+            if (t) {
+                const c0 = (a.contacts && a.contacts[0]) || {};
+                const hay = [a.name, a.type, a.city, contactDisplayName(c0), c0.firstName, c0.lastName, c0.phone, c0.email]
+                    .map((x) => String(x || '').toLowerCase())
+                    .join(' ');
+                if (!hay.includes(t)) return false;
+            }
+            if (cityQ) {
+                if (!String(a.city || '').toLowerCase().includes(cityQ)) return false;
+            }
+            if (segmentFilter) {
+                if (String(a.type || '').trim() !== segmentFilter) return false;
+            }
+            if (contractNarrow) {
+                const has = accountIdsWithContract.has(String(a.id));
+                if (filterWithContract && !filterWithoutContract) return has;
+                if (filterWithoutContract && !filterWithContract) return !has;
+            }
+            return true;
         });
-    }, [accounts, search]);
+    }, [
+        accounts,
+        search,
+        cityFilter,
+        segmentFilter,
+        filterWithContract,
+        filterWithoutContract,
+        accountIdsWithContract,
+    ]);
 
     const handleColumnDragStart = (column: string) => setDraggedColumn(column);
     const handleColumnDrop = (targetColumn: string) => {
@@ -173,6 +221,7 @@ export default function AccountsPage({
                 ...accountData,
                 propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
                 createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+                accountOwnerName: u,
                 activities: [...(accountData.activities || []), act],
             },
             ...prev,
@@ -404,13 +453,24 @@ export default function AccountsPage({
 
     return (
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
-            <div className="shrink-0 p-6 border-b flex flex-wrap items-center justify-between gap-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                <div>
-                    <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Accounts</h1>
-                    <p className="text-sm" style={{ color: colors.textMuted }}>{accounts.length} accounts</p>
-                </div>
-                <div className="flex items-center gap-3 flex-1 justify-end min-w-[200px]">
-                    <div className="relative flex-1 max-w-md">
+            <div className="shrink-0 pt-3 px-4 sm:px-6 pb-4 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,auto)_1fr_minmax(0,auto)] gap-x-4 gap-y-3 items-start">
+                    <div className="shrink-0 pt-0.5">
+                        <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Accounts</h1>
+                        <p className="text-sm" style={{ color: colors.textMuted }}>
+                            {filtered.length === accounts.length
+                                ? `${accounts.length} accounts`
+                                : `${filtered.length} of ${accounts.length} accounts`}
+                        </p>
+                    </div>
+                    <div className="flex flex-col items-center gap-2.5 w-full min-w-0 max-w-3xl justify-self-center lg:px-2">
+                    <h2
+                        className="w-full text-center text-sm font-bold uppercase tracking-widest"
+                        style={{ color: colors.primary }}
+                    >
+                        Filter
+                    </h2>
+                    <div className="relative w-full max-w-md">
                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" style={{ color: colors.textMuted }} />
                         <input
                             value={search}
@@ -420,16 +480,67 @@ export default function AccountsPage({
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                         />
                     </div>
+                    <div className="flex flex-wrap items-end justify-center gap-4 w-full">
+                        <div className="flex flex-col gap-1 w-full min-w-[8rem] max-w-[14rem]">
+                            <label className="text-[10px] font-bold uppercase tracking-wider opacity-60 text-center" style={{ color: colors.textMuted }}>City</label>
+                            <input
+                                value={cityFilter}
+                                onChange={(e) => setCityFilter(e.target.value)}
+                                placeholder="Filter by city…"
+                                className="w-full px-3 py-2 rounded-xl border text-sm outline-none"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1 w-full min-w-[8rem] max-w-[14rem]">
+                            <label className="text-[10px] font-bold uppercase tracking-wider opacity-60 text-center" style={{ color: colors.textMuted }}>Segment</label>
+                            <select
+                                value={segmentFilter}
+                                onChange={(e) => setSegmentFilter(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border text-sm outline-none"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <option value="">All segments</option>
+                                {segmentFilterOptions.map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-6">
+                        <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: colors.textMain }}>
+                            <input
+                                type="checkbox"
+                                checked={filterWithContract}
+                                onChange={(e) => setFilterWithContract(e.target.checked)}
+                                className="rounded border"
+                                style={{ borderColor: colors.border }}
+                            />
+                            With contract
+                        </label>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: colors.textMain }}>
+                            <input
+                                type="checkbox"
+                                checked={filterWithoutContract}
+                                onChange={(e) => setFilterWithoutContract(e.target.checked)}
+                                className="rounded border"
+                                style={{ borderColor: colors.border }}
+                            />
+                            Without contract
+                        </label>
+                    </div>
+                    </div>
+                    <div className="shrink-0 flex justify-start lg:justify-end pt-0.5 w-full lg:w-auto">
                     {!profileReadOnly && (
                         <button
                             type="button"
                             onClick={() => setShowAddModal(true)}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm whitespace-nowrap"
+                            className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm whitespace-nowrap w-full sm:w-auto justify-center"
                             style={{ backgroundColor: colors.primary, color: '#000' }}
                         >
                             <Plus size={18} /> New account
                         </button>
                     )}
+                    </div>
                 </div>
             </div>
 
@@ -437,8 +548,8 @@ export default function AccountsPage({
                 {!filtered.length ? (
                     <div className="flex flex-col items-center justify-center py-20 text-center" style={{ color: colors.textMuted }}>
                         <Building2 size={48} className="opacity-20 mb-4" />
-                        <p className="font-bold">No accounts yet</p>
-                        <p className="text-sm mt-1">Create an account or adjust your search.</p>
+                        <p className="font-bold">{accounts.length ? 'No matching accounts' : 'No accounts yet'}</p>
+                        <p className="text-sm mt-1">Create an account or adjust your search and filters.</p>
                     </div>
                 ) : (
                     <table className="w-full text-left border-separate border-spacing-y-3">
