@@ -7,6 +7,8 @@ export const USER_ROLE_OPTIONS = [
     'Admin',
     'General Manager',
     'Head of Sales',
+    /** Same defaults as Head of Sales (full operational + reports; not Admin / settings tools). */
+    'Director of Revenue',
     'Sales Manager',
     'Sales Executive',
     'Sales Coordinator',
@@ -186,6 +188,23 @@ export const REPORTS_DATA_SOURCE_PERMISSIONS: PermissionId[] = [
     'reports.dataSalesCalls',
 ];
 
+/** Head of Sales and Director of Revenue: broad delete/mutate + all nav + full Report Builder (not Admin settings). */
+const HEAD_OF_SALES_LIKE_DEFAULTS = permSet(
+    'mutate.operational',
+    ...DEFAULT_NAV_PERMISSIONS,
+    'reports.access',
+    'reports.sourceRows',
+    ...REPORTS_DATA_SOURCE_PERMISSIONS,
+    'tasks.deleteAny',
+    'accounts.delete',
+    'contracts.delete',
+    'requests.delete',
+    'requests.deletePayments',
+    'requests.alerts',
+    'crm.deleteCalls',
+    'accounts.timelineManual'
+);
+
 /** Defaults before grants/revokes. Admin uses a shortcut in getEffectivePermissionSet. */
 export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
     Admin: permSet(...ALL_PERMISSION_IDS),
@@ -195,21 +214,8 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
         'reports.sourceRows',
         ...REPORTS_DATA_SOURCE_PERMISSIONS
     ),
-    'Head of Sales': permSet(
-        'mutate.operational',
-        ...DEFAULT_NAV_PERMISSIONS,
-        'reports.access',
-        'reports.sourceRows',
-        ...REPORTS_DATA_SOURCE_PERMISSIONS,
-        'tasks.deleteAny',
-        'accounts.delete',
-        'contracts.delete',
-        'requests.delete',
-        'requests.deletePayments',
-        'requests.alerts',
-        'crm.deleteCalls',
-        'accounts.timelineManual'
-    ),
+    'Head of Sales': new Set(HEAD_OF_SALES_LIKE_DEFAULTS),
+    'Director of Revenue': new Set(HEAD_OF_SALES_LIKE_DEFAULTS),
     'Sales Manager': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
     'Sales Executive': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
     'Sales Coordinator': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
@@ -227,6 +233,13 @@ export function normalizeUserRole(user: any): UserRoleId {
     if (!r) return 'Sales Executive';
     if (r === 'admin' || r === 'administrator') return 'Admin';
     if (r.includes('general manager') || r === 'gm') return 'General Manager';
+    if (
+        r.includes('director of revenue') ||
+        r.includes('revenue director') ||
+        (r.includes('director') && r.includes('revenue'))
+    ) {
+        return 'Director of Revenue';
+    }
     if (
         r.includes('head of sales') ||
         r === 'hod' ||
