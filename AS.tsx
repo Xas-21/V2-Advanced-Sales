@@ -1471,6 +1471,9 @@ const EventsView = ({
             .filter((r: any) => requestInEventDateRange(r, filterRange));
     }, [sharedRequests, filterRange]);
 
+    /** All eligible MICE requests (no pipeline date filter); used for venue availability and BEO. */
+    const allMiceRequests = useMemo(() => (sharedRequests || []).filter(isEventsCateringEligibleRequest), [sharedRequests]);
+
     const kanbanData = useMemo(() => {
         const empty: Record<string, any[]> = {
             inquiry: [], accepted: [], tentative: [], definite: [], actual: [], cancelled: [],
@@ -1629,11 +1632,12 @@ const EventsView = ({
         return checkIso >= a && checkIso <= (b || a);
     };
 
+    /** Use all eligible MICE requests (not `miceRequests`), so venue availability is not tied to the Events pipeline date filter (e.g. current year only). */
     const venueBookingLabel = (venueName: string, checkIso: string) => {
         const order = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual'];
         let bestIdx = -1;
         let bestReq: any = null;
-        for (const req of miceRequests) {
+        for (const req of allMiceRequests) {
             const st = String(req.status || 'Inquiry');
             if (st === 'Cancelled' || st === 'Lost') continue;
             const rows = Array.isArray(req.agenda) ? req.agenda : [];
@@ -1692,8 +1696,6 @@ const EventsView = ({
         if (worst === 'definite') return { label: 'Held / Definite', tone: 'definite' as const, requestTitle: lastTitle };
         return { label: 'Tentative / In pipeline', tone: 'tentative' as const, requestTitle: lastTitle };
     };
-
-    const allMiceRequests = useMemo(() => (sharedRequests || []).filter(isEventsCateringEligibleRequest), [sharedRequests]);
 
     const beoCandidates = useMemo(() => {
         return allMiceRequests.filter((r: any) => {
