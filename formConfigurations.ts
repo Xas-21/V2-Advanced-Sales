@@ -413,25 +413,32 @@ function present(v: unknown): boolean {
 
 function getRequestScalar(formData: any, fieldId: string, isEventOnly: boolean): unknown {
     if (isEventOnly) {
+        /**
+         * Event-only in RequestsManager uses {@link accForm} (accommodation-shaped state), not `evtForm`.
+         * Deadlines are `offerDeadline` / `depositDeadline` / `paymentDeadline`; account is `accountName`.
+         * Keep `offerDate` / `leadId` etc. as fallbacks for any legacy payload.
+         */
         switch (fieldId) {
             case 'request_name':
                 return formData?.requestName;
             case 'account_lead':
-                return formData?.leadId || formData?.accountName;
+                return formData?.leadId || formData?.accountName || formData?.account;
+            case 'account':
+                return formData?.accountName || formData?.account || formData?.leadId;
             case 'confirmation_no':
                 return formData?.confirmationNo;
             case 'received_date':
-                return formData?.requestDate;
+                return formData?.receivedDate || formData?.requestDate;
             case 'segment':
                 return formData?.segment;
             case 'status':
                 return formData?.status;
             case 'offer_date':
-                return formData?.offerDate;
+                return formData?.offerDate ?? formData?.offerDeadline;
             case 'deposit_date':
-                return formData?.depositDate;
+                return formData?.depositDate ?? formData?.depositDeadline;
             case 'payment_date':
-                return formData?.paymentDate;
+                return formData?.paymentDate ?? formData?.paymentDeadline;
             case 'note':
                 return formData?.note;
             default:
