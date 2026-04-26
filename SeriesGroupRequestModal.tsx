@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Users, Box
@@ -8,6 +8,10 @@ import {
     REQUEST_SECTION_ADD_BTN_LG_CLASS,
     REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
+import {
+    resolveOccupancyTypesForProperty,
+    OCCUPANCY_TYPES_CHANGED_EVENT,
+} from './propertyOccupancyTypes';
 
 interface SeriesGroupRequestModalProps {
     isOpen: boolean;
@@ -15,12 +19,27 @@ interface SeriesGroupRequestModalProps {
     theme: any;
     initialData?: any;
     onSave?: (data: any) => void;
+    activeProperty?: any;
 }
 
 const mockLeads = [];
 
-export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initialData, onSave }: SeriesGroupRequestModalProps) {
+export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initialData, onSave, activeProperty }: SeriesGroupRequestModalProps) {
     const colors = theme.colors;
+
+    const [occupancyTypesRev, setOccupancyTypesRev] = useState(0);
+    useEffect(() => {
+        const onOcc = () => setOccupancyTypesRev((n) => n + 1);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+        return () => window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+    }, []);
+
+    const occupancyOptions = useMemo(() => {
+        void occupancyTypesRev;
+        return resolveOccupancyTypesForProperty(String(activeProperty?.id || ''), activeProperty);
+    }, [activeProperty, occupancyTypesRev]);
+
+    const defaultOcc = occupancyOptions[0] || 'Single';
 
     const initialFormState = initialData || {
         id: 'REQ-SER-' + Math.floor(Math.random() * 100000),
@@ -33,7 +52,7 @@ export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initia
         depositDeadline: '',
         paymentDeadline: '',
         rooms: [
-            { id: Date.now(), arrival: '', departure: '', type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
+            { id: Date.now(), arrival: '', departure: '', type: 'Standard', occupancy: defaultOcc, count: 1, rate: 0 }
         ],
         transportation: [],
         agenda: [],
@@ -83,7 +102,7 @@ export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initia
                 arrival: form.checkIn || '',
                 departure: form.checkOut || '',
                 type: 'Standard',
-                occupancy: 'Single',
+                occupancy: defaultOcc,
                 count: 1,
                 rate: 0
             }]
@@ -303,7 +322,13 @@ export default function SeriesGroupRequestModal({ isOpen, onClose, theme, initia
                                         <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}
                                             style={{ color: colors.textMain }}>
-                                            <option>Single</option><option>Double</option>
+                                            {occupancyOptions.map((o) => (
+                                                <option key={o} value={o}>{o}</option>
+                                            ))}
+                                            {String(room.occupancy || '').trim() &&
+                                            !occupancyOptions.includes(String(room.occupancy)) ? (
+                                                <option value={String(room.occupancy)}>{String(room.occupancy)}</option>
+                                            ) : null}
                                         </select>
                                     </div>
                                     <div className="col-span-1">

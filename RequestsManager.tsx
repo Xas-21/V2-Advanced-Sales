@@ -23,6 +23,10 @@ import {
     normalizeAgendaRowTimes,
     DEFAULT_EVENT_PACKAGES,
 } from './propertyMealsPackages';
+import {
+    resolveOccupancyTypesForProperty,
+    OCCUPANCY_TYPES_CHANGED_EVENT,
+} from './propertyOccupancyTypes';
 import { canDeleteRequestPayments as userCanDeleteRequestPayments, canUseRequestAlerts } from './userPermissions';
 import RequestAlertsModal from './RequestAlertsModal';
 import { normalizeRequestAlerts, requestHasAlerts, type RequestAlert } from './requestAlerts';
@@ -252,6 +256,20 @@ export default function RequestsManager({
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         return () => window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
     }, []);
+
+    const [occupancyTypesRev, setOccupancyTypesRev] = useState(0);
+    useEffect(() => {
+        const onOcc = () => setOccupancyTypesRev((n) => n + 1);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+        return () => window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+    }, []);
+
+    const occupancySelectOptions = useMemo(() => {
+        void occupancyTypesRev;
+        return resolveOccupancyTypesForProperty(String(activeProperty?.id || ''), activeProperty);
+    }, [activeProperty, occupancyTypesRev]);
+
+    const primaryOccupancyDefault = occupancySelectOptions[0] || 'Single';
 
     const mealPlansForProperty = useMemo(() => {
         void mealsPackagesRev;
@@ -570,7 +588,7 @@ export default function RequestsManager({
             setAccForm({ 
                 ...initialAccommodation, 
                 id: 'REQ-' + Math.floor(Math.random() * 100000),
-                rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: 'Single', count: 1, rate: 0, mealPlan: 'RO' }],
+                rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: primaryOccupancyDefault, count: 1, rate: 0, mealPlan: 'RO' }],
                 payments: [],
                 logs: [],
                 transportation: [],
@@ -612,7 +630,7 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -1519,12 +1537,12 @@ export default function RequestsManager({
                           departure: accForm.checkOut || '',
                           nights: 0,
                           type: rt,
-                          occupancy: 'Single',
+                          occupancy: primaryOccupancyDefault,
                           count: 1,
                           rate: 0,
                           mealPlan: defaultMeal,
                       }
-                    : { id: Date.now(), type: rt, occupancy: 'Single', count: 1, rate: 0, mealPlan: defaultMeal };
+                    : { id: Date.now(), type: rt, occupancy: primaryOccupancyDefault, count: 1, rate: 0, mealPlan: defaultMeal };
 
             setAccForm({
                 ...accForm,
@@ -2264,7 +2282,13 @@ export default function RequestsManager({
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>
                                         <select className="w-full min-w-0 py-1.5 px-1 text-[11px] rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}>
-                                            <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
+                                            {occupancySelectOptions.map((o) => (
+                                                <option key={o} value={o}>{o}</option>
+                                            ))}
+                                            {String(room.occupancy || '').trim() &&
+                                            !occupancySelectOptions.includes(String(room.occupancy)) ? (
+                                                <option value={String(room.occupancy)}>{String(room.occupancy)}</option>
+                                            ) : null}
                                         </select>
                                     </div>
                                     <div className={roomGridLikeSeries ? "col-span-1 min-w-0" : "col-span-2 min-w-0"}>

@@ -127,6 +127,7 @@ import {
     shouldCreateTaskForAlertKind,
 } from './propertyAlertSettings';
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
+import { OCCUPANCY_TYPES_CHANGED_EVENT } from './propertyOccupancyTypes';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
     buildReportSegmentsForRequest,
@@ -4535,13 +4536,21 @@ export default function AdvancedSalesDashboard() {
             if (!d?.propertyId || d.alertSettings == null) return;
             mergeIntoProperty(String(d.propertyId), { alertSettings: d.alertSettings });
         };
+        const onOccupancyTypes = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; occupancyTypes?: string[] }>).detail;
+            if (!d?.propertyId || !Array.isArray(d.occupancyTypes)) return;
+            mergeIntoProperty(String(d.propertyId), { occupancyTypes: d.occupancyTypes });
+            setTaxonomyRefresh((n) => n + 1);
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         window.addEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
             window.removeEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+            window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
         };
     }, []);
 

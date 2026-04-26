@@ -30,6 +30,11 @@ import {
     type EventPackageTimingId,
 } from './propertyMealsPackages';
 import {
+    resolveOccupancyTypesForProperty,
+    saveOccupancyTypesForProperty,
+    OCCUPANCY_TYPES_CHANGED_EVENT,
+} from './propertyOccupancyTypes';
+import {
     USER_ROLE_OPTIONS,
     PERMISSION_LABELS,
     USER_MODAL_SECTIONS,
@@ -733,12 +738,18 @@ export default function Settings({
     const [editPkgCode, setEditPkgCode] = useState('');
     const [editPkgTimingId, setEditPkgTimingId] = useState<EventPackageTimingId>('coffee_1');
 
+    const [occupancyTypesList, setOccupancyTypesList] = useState<string[]>([]);
+    const [newOccupancyLabel, setNewOccupancyLabel] = useState('');
+    const [editOccIdx, setEditOccIdx] = useState<number | null>(null);
+    const [editOccVal, setEditOccVal] = useState('');
+
     useEffect(() => {
         if (!managingProperty?.id) {
             setTaxonomySegments([]);
             setTaxonomyAccountTypes([]);
             setMealPlansList([]);
             setEventPackagesList([]);
+            setOccupancyTypesList([]);
             setAlertSettingsDraft(mergePropertyAlertSettings(null));
             return;
         }
@@ -751,6 +762,10 @@ export default function Settings({
         setTaxonomyNewType('');
         setMealPlansList(resolveMealPlansForProperty(managingProperty.id, managingProperty));
         setEventPackagesList(resolveEventPackagesForProperty(managingProperty.id, managingProperty));
+        setOccupancyTypesList(resolveOccupancyTypesForProperty(managingProperty.id, managingProperty));
+        setNewOccupancyLabel('');
+        setEditOccIdx(null);
+        setEditOccVal('');
         setEditMealIdx(null);
         setEditPkgIdx(null);
         setNewMealName('');
@@ -767,6 +782,7 @@ export default function Settings({
         managingProperty?.accountTypes,
         managingProperty?.mealPlans,
         managingProperty?.eventPackages,
+        managingProperty?.occupancyTypes,
         managingProperty?.alertSettings,
     ]);
 
@@ -869,11 +885,18 @@ export default function Settings({
             if (Array.isArray(d.eventPackages)) patch.eventPackages = d.eventPackages;
             if (Object.keys(patch).length) mergePatch(String(d.propertyId), patch);
         };
+        const onOcc = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; occupancyTypes?: string[] }>).detail;
+            if (!d?.propertyId || !Array.isArray(d.occupancyTypes)) return;
+            mergePatch(String(d.propertyId), { occupancyTypes: d.occupancyTypes });
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
+            window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
         };
     }, []);
 
@@ -1559,56 +1582,162 @@ export default function Settings({
         );
     };
 
-    const renderRoomTypesTab = () => (
-        <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="flex justify-between items-center">
-                <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Room Types Configuration</h2>
-                <button
-                    onClick={() => openModal('room')}
-                    className="px-4 py-2 rounded flex items-center gap-2 hover:brightness-110 transition-all text-sm font-bold"
-                    style={{ backgroundColor: colors.primary, color: '#000' }}>
-                    <Plus size={16} /> Add Room Type
-                </button>
-            </div>
-            <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border }}>
-                <table className="w-full text-left">
-                    <thead style={{ backgroundColor: colors.bg }}>
-                        <tr>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Room Type</th>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Size</th>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Capacity</th>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Inventory</th>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-right" style={{ color: colors.textMuted }}>Base Rate</th>
-                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-right" style={{ color: colors.textMuted }}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y" style={{ borderColor: colors.border }}>
-                        {safeRoomTypes.map((room) => (
-                            <tr key={room.id} className="hover:bg-white/5 transition-colors">
-                                <td className="p-4 font-medium" style={{ color: colors.textMain }}>{room.name}</td>
-                                <td className="p-4 text-sm font-mono" style={{ color: colors.primary }}>{room.size || '-'}</td>
-                                <td className="p-4 text-sm" style={{ color: colors.textMain }}>{room.capacity} Pax</td>
-                                <td className="p-4 text-sm" style={{ color: colors.textMain }}>
-                                    <span className="px-2 py-1 rounded bg-black/20 border" style={{ borderColor: colors.border }}>
-                                        {room.count} Rooms
-                                    </span>
-                                </td>
-                                <td className="p-4 text-right font-mono text-sm" style={{ color: colors.primary }}>{formatMoney(Number(room.baseRate || 0), 0)}</td>
-                                <td className="p-4 text-right">
-                                    <button
-                                        onClick={() => openModal('room', room)}
-                                        className="p-1.5 rounded hover:bg-white/10 mr-2" style={{ color: colors.textMuted }}><Edit size={14} /></button>
-                                    <button
-                                        onClick={() => handleDelete('room', room.id)}
-                                        className="p-1.5 rounded hover:bg-red-500/10" style={{ color: colors.red }}><Trash2 size={14} /></button>
-                                </td>
+    const renderRoomTypesTab = () => {
+        const pid = managingProperty?.id;
+        const persistOccupancyTypes = (next: string[]) => {
+            if (!pid) return;
+            saveOccupancyTypesForProperty(pid, next);
+            setOccupancyTypesList(resolveOccupancyTypesForProperty(pid, { ...managingProperty, occupancyTypes: next }));
+        };
+        const addOccupancyType = () => {
+            const v = newOccupancyLabel.trim();
+            if (!v) return;
+            if (occupancyTypesList.some((x) => x.toLowerCase() === v.toLowerCase())) return;
+            persistOccupancyTypes([...occupancyTypesList, v]);
+            setNewOccupancyLabel('');
+        };
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div className="flex justify-between items-center">
+                    <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Room Types Configuration</h2>
+                    <button
+                        onClick={() => openModal('room')}
+                        className="px-4 py-2 rounded flex items-center gap-2 hover:brightness-110 transition-all text-sm font-bold"
+                        style={{ backgroundColor: colors.primary, color: '#000' }}>
+                        <Plus size={16} /> Add Room Type
+                    </button>
+                </div>
+                <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border }}>
+                    <table className="w-full text-left">
+                        <thead style={{ backgroundColor: colors.bg }}>
+                            <tr>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Room Type</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Size</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Capacity</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Inventory</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider text-right" style={{ color: colors.textMuted }}>Base Rate</th>
+                                <th className="p-4 text-xs font-bold uppercase tracking-wider text-right" style={{ color: colors.textMuted }}>Actions</th>
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody className="divide-y" style={{ borderColor: colors.border }}>
+                            {safeRoomTypes.map((room) => (
+                                <tr key={room.id} className="hover:bg-white/5 transition-colors">
+                                    <td className="p-4 font-medium" style={{ color: colors.textMain }}>{room.name}</td>
+                                    <td className="p-4 text-sm font-mono" style={{ color: colors.primary }}>{room.size || '-'}</td>
+                                    <td className="p-4 text-sm" style={{ color: colors.textMain }}>{room.capacity} Pax</td>
+                                    <td className="p-4 text-sm" style={{ color: colors.textMain }}>
+                                        <span className="px-2 py-1 rounded bg-black/20 border" style={{ borderColor: colors.border }}>
+                                            {room.count} Rooms
+                                        </span>
+                                    </td>
+                                    <td className="p-4 text-right font-mono text-sm" style={{ color: colors.primary }}>{formatMoney(Number(room.baseRate || 0), 0)}</td>
+                                    <td className="p-4 text-right">
+                                        <button
+                                            onClick={() => openModal('room', room)}
+                                            className="p-1.5 rounded hover:bg-white/10 mr-2" style={{ color: colors.textMuted }}><Edit size={14} /></button>
+                                        <button
+                                            onClick={() => handleDelete('room', room.id)}
+                                            className="p-1.5 rounded hover:bg-red-500/10" style={{ color: colors.red }}><Trash2 size={14} /></button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <div className="p-4 border-b" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                        <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMain }}>Occupancy types</h3>
+                        <p className="text-xs mt-1 opacity-70" style={{ color: colors.textMuted }}>
+                            Labels for the occupancy dropdown on each room row (accommodation, series group, event + rooms). Defaults: Single, Double, Triple, Quad — add e.g. Twin for this property.
+                        </p>
+                    </div>
+                    <div className="p-4 space-y-3">
+                        <div className="flex gap-2">
+                            <input
+                                value={newOccupancyLabel}
+                                onChange={(e) => setNewOccupancyLabel(e.target.value)}
+                                placeholder="e.g. Twin"
+                                className="flex-1 px-3 py-2 rounded-lg border text-sm"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                onKeyDown={(e) => e.key === 'Enter' && addOccupancyType()}
+                            />
+                            <button
+                                type="button"
+                                onClick={addOccupancyType}
+                                className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-1 shrink-0"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                            >
+                                <Plus size={16} /> Add
+                            </button>
+                        </div>
+                        <ul className="divide-y" style={{ borderColor: colors.border }}>
+                            {occupancyTypesList.map((name, i) => (
+                                <li key={`occ-${i}-${name}`} className="py-3 flex items-center gap-2 justify-between">
+                                    {editOccIdx === i ? (
+                                        <input
+                                            value={editOccVal}
+                                            onChange={(e) => setEditOccVal(e.target.value)}
+                                            className="flex-1 px-3 py-1.5 rounded-lg border text-sm"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    ) : (
+                                        <span className="text-sm font-medium flex-1" style={{ color: colors.textMain }}>{name}</span>
+                                    )}
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        {editOccIdx === i ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const v = editOccVal.trim();
+                                                    if (!v) return;
+                                                    const next = [...occupancyTypesList];
+                                                    const dup = next.some((s, j) => j !== i && s.toLowerCase() === v.toLowerCase());
+                                                    if (dup) return;
+                                                    next[i] = v;
+                                                    persistOccupancyTypes(next);
+                                                    setEditOccIdx(null);
+                                                }}
+                                                className="p-1.5 rounded hover:bg-white/10"
+                                                style={{ color: colors.primary }}
+                                            >
+                                                <Check size={14} />
+                                            </button>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setEditOccIdx(i);
+                                                    setEditOccVal(name);
+                                                }}
+                                                className="p-1.5 rounded hover:bg-white/10"
+                                                style={{ color: colors.textMuted }}
+                                            >
+                                                <Edit size={14} />
+                                            </button>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (editOccIdx === i) setEditOccIdx(null);
+                                                persistOccupancyTypes(occupancyTypesList.filter((_, j) => j !== i));
+                                            }}
+                                            className="p-1.5 rounded hover:bg-red-500/10 text-red-500"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                        {occupancyTypesList.length === 0 && (
+                            <p className="text-xs italic opacity-50" style={{ color: colors.textMuted }}>No occupancy types (defaults will apply).</p>
+                        )}
+                    </div>
+                </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     const renderVenuesTab = () => (
         <div className="space-y-6 animate-in fade-in duration-300">

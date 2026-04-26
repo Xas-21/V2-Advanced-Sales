@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Users, Music
@@ -8,6 +8,10 @@ import {
     REQUEST_SECTION_ADD_BTN_CLASS,
     REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
+import {
+    resolveOccupancyTypesForProperty,
+    OCCUPANCY_TYPES_CHANGED_EVENT,
+} from './propertyOccupancyTypes';
 
 interface EventWithRoomsRequestModalProps {
     isOpen: boolean;
@@ -15,12 +19,27 @@ interface EventWithRoomsRequestModalProps {
     theme: any;
     initialData?: any;
     onSave?: (data: any) => void;
+    activeProperty?: any;
 }
 
 const mockLeads = [];
 
-export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, initialData, onSave }: EventWithRoomsRequestModalProps) {
+export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, initialData, onSave, activeProperty }: EventWithRoomsRequestModalProps) {
     const colors = theme.colors;
+
+    const [occupancyTypesRev, setOccupancyTypesRev] = useState(0);
+    useEffect(() => {
+        const onOcc = () => setOccupancyTypesRev((n) => n + 1);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+        return () => window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+    }, []);
+
+    const occupancyOptions = useMemo(() => {
+        void occupancyTypesRev;
+        return resolveOccupancyTypesForProperty(String(activeProperty?.id || ''), activeProperty);
+    }, [activeProperty, occupancyTypesRev]);
+
+    const defaultOcc = occupancyOptions[0] || 'Single';
 
     const initialFormState = initialData || {
         id: 'REQ-MICE-' + Math.floor(Math.random() * 100000),
@@ -31,7 +50,7 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
         offerDeadline: '',
         depositDeadline: '',
         paymentDeadline: '',
-        rooms: [{ id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }],
+        rooms: [{ id: Date.now(), type: 'Standard', occupancy: defaultOcc, count: 1, rate: 0 }],
         agenda: [],
         transportation: [],
         status: 'Inquiry'
@@ -71,7 +90,7 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
     const finals = calculateFinancials();
 
     // Handlers (Simplified duplicates of previous modals for brevity implementation)
-    const addRoom = () => setForm({ ...form, rooms: [...form.rooms, { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }] });
+    const addRoom = () => setForm({ ...form, rooms: [...form.rooms, { id: Date.now(), type: 'Standard', occupancy: defaultOcc, count: 1, rate: 0 }] });
     const updateRoom = (id: number, field: string, value: any) => setForm({ ...form, rooms: form.rooms.map((r: any) => r.id === id ? { ...r, [field]: value } : r) });
     const deleteRoom = (id: number) => setForm({ ...form, rooms: form.rooms.filter((r: any) => r.id !== id) });
 
@@ -211,7 +230,13 @@ export default function EventWithRoomsRequestModal({ isOpen, onClose, theme, ini
                                         <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}
                                             style={{ color: colors.textMain }}>
-                                            <option>Single</option><option>Double</option>
+                                            {occupancyOptions.map((o) => (
+                                                <option key={o} value={o}>{o}</option>
+                                            ))}
+                                            {String(room.occupancy || '').trim() &&
+                                            !occupancyOptions.includes(String(room.occupancy)) ? (
+                                                <option value={String(room.occupancy)}>{String(room.occupancy)}</option>
+                                            ) : null}
                                         </select>
                                     </div>
                                     <div className="col-span-2">

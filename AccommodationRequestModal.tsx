@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     User, Search, Plus, Calendar, Moon, BedDouble, Trash2,
     Car, Save, X, Bed, Check, FileText
@@ -9,6 +9,10 @@ import {
     REQUEST_SECTION_ADD_BTN_LG_CLASS,
     REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
+import {
+    resolveOccupancyTypesForProperty,
+    OCCUPANCY_TYPES_CHANGED_EVENT,
+} from './propertyOccupancyTypes';
 
 interface AccommodationRequestModalProps {
     isOpen: boolean;
@@ -16,12 +20,28 @@ interface AccommodationRequestModalProps {
     theme: any;
     initialData?: any;
     onSave?: (data: any) => void;
+    /** When set, occupancy dropdown uses property-configured labels (Settings → Room Types). */
+    activeProperty?: any;
 }
 
 const mockLeads = [];
 
-export default function AccommodationRequestModal({ isOpen, onClose, theme, initialData, onSave }: AccommodationRequestModalProps) {
+export default function AccommodationRequestModal({ isOpen, onClose, theme, initialData, onSave, activeProperty }: AccommodationRequestModalProps) {
     const colors = theme.colors;
+
+    const [occupancyTypesRev, setOccupancyTypesRev] = useState(0);
+    useEffect(() => {
+        const onOcc = () => setOccupancyTypesRev((n) => n + 1);
+        window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+        return () => window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+    }, []);
+
+    const occupancyOptions = useMemo(() => {
+        void occupancyTypesRev;
+        return resolveOccupancyTypesForProperty(String(activeProperty?.id || ''), activeProperty);
+    }, [activeProperty, occupancyTypesRev]);
+
+    const defaultOcc = occupancyOptions[0] || 'Single';
 
     const initialFormState = initialData || {
         id: 'REQ-' + Math.floor(Math.random() * 100000),
@@ -35,7 +55,7 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
         paymentDeadline: '',
         mealPlan: 'RO',
         rooms: [
-            { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }
+            { id: Date.now(), type: 'Standard', occupancy: defaultOcc, count: 1, rate: 0 }
         ],
         transportation: [],
         payments: [],
@@ -76,7 +96,7 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
     const addRoom = () => {
         setForm({
             ...form,
-            rooms: [...form.rooms, { id: Date.now(), type: 'Standard', occupancy: 'Single', count: 1, rate: 0 }]
+            rooms: [...form.rooms, { id: Date.now(), type: 'Standard', occupancy: defaultOcc, count: 1, rate: 0 }]
         });
     };
 
@@ -286,7 +306,13 @@ export default function AccommodationRequestModal({ isOpen, onClose, theme, init
                                         <select className="w-full p-2 text-xs rounded bg-black/20 border border-transparent focus:border-primary outline-none transition-all"
                                             value={room.occupancy} onChange={e => updateRoom(room.id, 'occupancy', e.target.value)}
                                             style={{ color: colors.textMain }}>
-                                            <option>Single</option><option>Double</option><option>Triple</option><option>Quad</option>
+                                            {occupancyOptions.map((o) => (
+                                                <option key={o} value={o}>{o}</option>
+                                            ))}
+                                            {String(room.occupancy || '').trim() &&
+                                            !occupancyOptions.includes(String(room.occupancy)) ? (
+                                                <option value={String(room.occupancy)}>{String(room.occupancy)}</option>
+                                            ) : null}
                                         </select>
                                     </div>
                                     <div className="col-span-2 text-center">
