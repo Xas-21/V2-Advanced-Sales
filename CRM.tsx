@@ -17,6 +17,7 @@ import {
     canDeleteAccounts,
     canManageManualTimeline,
     isSystemAdmin,
+    canMergeAccountsAndAssignOwner,
 } from './userPermissions';
 import { formatSarCompact } from './formatSar';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
@@ -29,6 +30,9 @@ import {
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
+import { applyAccountMergeInMemory } from './accountMergeUtils';
+import { collectSalesCallFormViolations } from './formConfigurations';
+import { repointContractRecordsForAccountMerge } from './contractsStore';
 import { createPortal } from 'react-dom';
 
 /** KPI and kanban tag: only when follow-up is explicitly on and a date exists (matches product behavior; avoids orphan dates counting alone). */
@@ -64,6 +68,8 @@ interface CRMProps {
     currency?: CurrencyCode;
     /** Property staff (id + display name) for “created by” pipeline/list filter. */
     crmFilterUsers?: { id: string; name: string }[];
+    setSharedRequests?: React.Dispatch<React.SetStateAction<any[]>>;
+    assignableUsersForAccounts?: { id: string; name: string }[];
 }
 
 export default function CRM({
@@ -87,6 +93,8 @@ export default function CRM({
     visibleMonth,
     currency = 'SAR',
     crmFilterUsers,
+    setSharedRequests,
+    assignableUsersForAccounts = [],
 }: CRMProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -97,6 +105,7 @@ export default function CRM({
     const allowDeleteAccount = canDeleteAccounts(currentUser);
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
+    const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
     const [currentView, setCurrentView] = useState<'pipeline' | 'list' | 'profile'>('pipeline');
 
     useEffect(() => {
@@ -129,6 +138,15 @@ export default function CRM({
     const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null);
     const [deleteImpactMessage, setDeleteImpactMessage] = useState('');
     const flatCrmLeads = useMemo(() => flattenCrmLeads(crmLeads), [crmLeads]);
+
+    const accountsSameProperty = useMemo(() => {
+        const pid = String(activeProperty?.id || '').trim();
+        if (!pid) return accounts;
+        return accounts.filter((a: any) => {
+            const p = String(a?.propertyId || '').trim();
+            return !p || p === 'P-GLOBAL' || p === pid;
+        });
+    }, [accounts, activeProperty?.id]);
 
     const crmLeadsForView = useMemo(() => {
         const ym = String(visibleMonth || '').trim();
@@ -420,7 +438,11 @@ export default function CRM({
     };
 
     const handleSaveCall = () => {
-        if (!newCallData.accountName || !newCallData.subject) return;
+        const cfgViol = collectSalesCallFormViolations(activeProperty?.id, newCallData);
+        if (cfgViol.length) {
+            window.alert(cfgViol.join('\n'));
+            return;
+        }
 
         const account = accounts.find((a: any) => a.id === newCallData.accountId)
             || accounts.find((a: any) => a.name === newCallData.accountName);
@@ -763,6 +785,62 @@ export default function CRM({
         }
     };
 
+    const handleCrmMergeAccountIntoCurrent = (sourceAccountId: string) => {
+        if (!selectedLead) return;
+        const destId = String(selectedLead.accountId || selectedLead.id || '');
+        const applied = applyAccountMergeInMemory({
+            accounts,
+            sharedRequests,
+            crmLeads,
+            destAccountId: destId,
+            sourceAccountId,
+        });
+        if (!applied) return;
+        setAccounts(applied.nextAccounts);
+        setSharedRequests?.(applied.nextRequests);
+        setCrmLeads(applied.nextCrmLeads);
+        repointContractRecordsForAccountMerge(
+            String(sourceAccountId),
+            destId,
+            String(applied.mergedAccount.name || '')
+        );
+        const nextLead =
+            selectedLead && String(selectedLead.id || '').startsWith('L')
+                ? mergeAccountIntoCrmLead(applied.mergedAccount, selectedLead)
+                : accountToLead(applied.mergedAccount);
+        setSelectedLead(nextLead);
+        appendProfileAudit(
+            'Accounts merged',
+            `Merged duplicate account "${String(
+                accounts.find((a: any) => String(a.id) === String(sourceAccountId))?.name || sourceAccountId
+            )}" into this profile.`,
+            destId
+        );
+    };
+
+    const handleCrmAssignAccountOwner = (userId: string, ownerDisplayName: string) => {
+        if (!selectedLead) return;
+        const destId = String(selectedLead.accountId || selectedLead.id || '');
+        if (!destId) return;
+        const leadRef = selectedLead;
+        setAccounts((prev: any[]) => {
+            const next = prev.map((a: any) =>
+                String(a.id) === destId
+                    ? { ...a, createdByUserId: userId, accountOwnerName: ownerDisplayName }
+                    : a
+            );
+            const row = next.find((a: any) => String(a.id) === destId);
+            if (row) {
+                setSelectedLead(
+                    String(leadRef.id || '').startsWith('L')
+                        ? mergeAccountIntoCrmLead(row, leadRef)
+                        : accountToLead(row)
+                );
+            }
+            return next;
+        });
+    };
+
     if (currentView === 'profile' && selectedLead) {
         const aid = selectedLead.accountId || selectedLead.id;
         const aname = selectedLead.company;
@@ -810,6 +888,15 @@ export default function CRM({
                             ? () => openAccountDeleteConfirm(String(aid))
                             : undefined
                     }
+                    canMergeAccountsAndAssignOwner={allowAccountMergeAndOwner}
+                    accountOwnerUserOptions={assignableUsersForAccounts}
+                    allAccountsForMergeSearch={accountsSameProperty}
+                    onMergeAccountIntoCurrent={
+                        allowAccountMergeAndOwner && setSharedRequests
+                            ? handleCrmMergeAccountIntoCurrent
+                            : undefined
+                    }
+                    onAssignAccountOwner={allowAccountMergeAndOwner ? handleCrmAssignAccountOwner : undefined}
                 />
                 <AddAccountModal
                     isOpen={showEditAccountModal}
@@ -817,6 +904,7 @@ export default function CRM({
                     editingAccount={editingRow}
                     theme={theme}
                     accountTypeOptions={accountTypeOptions}
+                    configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                     onSave={(data: any) => {
                         if (!data?.id) return;
                         const merged = { ...(accounts.find((a: any) => a.id === data.id) || {}), ...data };
@@ -1681,6 +1769,9 @@ export default function CRM({
                 onSave={handleSaveAccount}
                 theme={theme}
                 accountTypeOptions={accountTypeOptions}
+                duplicateCheckAccounts={accountsSameProperty}
+                duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>
         {listMenuLeadId && crmMenuLead && crmMenuDropPos

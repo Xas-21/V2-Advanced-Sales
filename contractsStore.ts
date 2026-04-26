@@ -472,6 +472,25 @@ export function updateContractRecordMeta(recordId: string, patch: Partial<Pick<C
     dispatchContractsChanged();
 }
 
+/** After merging duplicate accounts: move contract records from source account to destination. */
+export function repointContractRecordsForAccountMerge(
+    sourceAccountId: string,
+    destAccountId: string,
+    destAccountName: string
+): void {
+    const sid = String(sourceAccountId || '').trim();
+    const did = String(destAccountId || '').trim();
+    if (!sid || !did || sid === did) return;
+    const all = readJson<ContractRecord[]>(RECORD_KEY, []);
+    const next = all.map((r) =>
+        String(r.accountId || '') === sid
+            ? { ...r, accountId: did, accountName: destAccountName, updatedAt: new Date().toISOString() }
+            : r
+    );
+    writeJson(RECORD_KEY, next);
+    dispatchContractsChanged();
+}
+
 export function deleteContractRecord(recordId: string): void {
     const all = readJson<ContractRecord[]>(RECORD_KEY, []);
     const next = all.filter((r) => String(r.id) !== String(recordId));

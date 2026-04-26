@@ -28,6 +28,8 @@ export const ALL_PERMISSION_IDS = [
     'reports.dataTasks',
     'reports.dataSalesCalls',
     'accounts.viewOnly',
+    /** Merge duplicate account profiles & assign historical account owner (admin tooling). */
+    'accounts.mergeAndAssignOwner',
     'tasks.deleteAny',
     'accounts.delete',
     'contracts.delete',
@@ -64,6 +66,8 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'reports.dataTasks': 'Reports: Tasks — configure, preview & export',
     'reports.dataSalesCalls': 'Reports: Sales Calls — configure, preview & export',
     'accounts.viewOnly': 'Accounts: view only (read-only Accounts page; enables Accounts for Reservations Team)',
+    'accounts.mergeAndAssignOwner':
+        'Accounts: merge duplicate profiles & set account owner (re-links requests, CRM, contracts)',
     'tasks.deleteAny': 'Delete any task (To-Do)',
     'accounts.delete': 'Delete accounts',
     'contracts.delete': 'Delete contracts',
@@ -124,7 +128,7 @@ export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
     {
         id: 'accounts',
         title: 'Accounts',
-        permissions: ['accounts.viewOnly', 'accounts.delete', 'accounts.timelineManual'],
+        permissions: ['accounts.viewOnly', 'accounts.mergeAndAssignOwner', 'accounts.delete', 'accounts.timelineManual'],
     },
     {
         id: 'requests',
@@ -403,6 +407,11 @@ export function canDeleteSalesCalls(user: any): boolean {
 
 export function canManageManualTimeline(user: any): boolean {
     return can(user, 'accounts.timelineManual');
+}
+
+/** Merge duplicate accounts into one profile and assign account owner on legacy rows. */
+export function canMergeAccountsAndAssignOwner(user: any): boolean {
+    return can(user, 'accounts.mergeAndAssignOwner');
 }
 
 export function canMutateOperational(user: any): boolean {

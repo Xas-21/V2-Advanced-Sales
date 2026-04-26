@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Phone, Mail, MapPin, X, Plus, Edit, Trash2, ChevronDown,
-    PhoneCall, Send, FileText, MessageSquare, History, CalendarDays
+    PhoneCall, Send, FileText, MessageSquare, History, CalendarDays, GitMerge, Search,
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, ResponsiveContainer, Tooltip
@@ -60,6 +60,12 @@ export interface CRMProfileViewProps {
     /** When set with onShellAccountPerformanceRangeChange, range is controlled from the app shell (Accounts nav header). */
     shellAccountPerformanceRange?: { from: string; to: string };
     onShellAccountPerformanceRangeChange?: (r: { from: string; to: string }) => void;
+    /** Merge another account into this profile (requests, CRM, contracts). */
+    canMergeAccountsAndAssignOwner?: boolean;
+    accountOwnerUserOptions?: { id: string; name: string }[];
+    allAccountsForMergeSearch?: any[];
+    onMergeAccountIntoCurrent?: (sourceAccountId: string) => void;
+    onAssignAccountOwner?: (userId: string, ownerDisplayName: string) => void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -119,6 +125,11 @@ export default function CRMProfileView({
     currency = 'SAR',
     shellAccountPerformanceRange,
     onShellAccountPerformanceRangeChange,
+    canMergeAccountsAndAssignOwner = false,
+    accountOwnerUserOptions = [],
+    allAccountsForMergeSearch = [],
+    onMergeAccountIntoCurrent,
+    onAssignAccountOwner,
 }: CRMProfileViewProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -141,6 +152,9 @@ export default function CRMProfileView({
         setAccountChartTab('Revenue');
         setTimelineShowAll(false);
         setShowAccountPerfDatePicker(false);
+        setShowMergeModal(false);
+        setMergeSearch('');
+        setMergePickId(null);
         if (!isShellPerformanceRange) {
             const d = getDefaultAccountPerformanceRange();
             setInternalPerformanceDateRange(d);
@@ -189,6 +203,40 @@ export default function CRMProfileView({
     const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; idx: number | null; name: string }>({
         isOpen: false, idx: null, name: ''
     });
+
+    const [ownerUserIdDraft, setOwnerUserIdDraft] = useState('');
+    const [showMergeModal, setShowMergeModal] = useState(false);
+    const [mergeSearch, setMergeSearch] = useState('');
+    const [mergePickId, setMergePickId] = useState<string | null>(null);
+    const [mergeBusy, setMergeBusy] = useState(false);
+
+    const destAccountId = String(lead.accountId || lead.id || '');
+    const mergeCandidates = useMemo(() => {
+        const q = mergeSearch.trim().toLowerCase();
+        const list = Array.isArray(allAccountsForMergeSearch) ? allAccountsForMergeSearch : [];
+        return list.filter((a: any) => {
+            if (!a?.id || String(a.id) === destAccountId) return false;
+            if (!q) return true;
+            const n = String(a.name || '').toLowerCase();
+            return n.includes(q);
+        });
+    }, [allAccountsForMergeSearch, destAccountId, mergeSearch]);
+
+    useEffect(() => {
+        if (!canMergeAccountsAndAssignOwner) return;
+        const cid = String((lead as any).createdByUserId || '').trim();
+        if (cid && accountOwnerUserOptions.some((o) => String(o.id) === cid)) {
+            setOwnerUserIdDraft(cid);
+            return;
+        }
+        const name = String((lead as any).accountOwnerName || '').trim().toLowerCase();
+        if (!name) {
+            setOwnerUserIdDraft('');
+            return;
+        }
+        const hit = accountOwnerUserOptions.find((o) => String(o.name || '').trim().toLowerCase() === name);
+        setOwnerUserIdDraft(hit ? hit.id : '');
+    }, [leadIdentityKey, canMergeAccountsAndAssignOwner, lead, accountOwnerUserOptions]);
 
     const tags = lead.tags || [];
     const metrics = useMemo(() => computeAccountMetrics(performanceLinkedRequests), [performanceLinkedRequests]);
@@ -352,6 +400,27 @@ export default function CRMProfileView({
         email: lead.email, phone: lead.phone,
         city: lead.city, country: lead.country
     }];
+
+    const runAssignOwner = () => {
+        if (!onAssignAccountOwner || !ownerUserIdDraft) return;
+        const row = accountOwnerUserOptions.find((o) => o.id === ownerUserIdDraft);
+        if (!row) return;
+        onAssignAccountOwner(row.id, row.name);
+        appendAuditLog?.('Account owner set', `Owner set to ${row.name}.`);
+    };
+
+    const runMerge = () => {
+        if (!onMergeAccountIntoCurrent || !mergePickId) return;
+        setMergeBusy(true);
+        try {
+            onMergeAccountIntoCurrent(mergePickId);
+            setShowMergeModal(false);
+            setMergeSearch('');
+            setMergePickId(null);
+        } finally {
+            setMergeBusy(false);
+        }
+    };
 
     return (
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
@@ -521,6 +590,160 @@ export default function CRMProfileView({
                 </div>
                 </div>
             </div>
+
+            {canMergeAccountsAndAssignOwner && !readOnly && (onMergeAccountIntoCurrent || onAssignAccountOwner) && (
+                <div
+                    className="shrink-0 px-6 py-3 border-b flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-3"
+                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                >
+                    <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: colors.textMuted }}>
+                        Admin — account maintenance
+                    </div>
+                    {onAssignAccountOwner && accountOwnerUserOptions.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2">
+                            <label className="text-xs font-bold" style={{ color: colors.textMuted }}>
+                                Account owner
+                            </label>
+                            <select
+                                value={ownerUserIdDraft}
+                                onChange={(e) => setOwnerUserIdDraft(e.target.value)}
+                                className="text-sm font-semibold px-3 py-2 rounded-lg border min-w-[12rem]"
+                                style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
+                                aria-label="Select account owner"
+                            >
+                                <option value="">— No owner selected —</option>
+                                {accountOwnerUserOptions.map((u) => (
+                                    <option key={u.id} value={u.id}>
+                                        {u.name}
+                                    </option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                disabled={!ownerUserIdDraft}
+                                onClick={runAssignOwner}
+                                className="px-3 py-2 rounded-lg text-xs font-bold disabled:opacity-40"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                            >
+                                Apply owner
+                            </button>
+                        </div>
+                    )}
+                    {onMergeAccountIntoCurrent && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setMergeSearch('');
+                                setMergePickId(null);
+                                setShowMergeModal(true);
+                            }}
+                            className="px-3 py-2 rounded-lg border text-xs font-bold flex items-center gap-2 sm:ml-auto"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                        >
+                            <GitMerge size={14} /> Merge duplicate account into this profile
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {showMergeModal && canMergeAccountsAndAssignOwner && onMergeAccountIntoCurrent && (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 p-4">
+                    <div
+                        className="w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[min(90vh,32rem)]"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                    >
+                        <div className="p-4 border-b flex justify-between items-center" style={{ borderColor: colors.border }}>
+                            <h3 className="text-base font-bold" style={{ color: colors.textMain }}>
+                                Merge into “{lead.company}”
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => !mergeBusy && setShowMergeModal(false)}
+                                className="p-2 rounded-lg hover:bg-white/10"
+                                style={{ color: colors.textMuted }}
+                                aria-label="Close"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-3 flex-1 min-h-0 flex flex-col">
+                            <p className="text-xs leading-relaxed" style={{ color: colors.textMuted }}>
+                                Search and select the duplicate account. Its requests, CRM opportunities, and
+                                contracts will be linked to this profile; contacts will be merged without
+                                duplicates (missing fields are filled in). The duplicate account row will be
+                                removed.
+                            </p>
+                            <div className="relative">
+                                <Search
+                                    size={14}
+                                    className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                                    style={{ color: colors.textMuted }}
+                                />
+                                <input
+                                    type="text"
+                                    value={mergeSearch}
+                                    onChange={(e) => setMergeSearch(e.target.value)}
+                                    placeholder="Search account name…"
+                                    className="w-full pl-9 pr-3 py-2 rounded-lg border text-sm"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                />
+                            </div>
+                            <div
+                                className="flex-1 min-h-0 overflow-y-auto rounded-lg border divide-y"
+                                style={{ borderColor: colors.border, backgroundColor: colors.bg }}
+                            >
+                                {mergeCandidates.length === 0 ? (
+                                    <div className="p-4 text-xs italic" style={{ color: colors.textMuted }}>
+                                        No accounts match this search.
+                                    </div>
+                                ) : (
+                                    mergeCandidates.map((a: any) => {
+                                        const id = String(a.id);
+                                        const selected = mergePickId === id;
+                                        return (
+                                            <button
+                                                key={id}
+                                                type="button"
+                                                onClick={() => setMergePickId(id)}
+                                                className="w-full text-left px-3 py-2.5 text-sm font-semibold transition-colors"
+                                                style={{
+                                                    backgroundColor: selected ? colors.primary + '22' : 'transparent',
+                                                    color: colors.textMain,
+                                                }}
+                                            >
+                                                {a.name || id}
+                                            </button>
+                                        );
+                                    })
+                                )}
+                            </div>
+                            <p className="text-[11px] font-semibold" style={{ color: '#dc2626' }}>
+                                This cannot be undone. Only merge accounts you are sure are the same client.
+                            </p>
+                        </div>
+                        <div className="p-4 border-t flex gap-2" style={{ borderColor: colors.border }}>
+                            <button
+                                type="button"
+                                disabled={mergeBusy}
+                                onClick={() => setShowMergeModal(false)}
+                                className="flex-1 py-2.5 rounded-xl border text-sm font-bold"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={mergeBusy || !mergePickId}
+                                onClick={runMerge}
+                                className="flex-1 py-2.5 rounded-xl text-sm font-bold disabled:opacity-40"
+                                style={{ backgroundColor: colors.orange || '#ea580c', color: '#fff' }}
+                            >
+                                {mergeBusy ? 'Merging…' : 'Merge into this profile'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="flex-1 overflow-y-auto p-6">
                 <div className="space-y-6">

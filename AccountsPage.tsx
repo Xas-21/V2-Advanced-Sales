@@ -30,6 +30,7 @@ import {
     canDeleteContracts,
     canManageManualTimeline,
     isSystemAdmin,
+    canMergeAccountsAndAssignOwner,
 } from './userPermissions';
 import type { CurrencyCode } from './currency';
 
@@ -37,6 +38,8 @@ export type AccountPerfDateRange = { from: string; to: string };
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId } from './userProfileMetrics';
+import { applyAccountMergeInMemory } from './accountMergeUtils';
+import { repointContractRecordsForAccountMerge } from './contractsStore';
 
 const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v2';
 const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email', 'totalRev', 'totalReq'];
@@ -61,6 +64,8 @@ interface AccountsPageProps {
     shellAccountPerformanceRange: AccountPerfDateRange;
     onShellAccountPerformanceRangeChange: (r: AccountPerfDateRange) => void;
     onAccountProfileShellStateChange?: (state: { open: boolean; leadKey: string | null }) => void;
+    setSharedRequests: React.Dispatch<React.SetStateAction<any[]>>;
+    assignableUsersForAccounts?: { id: string; name: string }[];
 }
 
 export default function AccountsPage({
@@ -80,6 +85,8 @@ export default function AccountsPage({
     shellAccountPerformanceRange,
     onShellAccountPerformanceRangeChange,
     onAccountProfileShellStateChange,
+    setSharedRequests,
+    assignableUsersForAccounts = [],
 }: AccountsPageProps) {
     const colors = theme.colors;
     const profileReadOnly = isAccountsPageReadOnly(currentUser);
@@ -87,6 +94,7 @@ export default function AccountsPage({
     const allowDeleteContracts = canDeleteContracts(currentUser);
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
+    const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
     const [search, setSearch] = useState('');
     const [listSort, setListSort] = useState<AccountsListSort>('name_az');
     const [cityFilter, setCityFilter] = useState('');
@@ -215,6 +223,15 @@ export default function AccountsPage({
         accountIdsWithContract,
     ]);
 
+    const accountsSameProperty = useMemo(() => {
+        const pid = String(activeProperty?.id || '').trim();
+        if (!pid) return accounts;
+        return accounts.filter((a: any) => {
+            const p = String(a?.propertyId || '').trim();
+            return !p || p === 'P-GLOBAL' || p === pid;
+        });
+    }, [accounts, activeProperty?.id]);
+
     const sortedFiltered = useMemo(() => {
         const rows = [...filtered];
         const stat = (id: string) => requestStatsByAccountId.get(String(id)) || { revSar: 0, reqCount: 0 };
@@ -280,6 +297,49 @@ export default function AccountsPage({
                 return out;
             });
         }
+    };
+
+    const handleMergeAccountIntoCurrent = (sourceAccountId: string) => {
+        if (!profileLead) return;
+        const destId = String(profileLead.accountId || profileLead.id || '');
+        const applied = applyAccountMergeInMemory({
+            accounts,
+            sharedRequests,
+            crmLeads,
+            destAccountId: destId,
+            sourceAccountId,
+        });
+        if (!applied) return;
+        setAccounts(applied.nextAccounts);
+        setSharedRequests(applied.nextRequests);
+        setCrmLeads(applied.nextCrmLeads);
+        repointContractRecordsForAccountMerge(
+            String(sourceAccountId),
+            destId,
+            String(applied.mergedAccount.name || '')
+        );
+        setProfileLead(accountToLead(applied.mergedAccount));
+        appendProfileAudit(
+            'Accounts merged',
+            `Merged duplicate account "${String(
+                accounts.find((a: any) => String(a.id) === String(sourceAccountId))?.name || sourceAccountId
+            )}" into this profile.`
+        );
+    };
+
+    const handleAssignAccountOwner = (userId: string, ownerDisplayName: string) => {
+        if (!profileLead) return;
+        const destId = String(profileLead.accountId || profileLead.id || '');
+        setAccounts((prev: any[]) => {
+            const next = prev.map((a: any) =>
+                String(a.id) === destId
+                    ? { ...a, createdByUserId: userId, accountOwnerName: ownerDisplayName }
+                    : a
+            );
+            const acc = next.find((a: any) => String(a.id) === destId);
+            if (acc) setProfileLead(accountToLead(acc));
+            return next;
+        });
     };
 
     const appendProfileAudit = (action: string, details: string) => {
@@ -465,6 +525,13 @@ export default function AccountsPage({
                     }
                     shellAccountPerformanceRange={shellAccountPerformanceRange}
                     onShellAccountPerformanceRangeChange={onShellAccountPerformanceRangeChange}
+                    canMergeAccountsAndAssignOwner={allowAccountMergeAndOwner}
+                    accountOwnerUserOptions={assignableUsersForAccounts}
+                    allAccountsForMergeSearch={accountsSameProperty}
+                    onMergeAccountIntoCurrent={
+                        allowAccountMergeAndOwner ? handleMergeAccountIntoCurrent : undefined
+                    }
+                    onAssignAccountOwner={allowAccountMergeAndOwner ? handleAssignAccountOwner : undefined}
                 />
                 <AddAccountModal
                     isOpen={showEditAccountModal}
@@ -475,6 +542,7 @@ export default function AccountsPage({
                     editingAccount={editingAccountRow}
                     theme={theme}
                     accountTypeOptions={accountTypeOptions}
+                    configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                     onSave={(data: any) => {
                         if (!data?.id) return;
                         const merged = { ...(accounts.find((a: any) => a.id === data.id) || {}), ...data };
@@ -672,6 +740,9 @@ export default function AccountsPage({
                 onSave={handleSaveNew}
                 theme={theme}
                 accountTypeOptions={accountTypeOptions}
+                duplicateCheckAccounts={accountsSameProperty}
+                duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>
     );

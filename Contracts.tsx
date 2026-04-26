@@ -77,6 +77,14 @@ export default function Contracts({
     onConsumedInitialAccountId,
 }: ContractsProps) {
     const colors = theme.colors;
+    const accountsSameProperty = useMemo(() => {
+        const pid = String(activeProperty?.id || '').trim();
+        if (!pid) return accounts;
+        return accounts.filter((a: any) => {
+            const p = String(a?.propertyId || '').trim();
+            return !p || p === 'P-GLOBAL' || p === pid;
+        });
+    }, [accounts, activeProperty?.id]);
     const [currentView, setCurrentView] = useState<'library' | 'generate' | 'history'>('library');
     const [templates, setTemplates] = useState<ContractTemplate[]>([]);
     const [records, setRecords] = useState<ContractRecord[]>([]);
@@ -575,6 +583,9 @@ export default function Contracts({
                     onSave={handleAddAccount}
                     theme={theme}
                     accountTypeOptions={accountTypeOptions}
+                    duplicateCheckAccounts={accountsSameProperty}
+                    duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                    configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 />
             </div>
         );

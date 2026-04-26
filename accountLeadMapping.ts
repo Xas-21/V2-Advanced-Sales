@@ -62,7 +62,8 @@ export function accountToLead(account: any): any {
         winRate: account.winRate ?? 0,
         totalSpend: account.totalSpend ?? 0,
         totalRequests: account.totalRequests ?? 0,
-        accountOwnerName: resolveAccountOwnerName(account)
+        accountOwnerName: resolveAccountOwnerName(account),
+        createdByUserId: account.createdByUserId,
     };
 }
 
@@ -103,6 +104,7 @@ export function leadToAccount(lead: any, existing: any = {}): any {
         id: aid,
         name: lead.company,
         accountOwnerName: lead.accountOwnerName ?? existing.accountOwnerName,
+        createdByUserId: lead.createdByUserId ?? existing.createdByUserId,
         clientTaxId: lead.clientTaxId ?? existing.clientTaxId ?? '',
         type: (lead.tags && lead.tags[0]) || existing.type || 'Corporate',
         tags: tagList && tagList.length ? tagList : existing.tags,

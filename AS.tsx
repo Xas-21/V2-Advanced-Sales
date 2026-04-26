@@ -87,6 +87,7 @@ import RequestsManager from './RequestsManager';
 import AddSalesCallModal from './AddSalesCallModal';
 import AddAccountModal from './AddAccountModal';
 import AccountsPage from './AccountsPage';
+import { collectSalesCallFormViolations } from './formConfigurations';
 import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
 import { formatCompactAmount, formatCompactCurrency } from './formatCompactCurrency';
 import { CURRENCY_OPTIONS, type CurrencyCode, formatCurrencyAmount, resolveCurrencyCode } from './currency';
@@ -3959,8 +3960,11 @@ export default function AdvancedSalesDashboard() {
     const [crmLeads, setCrmLeads] = useState<Record<string, any[]>>(() => defaultCrmLeadBuckets());
 
     const handleSalesCallSave = (callData: any) => {
-        console.log('New Sales Call Saved from Calendar:', callData);
-        // Ideally this would update CRM state, but for now we just close the modal.
+        const viol = collectSalesCallFormViolations(activeProperty?.id, callData);
+        if (viol.length) {
+            window.alert(viol.join('\n'));
+            return;
+        }
         setShowSalesCallModal(false);
     };
 
@@ -6576,6 +6580,8 @@ export default function AdvancedSalesDashboard() {
                                 setCurrentView('contracts');
                             }}
                             setCrmLeads={setCrmLeads}
+                            setSharedRequests={setSharedRequests}
+                            assignableUsersForAccounts={taskAssignableUsers}
                         />
                     ) : currentView === 'crm' ? (
                         <CRM
@@ -6603,6 +6609,8 @@ export default function AdvancedSalesDashboard() {
                             visibleMonth={crmVisibleMonth}
                             currency={currentCurrency}
                             crmFilterUsers={taskAssignableUsers}
+                            setSharedRequests={setSharedRequests}
+                            assignableUsersForAccounts={taskAssignableUsers}
                         />
                     ) : currentView === 'contracts' ? (
                         <Contracts
@@ -7802,6 +7810,7 @@ export default function AdvancedSalesDashboard() {
                 onSave={handleSalesCallSave}
                 accounts={accounts}
                 theme={theme}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 stages={[
                     { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
                     { id: 'waiting', title: 'Waiting list', color: '#94a3b8' },
@@ -7820,7 +7829,15 @@ export default function AdvancedSalesDashboard() {
                 onClose={() => setShowAddAccountModal(false)}
                 onSave={handleSaveAccount}
                 theme={theme}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 accountTypeOptions={propertyAccountTypeLabels}
+                duplicateCheckAccounts={accounts.filter((a: any) => {
+                    const pid = String(activeProperty?.id || '').trim();
+                    if (!pid) return true;
+                    const p = String(a?.propertyId || '').trim();
+                    return !p || p === 'P-GLOBAL' || p === pid;
+                })}
+                duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>
     );

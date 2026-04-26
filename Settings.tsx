@@ -6,7 +6,7 @@ import {
 import {
     Settings as SettingsIcon, Building, BedDouble, DollarSign, Users,
     User, Upload, Save, Edit, Plus, Trash2, X, Check, Mail, Phone, Shield,
-    MapPin, Layout, Box, FileText, List, ChevronDown, ChevronRight, Monitor,
+    MapPin, Layout, Box, FileText, List, ChevronDown, ChevronRight, ChevronUp, Monitor,
     TrendingUp, Calculator, CalendarDays, ChevronLeft, CheckSquare, Zap, CheckCircle2, Download, Clock,
     UserMinus, RefreshCw, Tags, UtensilsCrossed, Bell
 } from 'lucide-react';
@@ -78,6 +78,19 @@ import {
     resolveAlertSettingsForProperty,
     saveAlertSettingsForProperty,
 } from './propertyAlertSettings';
+import {
+    FORM_CONFIGURATION_CHANGED_EVENT,
+    FORM_CONFIGURATION_META,
+    type FormConfigurationFormId,
+    type FormOverride,
+    type PropertyFormConfigStore,
+    loadPropertyFormOverrides,
+    savePropertyFormOverrides,
+    getResolvedFormSchemaFromStores,
+    getDefaultFormSchema,
+    collectNewUserFormViolations,
+    collectNewPropertyFormViolations,
+} from './formConfigurations';
 
 interface SettingsProps {
     theme: any;
@@ -289,29 +302,41 @@ export default function Settings({
         property: currentUser?.property || 'Advanced Sales System'
     });
 
-    // Configuration Manager State
-    const [configFormType, setConfigFormType] = useState('lead');
-    const [formFields, setFormFields] = useState({
-        lead: [
-            { label: 'Client Name', type: 'Text', required: true },
-            { label: 'Booking Source', type: 'Dropdown', required: true },
-            { label: 'Expected Revenue', type: 'Currency', required: false },
-        ],
-        contract: [
-            { label: 'Contract Date', type: 'Date', required: true },
-            { label: 'Signatory Name', type: 'Text', required: true },
-        ],
-        request: [
-            { label: 'Prefered Floor', type: 'Text', required: false },
-        ],
-        event: [
-            { label: 'Setup Type', type: 'Dropdown', required: true },
-        ]
-    });
+    const [configFormId, setConfigFormId] = useState<FormConfigurationFormId>('request_accommodation');
+    const [configTargetPropertyId, setConfigTargetPropertyId] = useState('');
+    const [formConfigStore, setFormConfigStore] = useState<PropertyFormConfigStore>({});
+
+    useEffect(() => {
+        if (activeTab !== 'config') return;
+        const fallback =
+            String(managingProperty?.id || '').trim() ||
+            String(activeProperty?.id || '').trim() ||
+            String(properties[0]?.id || '').trim() ||
+            '';
+        setConfigTargetPropertyId((cur) => {
+            if (cur && properties.some((p: any) => String(p?.id) === String(cur))) return cur;
+            return fallback;
+        });
+    }, [activeTab, managingProperty?.id, activeProperty?.id, properties]);
+
+    useEffect(() => {
+        if (activeTab !== 'config' || !configTargetPropertyId) return;
+        setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId));
+    }, [configTargetPropertyId, activeTab]);
+
+    useEffect(() => {
+        const onFormCfg = () => {
+            if (activeTab === 'config' && configTargetPropertyId) {
+                setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId));
+            }
+        };
+        window.addEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormCfg as EventListener);
+        return () => window.removeEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormCfg as EventListener);
+    }, [activeTab, configTargetPropertyId]);
 
     // Modal & CRUD State
     const [showModal, setShowModal] = useState(false);
-    const [modalType, setModalType] = useState<any>(null); // 'property', 'room', 'venue', 'user', 'field'
+    const [modalType, setModalType] = useState<any>(null); // 'property', 'room', 'venue', 'user', ...
     const [editingItem, setEditingItem] = useState<any>(null);
     const [modalFormData, setModalFormData] = useState<any>({});
     const [userModalPermSection, setUserModalPermSection] = useState<string>(USER_MODAL_SECTIONS[0].id);
@@ -385,6 +410,15 @@ export default function Settings({
 
     const handleSave = () => {
         if (modalType === 'property') {
+            const formCfgScope =
+                String(managingProperty?.id || '').trim() ||
+                String(activeProperty?.id || '').trim() ||
+                '';
+            const propViol = collectNewPropertyFormViolations(formCfgScope || undefined, modalFormData);
+            if (propViol.length) {
+                alert(propViol.join('\n'));
+                return;
+            }
             const isEditing = !!editingItem;
             const propData = isEditing ? { ...editingItem, ...modalFormData } : { ...modalFormData, id: 'P' + Math.random().toString(36).substr(2, 9) };
             
@@ -427,6 +461,15 @@ export default function Settings({
             // Only treat as edit when opening an existing row (has id). Prefill payloads like `{ propertyId }`
             // from "Add staff" under a property must stay create-mode or we strip password / skip new id.
             const isEditing = !!(editingItem && editingItem.id);
+            const formCfgScopeUser =
+                String(managingProperty?.id || '').trim() ||
+                String(activeProperty?.id || '').trim() ||
+                '';
+            const userViol = collectNewUserFormViolations(formCfgScopeUser || undefined, modalFormData, isEditing);
+            if (userViol.length) {
+                alert(userViol.join('\n'));
+                return;
+            }
             const userData: any = isEditing
                 ? { ...editingItem, ...modalFormData }
                 : { ...modalFormData, id: 'U' + Math.random().toString(36).substr(2, 9), status: 'Active' };
@@ -522,17 +565,6 @@ export default function Settings({
                     }).catch((err) => console.error('Error patching user propertyId:', err));
                 }
             });
-        } else if (modalType === 'field') {
-            // @ts-ignore
-            const currentFields = [...formFields[configFormType]];
-            if (editingItem) {
-                // @ts-ignore
-                const updated = currentFields.map((f, i) => i === editingItem.index ? modalFormData : f);
-                setFormFields({ ...formFields, [configFormType]: updated });
-            } else {
-                // @ts-ignore
-                setFormFields({ ...formFields, [configFormType]: [...currentFields, modalFormData] });
-            }
         }
         setShowModal(false);
     };
@@ -577,11 +609,6 @@ export default function Settings({
             setUsers(users.filter(u => u.id !== id));
             fetch(apiUrl(`/api/users/${id}`), { method: 'DELETE' })
                 .catch(err => console.error("Error deleting user:", err));
-        }
-        else if (type === 'field') {
-            // @ts-ignore
-            const updated = formFields[configFormType].filter((_, i) => i !== id);
-            setFormFields({ ...formFields, [configFormType]: updated });
         }
     };
 
@@ -2634,88 +2661,230 @@ export default function Settings({
         </div>
     );
 
-    const renderConfigTab = () => (
-        <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="flex flex-col md:flex-row gap-6">
-                {/* Form Selector */}
-                <div className="w-full md:w-64 space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-wider opacity-70" style={{ color: colors.textMuted }}>Select Form</label>
-                    <div className="flex flex-col gap-1 p-2 rounded-lg border" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
-                        {[
-                            { id: 'lead', label: 'Lead Creation' },
-                            { id: 'contract', label: 'Contract Generator' },
-                            { id: 'request', label: 'Accommodation Request' },
-                            { id: 'event', label: 'Event Request' }
-                        ].map(form => (
-                            <button
-                                key={form.id}
-                                onClick={() => setConfigFormType(form.id)}
-                                className={`text-left px-3 py-2 rounded text-sm transition-colors ${configFormType === form.id ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/5'}`}
-                                style={{ color: configFormType === form.id ? colors.primary : colors.textMain }}
-                            >
-                                {form.label}
-                            </button>
-                        ))}
+    const renderConfigTab = () => {
+        const pruneFormOverrideLocal = (ov: FormOverride | undefined) => {
+            if (!ov) return undefined;
+            const fr = ov.fieldRequired && Object.keys(ov.fieldRequired).length ? ov.fieldRequired : undefined;
+            const so = ov.sectionOrder && ov.sectionOrder.length ? ov.sectionOrder : undefined;
+            if (!fr && !so) return undefined;
+            return { ...(fr ? { fieldRequired: fr } : {}), ...(so ? { sectionOrder: so } : {}) };
+        };
+
+        const toggleFieldRequired = (fieldId: string, checked: boolean) => {
+            setFormConfigStore((prev) => {
+                const cur = { ...(prev[configFormId] || {}) };
+                const fr = { ...(cur.fieldRequired || {}) };
+                const defSchema = getDefaultFormSchema(configFormId);
+                let defaultReq = false;
+                outer: for (const s of defSchema.sections) {
+                    for (const f of s.fields) {
+                        if (f.id === fieldId) {
+                            defaultReq = !!f.required;
+                            break outer;
+                        }
+                    }
+                }
+                if (checked === defaultReq) delete fr[fieldId];
+                else fr[fieldId] = checked;
+                const nextCur: FormOverride = { ...cur };
+                if (Object.keys(fr).length) nextCur.fieldRequired = fr;
+                else delete nextCur.fieldRequired;
+                const cleaned = pruneFormOverrideLocal(nextCur);
+                const out: PropertyFormConfigStore = { ...prev };
+                if (cleaned) out[configFormId] = cleaned;
+                else delete out[configFormId];
+                return out;
+            });
+        };
+
+        const moveConfigSection = (sectionId: string, delta: number) => {
+            if (!configTargetPropertyId) return;
+            setFormConfigStore((prev) => {
+                const curSchema = getResolvedFormSchemaFromStores(configTargetPropertyId, configFormId, prev);
+                const order = curSchema.sections.map((s) => s.id);
+                const i = order.indexOf(sectionId);
+                const j = i + delta;
+                if (i < 0 || j < 0 || j >= order.length) return prev;
+                const nextOrder = [...order];
+                [nextOrder[i], nextOrder[j]] = [nextOrder[j], nextOrder[i]];
+                const cur = { ...(prev[configFormId] || {}) };
+                const cleaned = pruneFormOverrideLocal({ ...cur, sectionOrder: nextOrder });
+                const out: PropertyFormConfigStore = { ...prev };
+                if (cleaned) out[configFormId] = cleaned;
+                else delete out[configFormId];
+                return out;
+            });
+        };
+
+        const resolved = configTargetPropertyId
+            ? getResolvedFormSchemaFromStores(configTargetPropertyId, configFormId, formConfigStore)
+            : null;
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <p className="text-sm leading-relaxed max-w-3xl" style={{ color: colors.textMuted }}>
+                    Choose which fields are required and reorder sections for operational forms. Settings apply to the
+                    selected property (same scope as Requests and CRM for that property).
+                </p>
+                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                    <div className="flex-1 min-w-[12rem] space-y-1">
+                        <label className="text-xs font-bold uppercase tracking-wider opacity-70" style={{ color: colors.textMuted }}>
+                            Property
+                        </label>
+                        <select
+                            className="w-full px-3 py-2 rounded-lg border text-sm font-semibold outline-none"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
+                            value={configTargetPropertyId}
+                            onChange={(e) => setConfigTargetPropertyId(e.target.value)}
+                        >
+                            {properties.length === 0 ? (
+                                <option value="">No properties loaded</option>
+                            ) : (
+                                properties.map((p: any) => (
+                                    <option key={p.id} value={p.id}>
+                                        {p.name || p.id}
+                                    </option>
+                                ))
+                            )}
+                        </select>
                     </div>
                 </div>
 
-                {/* Form Builder Canvas */}
-                <div className="flex-1 p-6 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
-                    <div className="flex justify-between items-center mb-6">
-                        <h3 className="font-bold flex items-center gap-2" style={{ color: colors.textMain }}>
-                            <Box size={18} /> Form Fields Configuration
-                        </h3>
-                        <button
-                            onClick={() => openModal('field')}
-                            className="px-3 py-1.5 rounded bg-primary text-black text-xs font-bold flex items-center gap-1 hover:opacity-90">
-                            <Plus size={14} /> Add Field
-                        </button>
+                <div className="flex flex-col lg:flex-row gap-6">
+                    <div className="w-full lg:w-64 space-y-2 shrink-0">
+                        <label className="text-xs font-bold uppercase tracking-wider opacity-70" style={{ color: colors.textMuted }}>
+                            Form
+                        </label>
+                        <div
+                            className="flex flex-col gap-0.5 p-2 rounded-lg border max-h-[min(70vh,28rem)] overflow-y-auto custom-scrollbar"
+                            style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                        >
+                            {FORM_CONFIGURATION_META.map((form) => (
+                                <button
+                                    key={form.id}
+                                    type="button"
+                                    onClick={() => setConfigFormId(form.id)}
+                                    className={`text-left px-3 py-2 rounded text-xs transition-colors ${
+                                        configFormId === form.id ? 'bg-primary/20 font-bold' : 'hover:bg-white/5'
+                                    }`}
+                                    style={{ color: configFormId === form.id ? colors.primary : colors.textMain }}
+                                >
+                                    {form.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
-                    <div className="space-y-3">
-                        {/* Dynamic Fields */}
-                        {/* @ts-ignore */}
-                        {formFields[configFormType].map((field, idx) => (
-                            <div key={idx} className="p-3 rounded-lg border bg-card flex items-center justify-between group hover:border-primary/50 transition-colors"
-                                style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                                <div className="flex items-center gap-4">
-                                    <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 cursor-move text-muted-foreground">
-                                        <List size={14} />
-                                    </div>
-                                    <div>
-                                        <p className="font-bold text-sm" style={{ color: colors.textMain }}>{field.label}</p>
-                                        <p className="text-[10px] uppercase font-mono" style={{ color: colors.primary }}>{field.type}</p>
-                                    </div>
+                    <div className="flex-1 min-w-0 p-5 sm:p-6 rounded-xl border bg-black/5" style={{ borderColor: colors.border }}>
+                        {!resolved ? (
+                            <p className="text-sm" style={{ color: colors.textMuted }}>
+                                Select a property to edit form configuration.
+                            </p>
+                        ) : (
+                            <>
+                                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                                    <h3 className="font-bold flex items-center gap-2 text-sm sm:text-base" style={{ color: colors.textMain }}>
+                                        <Box size={18} /> Sections & fields
+                                    </h3>
                                 </div>
-                                <div className="flex items-center gap-4">
-                                    <label className="flex items-center gap-2 text-xs cursor-pointer">
-                                        <input type="checkbox" checked={field.required} readOnly className="accent-primary" />
-                                        <span style={{ color: colors.textMuted }}>Required</span>
-                                    </label>
-                                    <div className="w-px h-4 bg-white/10"></div>
-                                    <button
-                                        onClick={() => openModal('field', { ...field, index: idx })}
-                                        className="text-muted-foreground hover:text-primary transition-colors"><Edit size={14} /></button>
-                                    <button
-                                        onClick={() => handleDelete('field', idx)}
-                                        className="text-muted-foreground hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                                <div className="space-y-5">
+                                    {resolved.sections.map((sec, secIdx) => (
+                                        <div
+                                            key={sec.id}
+                                            className="rounded-xl border overflow-hidden"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg }}
+                                        >
+                                            <div
+                                                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b"
+                                                style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                                            >
+                                                <span className="text-xs font-black uppercase tracking-widest" style={{ color: colors.textMain }}>
+                                                    {sec.title}
+                                                </span>
+                                                <div className="flex items-center gap-1">
+                                                    <button
+                                                        type="button"
+                                                        title="Move section up"
+                                                        disabled={secIdx === 0}
+                                                        onClick={() => moveConfigSection(sec.id, -1)}
+                                                        className="p-1.5 rounded-lg border disabled:opacity-30 hover:bg-white/5"
+                                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    >
+                                                        <ChevronUp size={16} />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Move section down"
+                                                        disabled={secIdx >= resolved.sections.length - 1}
+                                                        onClick={() => moveConfigSection(sec.id, 1)}
+                                                        className="p-1.5 rounded-lg border disabled:opacity-30 hover:bg-white/5"
+                                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    >
+                                                        <ChevronDown size={16} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <ul className="divide-y" style={{ borderColor: colors.border }}>
+                                                {sec.fields.map((field) => (
+                                                    <li
+                                                        key={field.id}
+                                                        className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5"
+                                                    >
+                                                        <span className="text-sm font-medium" style={{ color: colors.textMain }}>
+                                                            {field.label}
+                                                        </span>
+                                                        <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="accent-primary rounded"
+                                                                checked={field.required}
+                                                                onChange={(e) => toggleFieldRequired(field.id, e.target.checked)}
+                                                            />
+                                                            <span style={{ color: colors.textMuted }}>Required</span>
+                                                        </label>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    ))}
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="mt-8 pt-6 border-t flex justify-end gap-3" style={{ borderColor: colors.border }}>
-                        <button
-                            onClick={() => alert('Fields reset to system defaults')}
-                            className="px-4 py-2 rounded text-xs font-bold border hover:bg-white/5" style={{ borderColor: colors.border, color: colors.textMain }}>Reset Default</button>
-                        <button
-                            onClick={() => alert(`Global configuration for ${configFormType} saved!`)}
-                            className="px-6 py-2 rounded text-xs font-bold bg-primary text-black hover:opacity-90">Save Configuration</button>
+                                <div className="mt-8 pt-5 border-t flex flex-wrap justify-end gap-3" style={{ borderColor: colors.border }}>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setFormConfigStore((prev) => {
+                                                const next = { ...prev };
+                                                delete next[configFormId];
+                                                if (configTargetPropertyId) savePropertyFormOverrides(configTargetPropertyId, next);
+                                                return next;
+                                            });
+                                        }}
+                                        className="px-4 py-2 rounded-lg text-xs font-bold border hover:bg-white/5"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        Reset this form to defaults
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!configTargetPropertyId) {
+                                                alert('Select a property first.');
+                                                return;
+                                            }
+                                            savePropertyFormOverrides(configTargetPropertyId, formConfigStore);
+                                        }}
+                                        className="px-6 py-2 rounded-lg text-xs font-bold bg-primary text-black hover:opacity-90"
+                                    >
+                                        Save configuration
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     // --- Main Render ---
 
@@ -3247,22 +3416,6 @@ export default function Settings({
                                         </div>
                                     )}
                                 </div>
-                            )}
-                            {modalType === 'field' && (
-                                <>
-                                    <input type="text" placeholder="Label" className="w-full p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                        value={modalFormData.label || ''} onChange={e => setModalFormData({ ...modalFormData, label: e.target.value })} />
-                                    <div className="flex items-center gap-4">
-                                        <select className="flex-1 p-3 bg-black/20 border rounded-xl outline-none" style={{ borderColor: colors.border, color: colors.textMain }}
-                                            value={modalFormData.type || 'Text'} onChange={e => setModalFormData({ ...modalFormData, type: e.target.value })}>
-                                            {['Text', 'Number', 'Date', 'Dropdown', 'Currency'].map(t => <option key={t} value={t} className="bg-black">{t}</option>)}
-                                        </select>
-                                        <label className="flex items-center gap-2 cursor-pointer">
-                                            <input type="checkbox" checked={modalFormData.required || false} onChange={e => setModalFormData({ ...modalFormData, required: e.target.checked })} className="accent-primary w-5 h-5" />
-                                            <span style={{ color: colors.textMain }}>Required</span>
-                                        </label>
-                                    </div>
-                                </>
                             )}
                             {modalType === 'assignUser' && (
                                 <div className="space-y-4">

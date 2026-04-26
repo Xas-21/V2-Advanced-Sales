@@ -64,6 +64,7 @@ import { resolveUserAttributionId, createdByMatchesUser } from './userProfileMet
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
+import { collectRequestFormViolations } from './formConfigurations';
 
 interface RequestsManagerProps {
     theme: any;
@@ -280,6 +281,15 @@ export default function RequestsManager({
         void mealsPackagesRev;
         return resolveEventPackagesForProperty(activeProperty?.id || '', activeProperty);
     }, [activeProperty, mealsPackagesRev]);
+
+    const accountsSameProperty = useMemo(() => {
+        const pid = String(activeProperty?.id || '').trim();
+        if (!pid) return accounts;
+        return accounts.filter((a: any) => {
+            const p = String(a?.propertyId || '').trim();
+            return !p || p === 'P-GLOBAL' || p === pid;
+        });
+    }, [accounts, activeProperty?.id]);
 
     const [requests, setRequests] = useState<any[]>([]);
     const [taxesList, setTaxesList] = useState<any[]>([]);
@@ -969,6 +979,11 @@ export default function RequestsManager({
                         return;
                     }
                 }
+            }
+            const reqCfgViol = collectRequestFormViolations(activeProperty?.id, normalizedType, formData);
+            if (reqCfgViol.length) {
+                showSystemNotice('Required fields', reqCfgViol.join('\n'));
+                return;
             }
             const fin = normalizedType === 'event'
                 ? (Array.isArray(formData?.agenda) ? calculateAccFinancials(formData) : calculateEvtFinancials(formData))
@@ -4209,6 +4224,9 @@ export default function RequestsManager({
                     onSave={handleSaveAccountFromModal}
                     theme={theme}
                     accountTypeOptions={effectiveAccountTypeOptions}
+                    duplicateCheckAccounts={accountsSameProperty}
+                    duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                    configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 />
                 <ConfirmDialog
                     isOpen={showDeleteRequestConfirm}
