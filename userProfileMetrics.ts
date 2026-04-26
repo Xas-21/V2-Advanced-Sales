@@ -215,6 +215,7 @@ export function accountAttributedToUser(acc: any, user: any): boolean {
 
 export function crmLeadAttributedToUser(lead: any, user: any): boolean {
     if (!user || !userHasProfileIdentity(user)) return false;
+    if (createdByMatchesUser(lead?.createdByUserId, user)) return true;
     if (createdByMatchesUser(lead?.ownerUserId, user)) return true;
     const am = String(lead?.accountManager || '').trim().toLowerCase();
     const unm = String(user?.name || '').trim().toLowerCase();

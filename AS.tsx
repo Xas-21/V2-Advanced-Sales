@@ -6602,6 +6602,7 @@ export default function AdvancedSalesDashboard() {
                             accountTypeOptions={propertyAccountTypeLabels}
                             visibleMonth={crmVisibleMonth}
                             currency={currentCurrency}
+                            crmFilterUsers={taskAssignableUsers}
                         />
                     ) : currentView === 'contracts' ? (
                         <Contracts

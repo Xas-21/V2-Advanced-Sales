@@ -28,7 +28,7 @@ import {
 } from './accountProfileData';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
-import { resolveUserAttributionId } from './userProfileMetrics';
+import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
 import { createPortal } from 'react-dom';
 
 /** KPI and kanban tag: only when follow-up is explicitly on and a date exists (matches product behavior; avoids orphan dates counting alone). */
@@ -62,6 +62,8 @@ interface CRMProps {
     /** YYYY-MM: filter pipeline/list by `lastContact` / `date` in that month. */
     visibleMonth?: string;
     currency?: CurrencyCode;
+    /** Property staff (id + display name) for “created by” pipeline/list filter. */
+    crmFilterUsers?: { id: string; name: string }[];
 }
 
 export default function CRM({
@@ -84,6 +86,7 @@ export default function CRM({
     accountTypeOptions,
     visibleMonth,
     currency = 'SAR',
+    crmFilterUsers,
 }: CRMProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -140,6 +143,21 @@ export default function CRM({
         });
         return out;
     }, [crmLeads, visibleMonth]);
+
+    const [createdByUserFilterId, setCreatedByUserFilterId] = useState('');
+
+    const crmLeadsForDisplay = useMemo(() => {
+        const fid = String(createdByUserFilterId || '').trim();
+        if (!fid) return crmLeadsForView;
+        const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
+        if (!userRow) return crmLeadsForView;
+        const filterUser = { id: userRow.id, name: userRow.name };
+        const out: Record<string, any[]> = { ...crmLeadsForView };
+        (Object.keys(out) as string[]).forEach((k) => {
+            out[k] = (out[k] || []).filter((l: any) => crmLeadAttributedToUser(l, filterUser));
+        });
+        return out;
+    }, [crmLeadsForView, createdByUserFilterId, crmFilterUsers]);
 
     const [tagColorTick, setTagColorTick] = useState(0);
     useEffect(() => {
@@ -237,13 +255,13 @@ export default function CRM({
     const [crmMenuDropPos, setCrmMenuDropPos] = useState<{ top: number; right: number } | null>(null);
     const crmMenuLead = useMemo(() => {
         if (!listMenuLeadId) return null;
-        for (const k of Object.keys(crmLeadsForView)) {
-            const arr = (crmLeadsForView as any)[k] || [];
+        for (const k of Object.keys(crmLeadsForDisplay)) {
+            const arr = (crmLeadsForDisplay as any)[k] || [];
             const hit = arr.find((l: any) => String(l.id) === String(listMenuLeadId));
             if (hit) return hit;
         }
         return null;
-    }, [listMenuLeadId, crmLeadsForView]);
+    }, [listMenuLeadId, crmLeadsForDisplay]);
     /** After a kanban drag starts, ignore the next click on that card (avoids opening profile when dropping). */
     const ignoreNextPipelineCardClickIdRef = useRef<string | null>(null);
     /** false = oldest → newest (default); true = newest → oldest */
@@ -322,22 +340,22 @@ export default function CRM({
         setEditCallForm((prev) => ({ ...prev, followUpRequired: false, followUpDate: '' }));
     }, [editCallForm.status, showEditCallModal]);
 
-    // Calculate stats (respect visible month filter)
-    const allLeads = Object.values(crmLeadsForView).flat();
+    // Calculate stats (respect visible month + creator filter)
+    const allLeads = Object.values(crmLeadsForDisplay).flat();
     const listSortedLeads = useMemo(() => {
-        const leads = Object.values(crmLeadsForView).flat();
+        const leads = Object.values(crmLeadsForDisplay).flat();
         const leadSortYmd = (l: any) => String(l.lastContact || l.date || '').trim() || '';
         return [...leads].sort((a, b) => {
             const cmp = leadSortYmd(a).localeCompare(leadSortYmd(b));
             return listSortNewestFirst ? -cmp : cmp;
         });
-    }, [crmLeadsForView, listSortNewestFirst]);
+    }, [crmLeadsForDisplay, listSortNewestFirst]);
     const totalLeads = allLeads.length;
     const pipelineValue = allLeads.reduce((sum: number, l: any) => sum + Number(l.value || 0), 0);
     const avgDealSize = totalLeads > 0 ? pipelineValue / totalLeads : 0;
-    const wonThisMonth = crmLeadsForView.won?.length || 0;
+    const wonThisMonth = crmLeadsForDisplay.won?.length || 0;
     const highPotentialCount =
-        (crmLeadsForView.proposal?.length || 0) + (crmLeadsForView.negotiation?.length || 0);
+        (crmLeadsForDisplay.proposal?.length || 0) + (crmLeadsForDisplay.negotiation?.length || 0);
     const followUpRequiredCount = allLeads.filter((lead: any) => crmLeadHasScheduledFollowUp(lead)).length;
 
     const openLeadProfile = (lead: any) => {
@@ -437,6 +455,7 @@ export default function CRM({
             id: `L${Date.now()}`,
             propertyId: activeProperty?.id || undefined,
             ownerUserId: resolveUserAttributionId(currentUser) || undefined,
+            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
             accountId: account.id,
             company: newCallData.accountName,
             subject: newCallData.subject,
@@ -838,15 +857,38 @@ export default function CRM({
                     <div>
                         <h1 className="text-xl font-bold" style={{ color: colors.textMain }}>Summary</h1>
                     </div>
-                    {!crmReadOnly && (
-                        <button
-                            onClick={() => setShowAddCallModal(true)}
-                            className="px-4 py-2 rounded font-bold flex items-center gap-2 shadow-lg scale-90"
-                            style={{ backgroundColor: colors.primary, color: '#000' }}
-                        >
-                            <Plus size={18} /> Add Sales Call
-                        </button>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                        {(crmFilterUsers || []).length > 0 && (
+                            <select
+                                value={createdByUserFilterId}
+                                onChange={(e) => setCreatedByUserFilterId(e.target.value)}
+                                className="text-sm font-bold px-3 py-2 rounded-lg border outline-none min-w-[11rem] max-w-[16rem] truncate scale-90"
+                                style={{
+                                    backgroundColor: colors.bg,
+                                    borderColor: colors.border,
+                                    color: colors.textMain,
+                                }}
+                                aria-label="Filter sales calls by creator"
+                                title="Show only sales calls created by this user"
+                            >
+                                <option value="">All users</option>
+                                {(crmFilterUsers || []).map((u) => (
+                                    <option key={u.id} value={u.id}>
+                                        {u.name}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                        {!crmReadOnly && (
+                            <button
+                                onClick={() => setShowAddCallModal(true)}
+                                className="px-4 py-2 rounded font-bold flex items-center gap-2 shadow-lg scale-90"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                            >
+                                <Plus size={18} /> Add Sales Call
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Stats Row */}
@@ -865,7 +907,7 @@ export default function CRM({
                     </div>
                     <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                         <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>
-                        <p className="text-2xl font-bold" style={{ color: colors.green }}>{((crmLeads.won.length / (totalLeads || 1)) * 100).toFixed(0)}%</p>
+                        <p className="text-2xl font-bold" style={{ color: colors.green }}>{(((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
                     </div>
                 </div>
             </div>
@@ -1019,11 +1061,11 @@ export default function CRM({
                                     style={{ borderColor: colors.border, borderBottomColor: stage.color, backgroundColor: colors.bg }}>
                                     <span className="font-bold uppercase text-xs tracking-wider" style={{ color: colors.textMain }}>{stage.title}</span>
                                     <span className="text-xs px-2 py-0.5 rounded font-bold" style={{ backgroundColor: `${stage.color}20`, color: stage.color }}>
-                                        {crmLeadsForView[stage.id as keyof typeof crmLeadsForView]?.length || 0}
+                                        {crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay]?.length || 0}
                                     </span>
                                 </div>
                                 <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                                    {crmLeadsForView[stage.id as keyof typeof crmLeadsForView]?.map((lead: any) => (
+                                    {crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay]?.map((lead: any) => (
                                         <div key={lead.id}
                                             draggable={!crmReadOnly}
                                             onDragStart={() => {
