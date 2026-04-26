@@ -20,8 +20,10 @@ import {
     flattenCrmLeads,
     filterRequestsForAccount,
     filterSalesCallsForAccount,
-    filterOpenOpportunityLeads
+    filterOpenOpportunityLeads,
 } from './accountProfileData';
+import { computeRequestRevenueBreakdownNoTax } from './operationalSegmentRevenue';
+import { formatCompactCurrency } from './formatCompactCurrency';
 import {
     isAccountsPageReadOnly,
     canDeleteAccounts,
@@ -36,8 +38,10 @@ import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId } from './userProfileMetrics';
 
-const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v1';
-const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email'];
+const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v2';
+const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email', 'totalRev', 'totalReq'];
+
+type AccountsListSort = 'name_az' | 'rev_high' | 'rev_low';
 
 interface AccountsPageProps {
     theme: any;
@@ -84,6 +88,7 @@ export default function AccountsPage({
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
     const [search, setSearch] = useState('');
+    const [listSort, setListSort] = useState<AccountsListSort>('name_az');
     const [cityFilter, setCityFilter] = useState('');
     const [segmentFilter, setSegmentFilter] = useState('');
     const [filterWithContract, setFilterWithContract] = useState(false);
@@ -135,8 +140,25 @@ export default function AccountsPage({
         city: 'City',
         contact: 'Contact Person',
         phone: 'Phone',
-        email: 'Email'
+        email: 'Email',
+        totalRev: 'Total Rev',
+        totalReq: 'Total Req',
     };
+
+    const requestStatsByAccountId = useMemo(() => {
+        const m = new Map<string, { revSar: number; reqCount: number }>();
+        for (const a of accounts) {
+            const id = String(a?.id ?? '');
+            if (!id) continue;
+            const reqs = filterRequestsForAccount(sharedRequests, id, a?.name);
+            let revSar = 0;
+            for (const r of reqs) {
+                revSar += computeRequestRevenueBreakdownNoTax(r).totalLineNoTax;
+            }
+            m.set(id, { revSar, reqCount: reqs.length });
+        }
+        return m;
+    }, [accounts, sharedRequests]);
 
     const segmentFilterOptions = useMemo(() => {
         const fromProp =
@@ -192,6 +214,19 @@ export default function AccountsPage({
         filterWithoutContract,
         accountIdsWithContract,
     ]);
+
+    const sortedFiltered = useMemo(() => {
+        const rows = [...filtered];
+        const stat = (id: string) => requestStatsByAccountId.get(String(id)) || { revSar: 0, reqCount: 0 };
+        if (listSort === 'name_az') {
+            rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+        } else if (listSort === 'rev_high') {
+            rows.sort((a, b) => stat(b.id).revSar - stat(a.id).revSar || String(a.name || '').localeCompare(String(b.name || '')));
+        } else if (listSort === 'rev_low') {
+            rows.sort((a, b) => stat(a.id).revSar - stat(b.id).revSar || String(a.name || '').localeCompare(String(b.name || '')));
+        }
+        return rows;
+    }, [filtered, listSort, requestStatsByAccountId]);
 
     const handleColumnDragStart = (column: string) => setDraggedColumn(column);
     const handleColumnDrop = (targetColumn: string) => {
@@ -340,6 +375,22 @@ export default function AccountsPage({
                 return <span className="text-sm" style={{ color: colors.textMain }}>{c0.phone || '-'}</span>;
             case 'email':
                 return <span className="text-sm break-all" style={{ color: colors.textMain }}>{c0.email || '-'}</span>;
+            case 'totalRev': {
+                const st = requestStatsByAccountId.get(String(a.id)) || { revSar: 0, reqCount: 0 };
+                return (
+                    <span className="text-sm font-mono tabular-nums" style={{ color: colors.textMain }}>
+                        {formatCompactCurrency(st.revSar, currency)}
+                    </span>
+                );
+            }
+            case 'totalReq': {
+                const st = requestStatsByAccountId.get(String(a.id)) || { revSar: 0, reqCount: 0 };
+                return (
+                    <span className="text-sm font-mono tabular-nums" style={{ color: colors.textMain }}>
+                        {st.reqCount}
+                    </span>
+                );
+            }
             default:
                 return null;
         }
@@ -458,9 +509,9 @@ export default function AccountsPage({
                     <div className="shrink-0 pt-0.5">
                         <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Accounts</h1>
                         <p className="text-sm" style={{ color: colors.textMuted }}>
-                            {filtered.length === accounts.length
+                            {sortedFiltered.length === accounts.length
                                 ? `${accounts.length} accounts`
-                                : `${filtered.length} of ${accounts.length} accounts`}
+                                : `${sortedFiltered.length} of ${accounts.length} accounts`}
                         </p>
                     </div>
                     <div className="flex flex-col items-center gap-2.5 w-full min-w-0 max-w-3xl justify-self-center lg:px-2">
@@ -505,6 +556,19 @@ export default function AccountsPage({
                                 ))}
                             </select>
                         </div>
+                        <div className="flex flex-col gap-1 w-full min-w-[10rem] max-w-[16rem]">
+                            <label className="text-[10px] font-bold uppercase tracking-wider opacity-60 text-center" style={{ color: colors.textMuted }}>Order</label>
+                            <select
+                                value={listSort}
+                                onChange={(e) => setListSort(e.target.value as AccountsListSort)}
+                                className="w-full px-3 py-2 rounded-xl border text-sm outline-none"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <option value="name_az">A–Z (name)</option>
+                                <option value="rev_high">Highest Rev</option>
+                                <option value="rev_low">Lowest Rev</option>
+                            </select>
+                        </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-center gap-6">
                         <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: colors.textMain }}>
@@ -545,7 +609,7 @@ export default function AccountsPage({
             </div>
 
             <div className="flex-1 overflow-auto p-6 min-h-0">
-                {!filtered.length ? (
+                {!sortedFiltered.length ? (
                     <div className="flex flex-col items-center justify-center py-20 text-center" style={{ color: colors.textMuted }}>
                         <Building2 size={48} className="opacity-20 mb-4" />
                         <p className="font-bold">{accounts.length ? 'No matching accounts' : 'No accounts yet'}</p>
@@ -571,7 +635,7 @@ export default function AccountsPage({
                             </tr>
                         </thead>
                         <tbody>
-                            {filtered.map((a: any) => (
+                            {sortedFiltered.map((a: any) => (
                                 <tr
                                     key={a.id}
                                     onClick={() => setProfileLead(accountToLead(a))}
