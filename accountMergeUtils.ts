@@ -1,4 +1,5 @@
 import { contactDisplayName } from './accountLeadMapping';
+import { apiUrl } from './backendApi';
 
 function contactIdentityKey(c: any, fallbackIdx: number): string {
     const e = String(c?.email || '').trim().toLowerCase();
@@ -220,4 +221,97 @@ export function applyAccountMergeInMemory(input: AccountMergeApplyInput): {
         destName
     );
     return { nextAccounts, nextRequests, nextCrmLeads, mergedAccount: merged };
+}
+
+function requestAccountFieldsChanged(before: any, after: any): boolean {
+    return (
+        String(before?.accountId || '') !== String(after?.accountId || '') ||
+        String(before?.account || '').trim() !== String(after?.account || '').trim() ||
+        String(before?.accountName || '').trim() !== String(after?.accountName || '').trim()
+    );
+}
+
+/**
+ * Persist merge to the backend so a refresh does not bring back the duplicate account.
+ * Order: repoint requests → CRM leads → upsert merged account → delete source account.
+ */
+export async function persistAccountMergeToBackend(opts: {
+    mergedAccount: any;
+    sourceAccountId: string;
+    sourceAccountName: string;
+    nextRequests: any[];
+    previousRequests: any[];
+    nextCrmLeads: Record<string, any[]>;
+    propertyId: string;
+}): Promise<void> {
+    const {
+        mergedAccount,
+        sourceAccountId,
+        sourceAccountName,
+        nextRequests,
+        previousRequests,
+        nextCrmLeads,
+        propertyId,
+    } = opts;
+    const sid = String(sourceAccountId || '').trim();
+    const sname = String(sourceAccountName || '').trim().toLowerCase();
+    if (!sid) throw new Error('Missing source account id');
+    const pid = String(propertyId || '').trim();
+    if (!pid) throw new Error('Missing property id for merge persistence');
+
+    const prevById = new Map((previousRequests || []).map((r: any) => [String(r?.id), r]));
+    const requestsToPersist: any[] = [];
+    for (const r of nextRequests || []) {
+        const o = prevById.get(String(r?.id));
+        if (!o) continue;
+        if (!requestAccountFieldsChanged(o, r)) continue;
+        const touchedSource =
+            String(o.accountId || '').trim() === sid ||
+            String(o.account || '')
+                .trim()
+                .toLowerCase() === sname ||
+            String(o.accountName || '')
+                .trim()
+                .toLowerCase() === sname;
+        if (touchedSource) requestsToPersist.push(r);
+    }
+
+    for (const r of requestsToPersist) {
+        const res = await fetch(apiUrl('/api/requests'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(r),
+        });
+        if (!res.ok) {
+            const t = await res.text().catch(() => '');
+            throw new Error(`Failed to repoint request ${r?.id}: ${res.status} ${t}`);
+        }
+    }
+
+    const crmRes = await fetch(apiUrl('/api/crm-state'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, leads: nextCrmLeads }),
+    });
+    if (!crmRes.ok) {
+        const t = await crmRes.text().catch(() => '');
+        throw new Error(`Failed to persist CRM state: ${crmRes.status} ${t}`);
+    }
+
+    const accPayload = { ...mergedAccount, propertyId: String(mergedAccount?.propertyId || '').trim() || pid };
+    const accRes = await fetch(apiUrl('/api/accounts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(accPayload),
+    });
+    if (!accRes.ok) {
+        const t = await accRes.text().catch(() => '');
+        throw new Error(`Failed to save merged account: ${accRes.status} ${t}`);
+    }
+
+    const delRes = await fetch(apiUrl(`/api/accounts/${encodeURIComponent(sid)}`), { method: 'DELETE' });
+    if (!delRes.ok && delRes.status !== 404) {
+        const t = await delRes.text().catch(() => '');
+        throw new Error(`Failed to remove duplicate account: ${delRes.status} ${t}`);
+    }
 }

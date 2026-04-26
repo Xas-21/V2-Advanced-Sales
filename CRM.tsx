@@ -30,7 +30,7 @@ import {
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
-import { applyAccountMergeInMemory } from './accountMergeUtils';
+import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { collectSalesCallFormViolations } from './formConfigurations';
 import { repointContractRecordsForAccountMerge } from './contractsStore';
 import { createPortal } from 'react-dom';
@@ -785,9 +785,11 @@ export default function CRM({
         }
     };
 
-    const handleCrmMergeAccountIntoCurrent = (sourceAccountId: string) => {
+    const handleCrmMergeAccountIntoCurrent = async (sourceAccountId: string) => {
         if (!selectedLead) return;
         const destId = String(selectedLead.accountId || selectedLead.id || '');
+        const sourceRow = accounts.find((a: any) => String(a.id) === String(sourceAccountId));
+        const sourceName = String(sourceRow?.name || '').trim();
         const applied = applyAccountMergeInMemory({
             accounts,
             sharedRequests,
@@ -796,6 +798,28 @@ export default function CRM({
             sourceAccountId,
         });
         if (!applied) return;
+        const propertyId = String(activeProperty?.id || applied.mergedAccount?.propertyId || '').trim();
+        if (!propertyId) {
+            window.alert('Missing property context; cannot save merge to the server.');
+            return;
+        }
+        try {
+            await persistAccountMergeToBackend({
+                mergedAccount: applied.mergedAccount,
+                sourceAccountId: String(sourceAccountId),
+                sourceAccountName: sourceName,
+                nextRequests: applied.nextRequests,
+                previousRequests: sharedRequests,
+                nextCrmLeads: applied.nextCrmLeads,
+                propertyId,
+            });
+        } catch (e: any) {
+            window.alert(
+                e?.message ||
+                    'Could not save the merge to the server. Nothing was changed; please try again or contact support.'
+            );
+            return;
+        }
         setAccounts(applied.nextAccounts);
         setSharedRequests?.(applied.nextRequests);
         setCrmLeads(applied.nextCrmLeads);
