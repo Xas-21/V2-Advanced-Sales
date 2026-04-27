@@ -588,7 +588,8 @@ export function addProratedRequestFinancialsToDashboardBuckets(
                     if (alsoRoomsChart) {
                         b.roomsRevenue += perNight;
                         b.roomNights += count;
-                        b.rooms += tn > 0 ? 1 / tn : 0;
+                        // Prorate line.count across nights; 1/tn was one booking per stay, not room units.
+                        b.rooms += tn > 0 ? count / tn : 0;
                     }
                 });
             }

@@ -62,12 +62,36 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
         { key: 'cancelled', name: 'Cancelled', color: colors.red },
     ];
     const activeStatusSeries = statusSeries.filter((s) => (chartData || []).some((row: any) => Number(row?.[s.key] || 0) > 0));
+    const sumChartKey = (key: string) =>
+        (chartData || []).reduce((sum: number, row: any) => sum + (Number(row?.[key]) || 0), 0);
+    const formatLegendCount = (n: number) => Math.round(Number(n) || 0).toLocaleString();
+    const formatLegendMoneyTotal = (amountSar: number) =>
+        formatCurrencyAmount(Number(amountSar) || 0, selectedCurrency, { maximumFractionDigits: 0 });
     const statusLegendPayload = activeStatusSeries.map((s) => ({
-        value: s.name,
+        value: `${s.name} (${formatLegendCount(sumChartKey(s.key))})`,
         type: 'circle' as const,
         color: s.color,
         id: s.key,
     }));
+    const roomsLegendPayload = [
+        { value: `Rooms (${formatLegendCount(sumChartKey('rooms'))})`, type: 'circle' as const, color: colors.cyan, id: 'rooms' },
+        { value: `Room Nights (${formatLegendCount(sumChartKey('roomNights'))})`, type: 'circle' as const, color: colors.blue, id: 'roomNights' },
+        {
+            value: `Rooms Revenue (${formatLegendMoneyTotal(sumChartKey('roomsRevenue'))})`,
+            type: 'circle' as const,
+            color: colors.green,
+            id: 'roomsRevenue',
+        },
+    ];
+    const miceLegendPayload = [
+        { value: `MICE Requests (${formatLegendCount(sumChartKey('miceRequests'))})`, type: 'circle' as const, color: colors.purple, id: 'miceRequests' },
+        {
+            value: `Event Revenue (${formatLegendMoneyTotal(sumChartKey('miceRevenue'))})`,
+            type: 'circle' as const,
+            color: colors.green,
+            id: 'miceRevenue',
+        },
+    ];
     const statusTooltipContent = ({ active, payload, label }: any) => {
         if (!active || !Array.isArray(payload) || payload.length === 0) return null;
         const nonZero = payload.filter((p: any) => Number(p?.value || 0) > 0);
@@ -146,7 +170,7 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
                         tickFormatter={moneyTickFormatter}
                     />
                     <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
+                    <Legend payload={roomsLegendPayload} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
                     <Bar yAxisId="left" dataKey="rooms" name="Rooms" fill={colors.cyan} radius={[4, 4, 0, 0]} barSize={16} />
                     <Line yAxisId="left" type="monotone" dataKey="roomNights" name="Room Nights" stroke={colors.blue} strokeWidth={2} dot={{ r: 2 }} />
                     <Line yAxisId="right" type="monotone" dataKey="roomsRevenue" name="Rooms Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
@@ -165,7 +189,7 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
                     />
                     <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} tickFormatter={moneyTickFormatter} />
                     <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
+                    <Legend payload={miceLegendPayload} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
                     <Bar yAxisId="left" dataKey="miceRequests" name="MICE Requests" fill={colors.purple} radius={[4, 4, 0, 0]} barSize={20} />
                     <Line yAxisId="right" type="monotone" dataKey="miceRevenue" name="Event Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
                 </ComposedChart>
