@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     ResponsiveContainer,
     AreaChart,
@@ -44,6 +44,40 @@ type Props = {
 
 export default function AccountProfilePerformanceChart({ chartTab, chartData, colors, currency = 'SAR' }: Props) {
     const selectedCurrency = resolveCurrencyCode(currency);
+    /** Integer counts for chart + legend (buckets use prorated floats). */
+    const chartDataForTab = useMemo(() => {
+        const rows = chartData || [];
+        if (chartTab === 'Rooms') {
+            return rows.map((row: any) => ({
+                ...row,
+                rooms: Math.round(Number(row?.rooms) || 0),
+                roomNights: Math.round(Number(row?.roomNights) || 0),
+            }));
+        }
+        if (chartTab === 'MICE') {
+            return rows.map((row: any) => ({
+                ...row,
+                miceRequests: Math.round(Number(row?.miceRequests) || 0),
+            }));
+        }
+        return rows;
+    }, [chartData, chartTab]);
+    const roomsChartYDomains = useMemo(() => {
+        if (chartTab !== 'Rooms') return { maxRooms: 1, maxNights: 1 };
+        const rows = chartDataForTab || [];
+        let maxR = 0;
+        let maxN = 0;
+        for (const row of rows) {
+            maxR = Math.max(maxR, Number(row?.rooms) || 0);
+            maxN = Math.max(maxN, Number(row?.roomNights) || 0);
+        }
+        const head = (n: number) => {
+            const c = Math.ceil(Number(n) || 0);
+            if (c <= 0) return 1;
+            return Math.max(c, Math.ceil(c * 1.06));
+        };
+        return { maxRooms: head(maxR), maxNights: head(maxN) };
+    }, [chartTab, chartDataForTab]);
     const moneyTickFormatter = (v: any) => formatCompactCurrency(Number(v || 0), selectedCurrency);
     const moneyTooltipFormatter = (value: any, name: any, entry: any) => {
         const key = String(entry?.dataKey || '').toLowerCase();
@@ -63,7 +97,7 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
     ];
     const activeStatusSeries = statusSeries.filter((s) => (chartData || []).some((row: any) => Number(row?.[s.key] || 0) > 0));
     const sumChartKey = (key: string) =>
-        (chartData || []).reduce((sum: number, row: any) => sum + (Number(row?.[key]) || 0), 0);
+        (chartDataForTab || []).reduce((sum: number, row: any) => sum + (Number(row?.[key]) || 0), 0);
     const formatLegendCount = (n: number) => Math.round(Number(n) || 0).toLocaleString();
     const formatLegendMoneyTotal = (amountSar: number) =>
         formatCurrencyAmount(Number(amountSar) || 0, selectedCurrency, { maximumFractionDigits: 0 });
@@ -105,7 +139,7 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
                 <div className="space-y-0.5">
                     {nonZero.map((p: any, i: number) => (
                         <div key={`${p?.name || p?.dataKey || i}`} style={{ color: p?.color || colors.textMain }}>
-                            {p?.name}: {p?.value}
+                            {p?.name}: {Math.round(Number(p?.value) || 0)}
                         </div>
                     ))}
                 </div>
@@ -150,16 +184,29 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
                     <Bar dataKey="totalRequests" name="Total Requests" fill={colors.blue} radius={[4, 4, 0, 0]} barSize={20} />
                 </BarChart>
             ) : chartTab === 'Rooms' ? (
-                <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                <ComposedChart data={chartDataForTab} margin={{ top: 10, right: 10, left: 4, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
                     <YAxis
-                        yAxisId="left"
+                        yAxisId="rooms"
+                        orientation="left"
+                        width={34}
                         axisLine={false}
                         tickLine={false}
-                        tick={{ fill: colors.textMuted, fontSize: 10 }}
+                        tick={{ fill: colors.cyan, fontSize: 9 }}
                         allowDecimals={false}
-                        domain={[0, 'dataMax']}
+                        domain={[0, roomsChartYDomains.maxRooms]}
+                    />
+                    <YAxis
+                        yAxisId="nights"
+                        orientation="left"
+                        width={34}
+                        offset={36}
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.blue, fontSize: 9 }}
+                        allowDecimals={false}
+                        domain={[0, roomsChartYDomains.maxNights]}
                     />
                     <YAxis
                         yAxisId="right"
@@ -171,12 +218,12 @@ export default function AccountProfilePerformanceChart({ chartTab, chartData, co
                     />
                     <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Legend payload={roomsLegendPayload} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
-                    <Bar yAxisId="left" dataKey="rooms" name="Rooms" fill={colors.cyan} radius={[4, 4, 0, 0]} barSize={16} />
-                    <Line yAxisId="left" type="monotone" dataKey="roomNights" name="Room Nights" stroke={colors.blue} strokeWidth={2} dot={{ r: 2 }} />
+                    <Bar yAxisId="rooms" dataKey="rooms" name="Rooms" fill={colors.cyan} radius={[4, 4, 0, 0]} barSize={16} />
+                    <Line yAxisId="nights" type="monotone" dataKey="roomNights" name="Room Nights" stroke={colors.blue} strokeWidth={2} dot={{ r: 2 }} />
                     <Line yAxisId="right" type="monotone" dataKey="roomsRevenue" name="Rooms Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
                 </ComposedChart>
             ) : chartTab === 'MICE' ? (
-                <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                <ComposedChart data={chartDataForTab} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} vertical={false} />
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 10 }} />
                     <YAxis
