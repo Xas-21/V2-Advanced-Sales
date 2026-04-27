@@ -368,6 +368,27 @@ export type DashboardFinancialBucket = {
     miceRevenue: number;
 };
 
+/** Room count on a given calendar night from room lines (staggered series) or request totalRooms / 1. */
+function nightlyRoomInventoryForNightYmd(r: any, ny: string): number {
+    const rows = Array.isArray(r?.rooms) ? r.rooms : [];
+    let s = 0;
+    for (const row of rows) {
+        const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+        const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+        if (!inA || !outA) continue;
+        for (const d of eachOccupiedNightYmd(inA, outA)) {
+            if (d === ny) {
+                s += Math.max(0, Number(row?.count || 0));
+                break;
+            }
+        }
+    }
+    if (s > 0) return s;
+    const tr = Number(r?.totalRooms ?? 0);
+    if (Number.isFinite(tr) && tr > 0) return Math.round(tr);
+    return 1;
+}
+
 function proratedRoomRevenueSubtotal(
     r: any,
     rangeStart: string,
@@ -588,8 +609,9 @@ export function addProratedRequestFinancialsToDashboardBuckets(
                     if (alsoRoomsChart) {
                         b.roomsRevenue += perNight;
                         b.roomNights += count;
-                        // Prorate line.count across nights; 1/tn was one booking per stay, not room units.
-                        b.rooms += tn > 0 ? count / tn : 0;
+                        // Per occupied night: full line count (rooms on that night). count/tn prorates to
+                        // fractions so day/month buckets round to 0 and cross-month lines disappear.
+                        b.rooms += count;
                     }
                 });
             }
@@ -602,17 +624,16 @@ export function addProratedRequestFinancialsToDashboardBuckets(
         if (inA && outA) {
             const tn = Math.max(0, calculateNights(inA, outA));
             const nights = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
-            const totalRooms = Number(r?.totalRooms || 0) || 1;
             if (tn > 0 && nights.length) {
                 const perNightRoomRev = br.roomsRevenue / tn;
-                const perNightRoomUnits = totalRooms / tn;
                 for (const ny of nights) {
+                    const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNightRoomRev;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNightRoomRev;
-                            b.roomNights += perNightRoomUnits;
-                            b.rooms += perNightRoomUnits;
+                            b.roomNights += nightlyR;
+                            b.rooms += nightlyR;
                         }
                     });
                 }
@@ -636,15 +657,14 @@ export function addProratedRequestFinancialsToDashboardBuckets(
             const nights = inA && outA ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)) : [];
             if (tn > 0 && nights.length) {
                 const perNight = br.roomsRevenue / tn;
-                const totalRooms = Number(r?.totalRooms || 0) || 1;
-                const perNightRoomUnits = totalRooms / tn;
                 for (const ny of nights) {
+                    const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNight;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNight;
-                            b.roomNights += perNightRoomUnits;
-                            b.rooms += perNightRoomUnits;
+                            b.roomNights += nightlyR;
+                            b.rooms += nightlyR;
                         }
                     });
                 }
