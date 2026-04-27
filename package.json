@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "cd backend && .\\venv\\Scripts\\uvicorn.exe main:app --reload --host 127.0.0.1 --port 8000",
+    "dev:api": "node scripts/dev-api.mjs",
+    "dev:api:win": "cd backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000",
     "db:import:postgres": "cd backend && .\\venv\\Scripts\\python.exe scripts\\import_json_to_postgres.py",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",

@@ -131,10 +131,12 @@ import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { OCCUPANCY_TYPES_CHANGED_EVENT } from './propertyOccupancyTypes';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
+    addProratedRequestFinancialsToDashboardBuckets,
     buildReportSegmentsForRequest,
     computeRequestRevenueBreakdownNoTax,
-    segmentLineTotalExTax,
-    sumRequestSegmentRevenueExTaxInRange,
+    sumRequestProratedEventRevenueExTaxInRange,
+    sumRequestProratedRevenueExTaxInRange,
+    sumRequestProratedRoomRevenueExTaxInRange,
 } from './operationalSegmentRevenue';
 import {
     can,
@@ -4798,13 +4800,13 @@ export default function AdvancedSalesDashboard() {
             if (st) {
                 statusCounts[st] += 1;
                 if (st === 'Cancelled') {
-                    cancelledRevenue += sumRequestSegmentRevenueExTaxInRange(req, range.start, range.end);
+                    cancelledRevenue += sumRequestProratedRevenueExTaxInRange(req, range.start, range.end);
                 }
             }
             if (isDashboardExcludedRequest(req)) continue;
             const segs = buildReportSegmentsForRequest(req, range.start, range.end);
             if (segs.length === 0) continue;
-            const segTotal = sumRequestSegmentRevenueExTaxInRange(req, range.start, range.end);
+            const segTotal = sumRequestProratedRevenueExTaxInRange(req, range.start, range.end);
             requestCount += 1;
             totalRevenue += segTotal;
             paidRevenue += asNumber(req?.paidAmount || 0);
@@ -4900,24 +4902,21 @@ export default function AdvancedSalesDashboard() {
 
             const skipPerf = isDashboardExcludedRequest(req);
             const unitDates = getRequestCountDates(req);
-            const countDatesInRange = unitDates.filter((d) => isIsoInRange(d, dashboardCurrentRange));
             const dRange = dashboardCurrentRange;
-            const segs = !skipPerf && dRange.start && dRange.end
-                ? buildReportSegmentsForRequest(req, dRange.start, dRange.end)
-                : [];
-            const br0 =
-                !skipPerf && segs.length > 0 ? computeRequestRevenueBreakdownNoTax(req) : null;
 
-            if (!skipPerf && br0 && segs.length) {
-                for (let si = 0; si < segs.length; si += 1) {
-                    const seg = segs[si];
-                    const d = parseYmd(seg.displayDate);
-                    if (!d) continue;
-                    const cell = byMonth.get(keyFor(d));
-                    if (!cell) continue;
-                    const tPart = si === 0 ? br0.transportRevenue : 0;
-                    cell.revenue += segmentLineTotalExTax(seg, tPart);
-                }
+            if (!skipPerf && dRange.start && dRange.end) {
+                addProratedRequestFinancialsToDashboardBuckets(
+                    req,
+                    dRange.start,
+                    dRange.end,
+                    (iso) => getDashboardAxisKey(iso, axisConfig.granularity),
+                    (k) => byMonth.get(k),
+                    {
+                        skipPerf: false,
+                        includeRoomsChart: shouldIncludeRequestInRoomsChart(req),
+                        includeMiceChart: isEventsCateringEligibleRequest(req),
+                    }
+                );
             }
 
             if (!skipPerf) {
@@ -4961,32 +4960,6 @@ export default function AdvancedSalesDashboard() {
                 }
             }
 
-            if (!skipPerf && isEventsCateringEligibleRequest(req) && segs.length && br0) {
-                for (const seg of segs) {
-                    if (!seg.eventRev || seg.eventRev <= 0) continue;
-                    const d = parseYmd(seg.displayDate);
-                    if (!d) continue;
-                    const mr = byMonth.get(keyFor(d));
-                    if (mr) {
-                        mr.miceRevenue += seg.eventRev;
-                        mr.miceRequests += 1;
-                    }
-                }
-            }
-
-            if (!skipPerf && shouldIncludeRequestInRoomsChart(req) && segs.length) {
-                for (const seg of segs) {
-                    if (!seg.roomRev || seg.roomRev <= 0) continue;
-                    const d = parseYmd(seg.displayDate);
-                    if (!d) continue;
-                    const acc = byMonth.get(keyFor(d));
-                    if (!acc) continue;
-                    const rns = Math.max(0, Number(seg.roomNights) || 0);
-                    acc.rooms += 1;
-                    acc.roomNights += rns;
-                    acc.roomsRevenue += seg.roomRev;
-                }
-            }
         }
 
         return axis.map((m) => byMonth.get(m.key) || {
@@ -5071,13 +5044,9 @@ export default function AdvancedSalesDashboard() {
             const segsA = buildReportSegmentsForRequest(req, range.start, range.end);
             if (!segsA.length) continue;
             if (shouldIncludeRequestInRoomsChart(req)) {
-                for (const seg of segsA) {
-                    if (seg.roomRev > 0) roomsActual += seg.roomRev;
-                }
+                roomsActual += sumRequestProratedRoomRevenueExTaxInRange(req, range.start, range.end);
             }
-            for (const seg of segsA) {
-                if (seg.eventRev > 0) fnbActual += seg.eventRev;
-            }
+            fnbActual += sumRequestProratedEventRevenueExTaxInRange(req, range.start, range.end);
         }
 
         const pct = (value: number, base: number) => (base > 0 ? (value / base) * 100 : 0);
@@ -5123,7 +5092,7 @@ export default function AdvancedSalesDashboard() {
         const mapped = list.map((r: any, i: number) => {
             const r0 = dashboardCurrentRange.start;
             const r1 = dashboardCurrentRange.end;
-            const raw = r0 && r1 ? sumRequestSegmentRevenueExTaxInRange(r, r0, r1) : computeRequestCostBreakdown(r).totalRevenue;
+            const raw = r0 && r1 ? sumRequestProratedRevenueExTaxInRange(r, r0, r1) : computeRequestCostBreakdown(r).totalRevenue;
             const amount = formatCompactAmount(raw);
             return {
                 id: r.id ?? `req-${i}`,

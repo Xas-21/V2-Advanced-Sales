@@ -28,6 +28,8 @@ _SPECIAL_MIGRATION_DONE = False
 _GENERAL_TABLES_READY = False
 _GENERAL_MIGRATION_DONE = False
 _POOL: ConnectionPool | None = None
+# Set when Postgres init fails so the app keeps running on JSON files under backend/data/.
+_FORCE_FILE_STORAGE: bool = False
 
 _ROW_COLLECTIONS = {"users", "properties", "room_types", "venues", "taxes", "financials", "tasks"}
 _MAP_COLLECTIONS = {"crm_state"}
@@ -38,7 +40,33 @@ def get_database_url() -> str:
 
 
 def storage_mode() -> str:
+    if _FORCE_FILE_STORAGE:
+        return "file"
+    if os.getenv("USE_FILE_STORAGE", "").strip().lower() in ("1", "true", "yes"):
+        return "file"
     return "postgres" if get_database_url() else "file"
+
+
+def set_force_file_storage_after_pg_failure(reason: str | None = None) -> None:
+    """Call when Postgres bootstrap fails so login/API keep working on local JSON."""
+    global _FORCE_FILE_STORAGE, _POOL, _DB_SCHEMA_READY, _SPECIAL_TABLES_READY, _SPECIAL_MIGRATION_DONE
+    global _GENERAL_TABLES_READY, _GENERAL_MIGRATION_DONE
+    _FORCE_FILE_STORAGE = True
+    _DB_SCHEMA_READY = False
+    _SPECIAL_TABLES_READY = False
+    _SPECIAL_MIGRATION_DONE = False
+    _GENERAL_TABLES_READY = False
+    _GENERAL_MIGRATION_DONE = False
+    if _POOL is not None:
+        try:
+            _POOL.close()
+        except Exception:
+            pass
+        _POOL = None
+    msg = "VisaTour Backend: switching to file-backed JSON storage (backend/data)."
+    if reason:
+        msg = f"{msg} Reason: {reason}"
+    print(msg, flush=True)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -495,11 +523,14 @@ def write_json_file(file_path, data):
 def init_database():
     if storage_mode() != "postgres":
         return
-    _ensure_db_schema()
-    _ensure_general_tables()
-    _ensure_general_migration()
-    _ensure_special_tables()
-    _ensure_special_migration()
+    try:
+        _ensure_db_schema()
+        _ensure_general_tables()
+        _ensure_general_migration()
+        _ensure_special_tables()
+        _ensure_special_migration()
+    except Exception as e:
+        set_force_file_storage_after_pg_failure(repr(e))
 
 
 def close_database():

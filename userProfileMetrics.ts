@@ -1,5 +1,12 @@
 import { flattenCrmLeads } from './accountProfileData';
 import { calculateNights, inclusiveCalendarDays, normalizeRequestTypeKey } from './beoShared';
+import {
+    eachInclusiveAgendaDayYmd,
+    eachOccupiedNightYmd,
+    parseYmdAgenda,
+    requestTouchesOperationalDateRange,
+    sumRequestProratedRevenueExTaxInRange,
+} from './operationalSegmentRevenue';
 
 export const PROFILE_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
@@ -63,7 +70,8 @@ const normStatus = (s: any) => String(s || '').trim().toLowerCase();
  * Pre-tax total: same rules as `calculateAccFinancialsForRequest` (rooms + transport + event rows × inclusive days).
  */
 export function computeProfileRequestPreTax(req: any): number {
-    if (normStatus(req?.status) === 'cancelled') return 0;
+    const st = normStatus(req?.status);
+    if (st === 'cancelled' || st === 'lost') return 0;
     const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
     const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
     const transport = Array.isArray(req?.transportation) ? req.transportation : [];
@@ -329,13 +337,13 @@ export function buildMonthlyHistory(
         const d = new Date(y, m - i, 1);
         const label = PROFILE_MONTH_LABELS[d.getMonth()];
         const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const { start: ms, end: me } = ymdBoundsForCalendarMonth(d.getFullYear(), d.getMonth());
         let revenue = 0;
         for (const req of requests) {
             if (!requestInProperty(req, propertyId)) continue;
             if (!requestAttributedToUser(req, user)) continue;
-            const pd = getPrimaryOperationalDate(req);
-            if (!pd.startsWith(ym)) continue;
-            revenue += computeProfileRequestPreTax(req);
+            if (normStatus(req?.status) === 'cancelled' || normStatus(req?.status) === 'lost') continue;
+            revenue += sumRequestProratedRevenueExTaxInRange(req, ms, me);
         }
         const calls = countCallsInMonth(userLeads, ym);
         out.push({ month: label, revenue, calls });
@@ -348,9 +356,8 @@ export function sumRevenueInYmdRange(requests: any[], propertyId: string | undef
     for (const req of requests) {
         if (!requestInProperty(req, propertyId)) continue;
         if (!requestAttributedToUser(req, user)) continue;
-        const pd = getPrimaryOperationalDate(req);
-        if (!pd || pd < start || pd > end) continue;
-        sum += computeProfileRequestPreTax(req);
+        if (normStatus(req?.status) === 'cancelled' || normStatus(req?.status) === 'lost') continue;
+        sum += sumRequestProratedRevenueExTaxInRange(req, start, end);
     }
     return sum;
 }
@@ -360,8 +367,8 @@ export function countRequestsInYmdRange(requests: any[], propertyId: string | un
     for (const req of requests) {
         if (!requestInProperty(req, propertyId)) continue;
         if (!requestAttributedToUser(req, user)) continue;
-        const pd = getPrimaryOperationalDate(req);
-        if (!pd || pd < start || pd > end) continue;
+        if (normStatus(req?.status) === 'cancelled' || normStatus(req?.status) === 'lost') continue;
+        if (!requestTouchesOperationalDateRange(req, start, end)) continue;
         n += 1;
     }
     return n;
@@ -390,8 +397,7 @@ export function countOpenPipelineInYmdRange(
         if (!requestInProperty(req, propertyId)) continue;
         if (!requestAttributedToUser(req, user)) continue;
         if (!OPEN_PIPELINE.has(normStatus(req?.status))) continue;
-        const pd = getPrimaryOperationalDate(req);
-        if (!pd || pd < start || pd > end) continue;
+        if (!requestTouchesOperationalDateRange(req, start, end)) continue;
         n += 1;
     }
     return n;
@@ -499,14 +505,14 @@ export function monthRangeRevenueSeries(
     let cm = m0;
     let guard = 0;
     while (guard++ < 120) {
-        const ym = `${cy}-${String(cm + 1).padStart(2, '0')}`;
         const label = `${PROFILE_MONTH_LABELS[cm]} ${cy}`;
+        const { start: ms, end: me } = ymdBoundsForCalendarMonth(cy, cm);
         let rev = 0;
         for (const req of requests) {
             if (!requestInProperty(req, propertyId)) continue;
             if (!requestAttributedToUser(req, user)) continue;
-            const pd = getPrimaryOperationalDate(req);
-            if (pd.startsWith(ym)) rev += computeProfileRequestPreTax(req);
+            if (normStatus(req?.status) === 'cancelled' || normStatus(req?.status) === 'lost') continue;
+            rev += sumRequestProratedRevenueExTaxInRange(req, ms, me);
         }
         out.push({ month: label, revenue: rev });
         if (cy === y1 && cm === m1) break;
@@ -525,18 +531,32 @@ export function userAttributedOperationalDateBounds(
     propertyId: string | undefined,
     user: any
 ): { min: string; max: string } | null {
-    let min = '';
-    let max = '';
+    const dates: string[] = [];
     for (const req of requests || []) {
         if (!requestInProperty(req, propertyId)) continue;
         if (!requestAttributedToUser(req, user)) continue;
+        const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
+        for (const row of rooms) {
+            const a = parseYmdAgenda(row?.arrival || req?.checkIn);
+            const b = parseYmdAgenda(row?.departure || req?.checkOut);
+            if (a && b) dates.push(...eachOccupiedNightYmd(a, b));
+        }
+        if (!rooms.length) {
+            const a = parseYmdAgenda(req?.checkIn);
+            const b = parseYmdAgenda(req?.checkOut);
+            if (a && b) dates.push(...eachOccupiedNightYmd(a, b));
+        }
+        for (const item of Array.isArray(req?.agenda) ? req.agenda : []) {
+            const sd = parseYmdAgenda(item?.startDate);
+            const ed = parseYmdAgenda(item?.endDate || item?.startDate);
+            if (sd) dates.push(...eachInclusiveAgendaDayYmd(sd, ed || sd));
+        }
         const pd = getPrimaryOperationalDate(req);
-        if (!pd) continue;
-        if (!min || pd < min) min = pd;
-        if (!max || pd > max) max = pd;
+        if (pd) dates.push(pd);
     }
-    if (!min || !max) return null;
-    return { min, max };
+    const sorted = [...new Set(dates)].filter(Boolean).sort();
+    if (!sorted.length) return null;
+    return { min: sorted[0], max: sorted[sorted.length - 1] };
 }
 
 /** Same month iteration as `monthRangeRevenueSeries`, but counts requests per month. */
@@ -563,14 +583,15 @@ export function monthRangeRequestSeries(
     let cm = m0;
     let guard = 0;
     while (guard++ < 120) {
-        const ym = `${cy}-${String(cm + 1).padStart(2, '0')}`;
         const label = `${PROFILE_MONTH_LABELS[cm]} ${cy}`;
+        const { start: ms, end: me } = ymdBoundsForCalendarMonth(cy, cm);
         let n = 0;
         for (const req of requests || []) {
             if (!requestInProperty(req, propertyId)) continue;
             if (!requestAttributedToUser(req, user)) continue;
-            const pd = getPrimaryOperationalDate(req);
-            if (pd.startsWith(ym)) n += 1;
+            if (normStatus(req?.status) === 'cancelled' || normStatus(req?.status) === 'lost') continue;
+            if (!requestTouchesOperationalDateRange(req, ms, me)) continue;
+            n += 1;
         }
         out.push({ month: label, requests: n });
         if (cy === y1 && cm === m1) break;

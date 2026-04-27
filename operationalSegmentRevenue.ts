@@ -298,3 +298,447 @@ export function sumRequestSegmentRevenueExTaxInRange(r: any, filterStart: string
     }
     return t;
 }
+
+// --- Dashboard / account-profile charts: night- and agenda-day-level proration (not used by Reports vs LY) ---
+
+function toYmdUtcMidnight(ms: number): string {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+/** Occupied night dates: arrival night through night before checkout (same convention as dashboard overlap walks). */
+export function eachOccupiedNightYmd(arrivalYmd: string, departureYmd: string): string[] {
+    if (!arrivalYmd || !departureYmd) return [];
+    const out: string[] = [];
+    let c = new Date(`${arrivalYmd}T00:00:00`).getTime();
+    const endMs = new Date(`${departureYmd}T00:00:00`).getTime();
+    if (Number.isNaN(c) || Number.isNaN(endMs)) return [];
+    while (c < endMs) {
+        const y = toYmdUtcMidnight(c);
+        if (y) out.push(y);
+        c += 86400000;
+    }
+    return out;
+}
+
+function ymdInInclusiveRange(ymd: string, start: string, end: string): boolean {
+    if (!ymd || !start || !end) return false;
+    return ymd >= start && ymd <= end;
+}
+
+/** Inclusive agenda calendar days (start through end). */
+export function eachInclusiveAgendaDayYmd(startYmd: string, endYmd: string): string[] {
+    if (!startYmd) return [];
+    const ed = endYmd || startYmd;
+    const out: string[] = [];
+    let c = new Date(`${startYmd}T00:00:00`).getTime();
+    const endAt = new Date(`${ed}T00:00:00`).getTime();
+    if (Number.isNaN(c) || Number.isNaN(endAt)) return [];
+    while (c <= endAt) {
+        const y = toYmdUtcMidnight(c);
+        if (y) out.push(y);
+        c += 86400000;
+    }
+    return out;
+}
+
+function isSeriesRequestDash(r: any): boolean {
+    return String(r?.requestType || '').toLowerCase().includes('series');
+}
+
+function isMiceChartEligibleDash(r: any): boolean {
+    if (isSeriesRequestDash(r)) return false;
+    const t = String(r?.requestType || '').toLowerCase();
+    if (t === 'event') return true;
+    if (t === 'event_rooms') return true;
+    if (t.includes('event with')) return true;
+    return false;
+}
+
+export type DashboardFinancialBucket = {
+    revenue: number;
+    rooms: number;
+    roomNights: number;
+    roomsRevenue: number;
+    miceRequests: number;
+    miceRevenue: number;
+};
+
+function proratedRoomRevenueSubtotal(
+    r: any,
+    rangeStart: string,
+    rangeEnd: string,
+    br: { roomsRevenue: number; totalLineNoTax: number }
+): number {
+    let room = 0;
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    let rowRoomSum = 0;
+
+    for (const row of rooms) {
+        const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+        const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+        if (!inA || !outA) continue;
+        const count = Number(row?.count || 0);
+        const rate = Number(row?.rate || 0);
+        for (const ny of eachOccupiedNightYmd(inA, outA)) {
+            if (!ymdInInclusiveRange(ny, rangeStart, rangeEnd)) continue;
+            room += count * rate;
+        }
+        const tn = Math.max(0, calculateNights(inA, outA));
+        if (tn > 0) rowRoomSum += count * Number(row?.rate || 0) * tn;
+    }
+
+    if (!rooms.length) {
+        const inA = parseYmdAgenda(r?.checkIn);
+        const outA = parseYmdAgenda(r?.checkOut);
+        if (inA && outA) {
+            const tn = Math.max(0, calculateNights(inA, outA));
+            const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+            if (tn > 0 && br.roomsRevenue > 0) room += (br.roomsRevenue * ni) / tn;
+        }
+    } else if (rowRoomSum <= 0 && br.roomsRevenue > 0) {
+        const inA = parseYmdAgenda(r?.checkIn);
+        const outA = parseYmdAgenda(r?.checkOut);
+        if (inA && outA) {
+            const tn = Math.max(0, calculateNights(inA, outA));
+            const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+            if (tn > 0) room += (br.roomsRevenue * ni) / tn;
+        }
+    }
+    return room;
+}
+
+function proratedEventRevenueSubtotal(r: any, rangeStart: string, rangeEnd: string): number {
+    let event = 0;
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    for (const item of agenda) {
+        if (!item || typeof item !== 'object') continue;
+        const sd = parseYmdAgenda(item.startDate);
+        const ed = parseYmdAgenda(item.endDate || item.startDate) || sd;
+        if (!sd) continue;
+        let rowDays = 1;
+        if (sd && ed) {
+            const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        }
+        const rowCost = Number(item?.rate || 0) * Number(item?.pax || 0) + Number(item?.rental || 0);
+        const lineTotal = rowCost * rowDays;
+        const days = eachInclusiveAgendaDayYmd(sd, ed);
+        const hit = days.filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
+        if (hit.length === 0) continue;
+        event += lineTotal * (hit.length / rowDays);
+    }
+    return event;
+}
+
+/** Room-only ex-tax portion in range (dashboard performance vs budget). */
+export function sumRequestProratedRoomRevenueExTaxInRange(r: any, rangeStart: string, rangeEnd: string): number {
+    if (!rangeStart || !rangeEnd) return 0;
+    const br = computeRequestRevenueBreakdownNoTax(r);
+    let room = proratedRoomRevenueSubtotal(r, rangeStart, rangeEnd, br);
+    const event = proratedEventRevenueSubtotal(r, rangeStart, rangeEnd);
+    const sub = room + event;
+    let fallbackRoom = 0;
+    if (sub <= 0 && br.totalLineNoTax > 0) {
+        const anchor = fallbackOperationalAnchorYmd(r);
+        if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
+            const t = String(r?.requestType || '').toLowerCase();
+            const evHeavy =
+                t === 'event' || t === 'event_rooms' || t.includes('event') || t === 'event with rooms' || t.includes('series');
+            if (!evHeavy) {
+                const inA = parseYmdAgenda(r?.checkIn);
+                const outA = parseYmdAgenda(r?.checkOut);
+                if (inA && outA) {
+                    const tn = Math.max(0, calculateNights(inA, outA));
+                    const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+                    if (tn > 0) fallbackRoom += (br.totalLineNoTax * ni) / tn;
+                    else fallbackRoom += br.totalLineNoTax;
+                } else fallbackRoom += br.totalLineNoTax;
+            }
+        }
+    }
+    return room + fallbackRoom;
+}
+
+/** Event / agenda ex-tax portion in range (dashboard F&B performance). */
+export function sumRequestProratedEventRevenueExTaxInRange(r: any, rangeStart: string, rangeEnd: string): number {
+    if (!rangeStart || !rangeEnd) return 0;
+    const br = computeRequestRevenueBreakdownNoTax(r);
+    const room = proratedRoomRevenueSubtotal(r, rangeStart, rangeEnd, br);
+    let event = proratedEventRevenueSubtotal(r, rangeStart, rangeEnd);
+    const sub = room + event;
+    if (sub <= 0 && br.totalLineNoTax > 0) {
+        const anchor = fallbackOperationalAnchorYmd(r);
+        if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
+            const t = String(r?.requestType || '').toLowerCase();
+            const evHeavy =
+                t === 'event' || t === 'event_rooms' || t.includes('event') || t === 'event with rooms' || t.includes('series');
+            if (evHeavy) {
+                const inA = parseYmdAgenda(r?.checkIn);
+                const outA = parseYmdAgenda(r?.checkOut);
+                if (inA && outA) {
+                    const tn = Math.max(0, calculateNights(inA, outA));
+                    const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+                    if (tn > 0) {
+                        const tot = br.eventRevenue + br.roomsRevenue + br.transportRevenue;
+                        event += (tot * ni) / tn;
+                    } else event += br.totalLineNoTax;
+                } else event += br.totalLineNoTax;
+            }
+        }
+    }
+    return event;
+}
+
+/**
+ * Ex-tax total for [rangeStart, rangeEnd]: room revenue by occupied nights in range,
+ * agenda/event revenue by calendar days in range, transport once if any room/event attributed.
+ * (Dashboard KPIs / feed — not Reports export.)
+ */
+export function sumRequestProratedRevenueExTaxInRange(r: any, rangeStart: string, rangeEnd: string): number {
+    if (!rangeStart || !rangeEnd) return 0;
+    const br = computeRequestRevenueBreakdownNoTax(r);
+    const room = proratedRoomRevenueSubtotal(r, rangeStart, rangeEnd, br);
+    const event = proratedEventRevenueSubtotal(r, rangeStart, rangeEnd);
+    const sub = room + event;
+    const transport = sub > 0 ? br.transportRevenue : 0;
+    let fallback = 0;
+    if (sub <= 0 && br.totalLineNoTax > 0) {
+        const anchor = fallbackOperationalAnchorYmd(r);
+        if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
+            const t = String(r?.requestType || '').toLowerCase();
+            const evHeavy =
+                t === 'event' || t === 'event_rooms' || t.includes('event') || t === 'event with rooms' || t.includes('series');
+            if (evHeavy) {
+                const inA = parseYmdAgenda(r?.checkIn);
+                const outA = parseYmdAgenda(r?.checkOut);
+                if (inA && outA) {
+                    const tn = Math.max(0, calculateNights(inA, outA));
+                    const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+                    if (tn > 0) fallback += (br.totalLineNoTax * ni) / tn;
+                    else fallback += br.totalLineNoTax;
+                } else {
+                    fallback += br.totalLineNoTax;
+                }
+            } else {
+                const inA = parseYmdAgenda(r?.checkIn);
+                const outA = parseYmdAgenda(r?.checkOut);
+                if (inA && outA) {
+                    const tn = Math.max(0, calculateNights(inA, outA));
+                    const ni = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length;
+                    if (tn > 0) fallback += (br.totalLineNoTax * ni) / tn;
+                    else fallback += br.totalLineNoTax;
+                } else {
+                    fallback += br.totalLineNoTax;
+                }
+            }
+        }
+    }
+
+    return room + event + transport + fallback;
+}
+
+/**
+ * Add prorated revenue / room nights / MICE slices into dashboard-style month (or day) buckets.
+ * Caller supplies `includeRoomsChart` / `includeMiceChart` (same gates as AS.tsx).
+ */
+export function addProratedRequestFinancialsToDashboardBuckets(
+    r: any,
+    rangeStart: string,
+    rangeEnd: string,
+    keyFor: (isoYmd: string) => string,
+    getBucket: (key: string) => DashboardFinancialBucket | undefined,
+    opts: { skipPerf: boolean; includeRoomsChart: boolean; includeMiceChart: boolean }
+): void {
+    if (opts.skipPerf || !rangeStart || !rangeEnd) return;
+    const br = computeRequestRevenueBreakdownNoTax(r);
+    const transport = br.transportRevenue;
+    const allocDates: string[] = [];
+
+    const touch = (ymd: string, fn: (b: DashboardFinancialBucket) => void) => {
+        const k = keyFor(ymd);
+        const b = getBucket(k);
+        if (!b) return;
+        fn(b);
+        allocDates.push(ymd);
+    };
+
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    const anyRowWithRate = rooms.some((rr: any) => Number(rr?.rate || 0) > 0);
+
+    const addRatedRoomRows = (alsoRoomsChart: boolean) => {
+        for (const row of rooms) {
+            if (anyRowWithRate && Number(row?.rate || 0) <= 0) continue;
+            const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+            const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+            if (!inA || !outA) continue;
+            const count = Number(row?.count || 0);
+            const rate = Number(row?.rate || 0);
+            const tn = Math.max(0, calculateNights(inA, outA));
+            if (tn <= 0) continue;
+            const perNight = count * rate;
+            for (const ny of eachOccupiedNightYmd(inA, outA)) {
+                if (!ymdInInclusiveRange(ny, rangeStart, rangeEnd)) continue;
+                touch(ny, (b) => {
+                    b.revenue += perNight;
+                    if (alsoRoomsChart) {
+                        b.roomsRevenue += perNight;
+                        b.roomNights += count;
+                        b.rooms += tn > 0 ? 1 / tn : 0;
+                    }
+                });
+            }
+        }
+    };
+
+    if (!anyRowWithRate && br.roomsRevenue > 0) {
+        const inA = parseYmdAgenda(r?.checkIn);
+        const outA = parseYmdAgenda(r?.checkOut);
+        if (inA && outA) {
+            const tn = Math.max(0, calculateNights(inA, outA));
+            const nights = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
+            const totalRooms = Number(r?.totalRooms || 0) || 1;
+            if (tn > 0 && nights.length) {
+                const perNightRoomRev = br.roomsRevenue / tn;
+                const perNightRoomUnits = totalRooms / tn;
+                for (const ny of nights) {
+                    touch(ny, (b) => {
+                        b.revenue += perNightRoomRev;
+                        if (opts.includeRoomsChart) {
+                            b.roomsRevenue += perNightRoomRev;
+                            b.roomNights += perNightRoomUnits;
+                            b.rooms += perNightRoomUnits;
+                        }
+                    });
+                }
+            }
+        }
+    } else {
+        addRatedRoomRows(opts.includeRoomsChart);
+        let rowSum = 0;
+        for (const row of rooms) {
+            const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+            const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+            if (!inA || !outA) continue;
+            const count = Number(row?.count || 0);
+            const rate = Number(row?.rate || 0);
+            rowSum += count * rate * Math.max(0, calculateNights(inA, outA));
+        }
+        if (rowSum <= 0 && br.roomsRevenue > 0) {
+            const inA = parseYmdAgenda(r?.checkIn);
+            const outA = parseYmdAgenda(r?.checkOut);
+            const tn = Math.max(0, calculateNights(inA, outA));
+            const nights = inA && outA ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)) : [];
+            if (tn > 0 && nights.length) {
+                const perNight = br.roomsRevenue / tn;
+                const totalRooms = Number(r?.totalRooms || 0) || 1;
+                const perNightRoomUnits = totalRooms / tn;
+                for (const ny of nights) {
+                    touch(ny, (b) => {
+                        b.revenue += perNight;
+                        if (opts.includeRoomsChart) {
+                            b.roomsRevenue += perNight;
+                            b.roomNights += perNightRoomUnits;
+                            b.rooms += perNightRoomUnits;
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    for (const item of agenda) {
+        if (!item || typeof item !== 'object') continue;
+        const sd = parseYmdAgenda(item.startDate);
+        const ed = parseYmdAgenda(item.endDate || item.startDate) || sd;
+        if (!sd) continue;
+        let rowDays = 1;
+        if (sd && ed) {
+            const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        }
+        const rowCost = Number(item?.rate || 0) * Number(item?.pax || 0) + Number(item?.rental || 0);
+        const lineTotal = rowCost * rowDays;
+        const hit = eachInclusiveAgendaDayYmd(sd, ed).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
+        if (!hit.length) continue;
+        const daily = lineTotal / rowDays;
+        for (const dy of hit) {
+            touch(dy, (b) => {
+                b.revenue += daily;
+            });
+        }
+        if (opts.includeMiceChart && isMiceChartEligibleDash(r) && lineTotal > 0) {
+            for (const dy of hit) {
+                const k = keyFor(dy);
+                const b = getBucket(k);
+                if (!b) continue;
+                b.miceRevenue += daily;
+                b.miceRequests += 1 / rowDays;
+            }
+        }
+    }
+
+    let subForTransport = 0;
+    for (const row of rooms) {
+        const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+        const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+        if (!inA || !outA) continue;
+        const count = Number(row?.count || 0);
+        const rate = Number(row?.rate || 0);
+        for (const ny of eachOccupiedNightYmd(inA, outA)) {
+            if (ymdInInclusiveRange(ny, rangeStart, rangeEnd)) subForTransport += count * rate;
+        }
+    }
+    if (!rooms.length) {
+        const inA = parseYmdAgenda(r?.checkIn);
+        const outA = parseYmdAgenda(r?.checkOut);
+        const tn = inA && outA ? Math.max(0, calculateNights(inA, outA)) : 0;
+        const ni = inA && outA ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length : 0;
+        if (tn > 0 && br.roomsRevenue > 0 && ni > 0) subForTransport += (br.roomsRevenue * ni) / tn;
+    } else {
+        let rowSum = 0;
+        for (const row of rooms) {
+            const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
+            const outA = parseYmdAgenda(row?.departure || r?.checkOut);
+            if (!inA || !outA) continue;
+            const count = Number(row?.count || 0);
+            const rate = Number(row?.rate || 0);
+            rowSum += count * rate * Math.max(0, calculateNights(inA, outA));
+        }
+        if (rowSum <= 0 && br.roomsRevenue > 0) {
+            const inA = parseYmdAgenda(r?.checkIn);
+            const outA = parseYmdAgenda(r?.checkOut);
+            const tn = inA && outA ? Math.max(0, calculateNights(inA, outA)) : 0;
+            const ni = inA && outA ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)).length : 0;
+            if (tn > 0 && ni > 0) subForTransport += (br.roomsRevenue * ni) / tn;
+        }
+    }
+    for (const item of agenda) {
+        if (!item || typeof item !== 'object') continue;
+        const sd = parseYmdAgenda(item.startDate);
+        const ed = parseYmdAgenda(item.endDate || item.startDate) || sd;
+        if (!sd) continue;
+        let rowDays = 1;
+        if (sd && ed) {
+            const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
+            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        }
+        const rowCost = Number(item?.rate || 0) * Number(item?.pax || 0) + Number(item?.rental || 0);
+        const lineTotal = rowCost * rowDays;
+        const hit = eachInclusiveAgendaDayYmd(sd, ed).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
+        if (hit.length) subForTransport += lineTotal * (hit.length / rowDays);
+    }
+
+    if (transport > 0 && subForTransport > 0) {
+        const sorted = [...new Set(allocDates)].sort();
+        const anchor = sorted[0] || rangeStart;
+        const k = keyFor(anchor);
+        const b = getBucket(k);
+        if (b) b.revenue += transport;
+    }
+}
