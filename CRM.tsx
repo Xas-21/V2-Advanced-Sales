@@ -438,7 +438,7 @@ export default function CRM({
     };
 
     const handleSaveCall = () => {
-        const cfgViol = collectSalesCallFormViolations(activeProperty?.id, newCallData);
+        const cfgViol = collectSalesCallFormViolations(activeProperty?.id, newCallData, activeProperty);
         if (cfgViol.length) {
             window.alert(cfgViol.join('\n'));
             return;
@@ -928,6 +928,7 @@ export default function CRM({
                     editingAccount={editingRow}
                     theme={theme}
                     accountTypeOptions={accountTypeOptions}
+                    configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                     onSave={(data: any) => {
                         if (!data?.id) return;
@@ -1795,6 +1796,7 @@ export default function CRM({
                 accountTypeOptions={accountTypeOptions}
                 duplicateCheckAccounts={accountsSameProperty}
                 duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>

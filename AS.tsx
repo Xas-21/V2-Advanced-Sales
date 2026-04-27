@@ -87,7 +87,7 @@ import RequestsManager from './RequestsManager';
 import AddSalesCallModal from './AddSalesCallModal';
 import AddAccountModal from './AddAccountModal';
 import AccountsPage from './AccountsPage';
-import { collectSalesCallFormViolations } from './formConfigurations';
+import { collectSalesCallFormViolations, FORM_CONFIGURATION_CHANGED_EVENT } from './formConfigurations';
 import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
 import { formatCompactAmount, formatCompactCurrency } from './formatCompactCurrency';
 import { CURRENCY_OPTIONS, type CurrencyCode, formatCurrencyAmount, resolveCurrencyCode } from './currency';
@@ -3962,7 +3962,7 @@ export default function AdvancedSalesDashboard() {
     const [crmLeads, setCrmLeads] = useState<Record<string, any[]>>(() => defaultCrmLeadBuckets());
 
     const handleSalesCallSave = (callData: any) => {
-        const viol = collectSalesCallFormViolations(activeProperty?.id, callData);
+        const viol = collectSalesCallFormViolations(activeProperty?.id, callData, activeProperty);
         if (viol.length) {
             window.alert(viol.join('\n'));
             return;
@@ -4542,6 +4542,11 @@ export default function AdvancedSalesDashboard() {
             if (!d?.propertyId || d.alertSettings == null) return;
             mergeIntoProperty(String(d.propertyId), { alertSettings: d.alertSettings });
         };
+        const onFormConfigurations = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; formConfigurations?: unknown }>).detail;
+            if (!d?.propertyId || d.formConfigurations == null) return;
+            mergeIntoProperty(String(d.propertyId), { formConfigurations: d.formConfigurations });
+        };
         const onOccupancyTypes = (e: Event) => {
             const d = (e as CustomEvent<{ propertyId?: string; occupancyTypes?: string[] }>).detail;
             if (!d?.propertyId || !Array.isArray(d.occupancyTypes)) return;
@@ -4551,11 +4556,13 @@ export default function AdvancedSalesDashboard() {
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         window.addEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+        window.addEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
         window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
             window.removeEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+            window.removeEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
             window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
         };
     }, []);
@@ -7779,6 +7786,7 @@ export default function AdvancedSalesDashboard() {
                 onSave={handleSalesCallSave}
                 accounts={accounts}
                 theme={theme}
+                configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 stages={[
                     { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
@@ -7798,6 +7806,7 @@ export default function AdvancedSalesDashboard() {
                 onClose={() => setShowAddAccountModal(false)}
                 onSave={handleSaveAccount}
                 theme={theme}
+                configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 accountTypeOptions={propertyAccountTypeLabels}
                 duplicateCheckAccounts={accounts.filter((a: any) => {

@@ -6,6 +6,7 @@ import {
     collectAccountFormViolations,
     getSectionOrderForForm,
     isFieldRequired,
+    type FormConfigurationPropertySource,
 } from './formConfigurations';
 
 const emptyContactRow = () => ({
@@ -33,6 +34,8 @@ interface AddAccountModalProps {
     duplicateCheckPropertyId?: string;
     /** Settings → Configurations: required fields & section order for this property. */
     configurationPropertyId?: string;
+    /** Active property row (`formConfigurations` from API) so rules match all users, not only localStorage. */
+    configurationProperty?: FormConfigurationPropertySource;
 }
 
 const defaultFormState = () => ({
@@ -99,6 +102,7 @@ export default function AddAccountModal({
     duplicateCheckAccounts,
     duplicateCheckPropertyId,
     configurationPropertyId,
+    configurationProperty,
 }: AddAccountModalProps) {
     const colors = theme.colors;
 
@@ -128,8 +132,9 @@ export default function AddAccountModal({
 
     const isEdit = !!editingAccount?.id;
     const pid = configurationPropertyId;
-    const rq = (fieldId: string) => isFieldRequired(pid, 'account_new', fieldId);
-    const accountSectionOrder = getSectionOrderForForm(pid, 'account_new');
+    const cfgSrc = configurationProperty ?? undefined;
+    const rq = (fieldId: string) => isFieldRequired(pid, 'account_new', fieldId, cfgSrc);
+    const accountSectionOrder = getSectionOrderForForm(pid, 'account_new', null, cfgSrc);
 
     const buildPayload = () => ({
         ...newAccountData,
@@ -163,7 +168,7 @@ export default function AddAccountModal({
 
     const handleSave = () => {
         const payload = buildPayload();
-        const viol = collectAccountFormViolations(configurationPropertyId, payload);
+        const viol = collectAccountFormViolations(configurationPropertyId, payload, cfgSrc);
         if (viol.length) {
             setFormCfgError(viol.join('\n'));
             return;

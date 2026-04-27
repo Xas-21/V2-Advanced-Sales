@@ -4,6 +4,7 @@ import {
     collectSalesCallFormViolations,
     getSectionOrderForForm,
     isFieldRequired,
+    type FormConfigurationPropertySource,
 } from './formConfigurations';
 
 interface AddSalesCallModalProps {
@@ -15,6 +16,7 @@ interface AddSalesCallModalProps {
     theme: any;
     stages: any[];
     configurationPropertyId?: string;
+    configurationProperty?: FormConfigurationPropertySource;
 }
 
 export default function AddSalesCallModal({
@@ -26,6 +28,7 @@ export default function AddSalesCallModal({
     theme,
     stages,
     configurationPropertyId,
+    configurationProperty,
 }: AddSalesCallModalProps) {
     const colors = theme.colors;
     const [accountSearch, setAccountSearch] = useState('');
@@ -79,11 +82,12 @@ export default function AddSalesCallModal({
     if (!isOpen) return null;
 
     const pid = configurationPropertyId;
-    const rq = (fieldId: string) => isFieldRequired(pid, 'sales_call_new', fieldId);
-    const salesSectionOrder = getSectionOrderForForm(pid, 'sales_call_new');
+    const cfgSrc = configurationProperty ?? undefined;
+    const rq = (fieldId: string) => isFieldRequired(pid, 'sales_call_new', fieldId, cfgSrc);
+    const salesSectionOrder = getSectionOrderForForm(pid, 'sales_call_new', null, cfgSrc);
 
     const handleSave = () => {
-        const viol = collectSalesCallFormViolations(pid, newCallData);
+        const viol = collectSalesCallFormViolations(pid, newCallData, cfgSrc);
         if (viol.length) {
             setFormCfgError(viol.join('\n'));
             return;

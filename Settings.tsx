@@ -85,7 +85,7 @@ import {
     type FormOverride,
     type PropertyFormConfigStore,
     loadPropertyFormOverrides,
-    savePropertyFormOverrides,
+    persistFormConfigurationsForProperty,
     getResolvedFormSchemaFromStores,
     getDefaultFormSchema,
     collectNewUserFormViolations,
@@ -321,18 +321,25 @@ export default function Settings({
 
     useEffect(() => {
         if (activeTab !== 'config' || !configTargetPropertyId) return;
-        setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId));
-    }, [configTargetPropertyId, activeTab]);
+        const row = properties.find((p: any) => String(p?.id) === String(configTargetPropertyId));
+        setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId, row));
+    }, [configTargetPropertyId, activeTab, properties]);
 
     useEffect(() => {
-        const onFormCfg = () => {
-            if (activeTab === 'config' && configTargetPropertyId) {
-                setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId));
+        const onFormCfg = (e: Event) => {
+            if (activeTab !== 'config' || !configTargetPropertyId) return;
+            const d = (e as CustomEvent<{ propertyId?: string; formConfigurations?: PropertyFormConfigStore }>).detail;
+            if (!d?.propertyId || String(d.propertyId) !== String(configTargetPropertyId)) return;
+            if (d.formConfigurations != null && typeof d.formConfigurations === 'object' && !Array.isArray(d.formConfigurations)) {
+                setFormConfigStore(JSON.parse(JSON.stringify(d.formConfigurations)) as PropertyFormConfigStore);
+            } else {
+                const row = properties.find((p: any) => String(p?.id) === String(configTargetPropertyId));
+                setFormConfigStore(loadPropertyFormOverrides(configTargetPropertyId, row));
             }
         };
         window.addEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormCfg as EventListener);
         return () => window.removeEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormCfg as EventListener);
-    }, [activeTab, configTargetPropertyId]);
+    }, [activeTab, configTargetPropertyId, properties]);
 
     // Modal & CRUD State
     const [showModal, setShowModal] = useState(false);
@@ -414,7 +421,11 @@ export default function Settings({
                 String(managingProperty?.id || '').trim() ||
                 String(activeProperty?.id || '').trim() ||
                 '';
-            const propViol = collectNewPropertyFormViolations(formCfgScope || undefined, modalFormData);
+            const propCfgSource =
+                properties.find((p: any) => String(p?.id) === String(formCfgScope)) ||
+                (String(managingProperty?.id) === String(formCfgScope) ? managingProperty : undefined) ||
+                (String(activeProperty?.id) === String(formCfgScope) ? activeProperty : undefined);
+            const propViol = collectNewPropertyFormViolations(formCfgScope || undefined, modalFormData, propCfgSource);
             if (propViol.length) {
                 alert(propViol.join('\n'));
                 return;
@@ -465,7 +476,16 @@ export default function Settings({
                 String(managingProperty?.id || '').trim() ||
                 String(activeProperty?.id || '').trim() ||
                 '';
-            const userViol = collectNewUserFormViolations(formCfgScopeUser || undefined, modalFormData, isEditing);
+            const userCfgSource =
+                properties.find((p: any) => String(p?.id) === String(formCfgScopeUser)) ||
+                (String(managingProperty?.id) === String(formCfgScopeUser) ? managingProperty : undefined) ||
+                (String(activeProperty?.id) === String(formCfgScopeUser) ? activeProperty : undefined);
+            const userViol = collectNewUserFormViolations(
+                formCfgScopeUser || undefined,
+                modalFormData,
+                isEditing,
+                userCfgSource
+            );
             if (userViol.length) {
                 alert(userViol.join('\n'));
                 return;
@@ -2851,13 +2871,26 @@ export default function Settings({
                                 <div className="mt-8 pt-5 border-t flex flex-wrap justify-end gap-3" style={{ borderColor: colors.border }}>
                                     <button
                                         type="button"
-                                        onClick={() => {
-                                            setFormConfigStore((prev) => {
-                                                const next = { ...prev };
-                                                delete next[configFormId];
-                                                if (configTargetPropertyId) savePropertyFormOverrides(configTargetPropertyId, next);
-                                                return next;
-                                            });
+                                        onClick={async () => {
+                                            if (!configTargetPropertyId) {
+                                                alert('Select a property first.');
+                                                return;
+                                            }
+                                            const next: PropertyFormConfigStore = { ...formConfigStore };
+                                            delete next[configFormId];
+                                            setFormConfigStore(next);
+                                            const ok = await persistFormConfigurationsForProperty(configTargetPropertyId, next);
+                                            if (!ok) {
+                                                alert('Could not save the reset to the server. Check your connection and try again.');
+                                                return;
+                                            }
+                                            const propId = configTargetPropertyId;
+                                            setProperties((prev: any[]) =>
+                                                prev.map((p: any) => (String(p.id) === String(propId) ? { ...p, formConfigurations: next } : p))
+                                            );
+                                            if (managingProperty && String(managingProperty.id) === String(propId)) {
+                                                setManagingProperty({ ...managingProperty, formConfigurations: next });
+                                            }
                                         }}
                                         className="px-4 py-2 rounded-lg text-xs font-bold border hover:bg-white/5"
                                         style={{ borderColor: colors.border, color: colors.textMain }}
@@ -2866,12 +2899,28 @@ export default function Settings({
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => {
+                                        onClick={async () => {
                                             if (!configTargetPropertyId) {
                                                 alert('Select a property first.');
                                                 return;
                                             }
-                                            savePropertyFormOverrides(configTargetPropertyId, formConfigStore);
+                                            const ok = await persistFormConfigurationsForProperty(
+                                                configTargetPropertyId,
+                                                formConfigStore
+                                            );
+                                            if (!ok) {
+                                                alert('Could not save form configuration to the server. Check your connection and try again.');
+                                                return;
+                                            }
+                                            const propId = configTargetPropertyId;
+                                            setProperties((prev: any[]) =>
+                                                prev.map((p: any) =>
+                                                    String(p.id) === String(propId) ? { ...p, formConfigurations: formConfigStore } : p
+                                                )
+                                            );
+                                            if (managingProperty && String(managingProperty.id) === String(propId)) {
+                                                setManagingProperty({ ...managingProperty, formConfigurations: formConfigStore });
+                                            }
                                         }}
                                         className="px-6 py-2 rounded-lg text-xs font-bold bg-primary text-black hover:opacity-90"
                                     >

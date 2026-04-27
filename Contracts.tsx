@@ -585,6 +585,7 @@ export default function Contracts({
                     accountTypeOptions={accountTypeOptions}
                     duplicateCheckAccounts={accountsSameProperty}
                     duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                    configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 />
             </div>

@@ -980,7 +980,7 @@ export default function RequestsManager({
                     }
                 }
             }
-            const reqCfgViol = collectRequestFormViolations(activeProperty?.id, normalizedType, formData);
+            const reqCfgViol = collectRequestFormViolations(activeProperty?.id, normalizedType, formData, activeProperty);
             if (reqCfgViol.length) {
                 showSystemNotice('Required fields', reqCfgViol.join('\n'));
                 return;
@@ -4226,6 +4226,7 @@ export default function RequestsManager({
                     accountTypeOptions={effectiveAccountTypeOptions}
                     duplicateCheckAccounts={accountsSameProperty}
                     duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                    configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 />
                 <ConfirmDialog

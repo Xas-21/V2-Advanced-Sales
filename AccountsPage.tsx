@@ -566,6 +566,7 @@ export default function AccountsPage({
                     editingAccount={editingAccountRow}
                     theme={theme}
                     accountTypeOptions={accountTypeOptions}
+                    configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                     onSave={(data: any) => {
                         if (!data?.id) return;
@@ -766,6 +767,7 @@ export default function AccountsPage({
                 accountTypeOptions={accountTypeOptions}
                 duplicateCheckAccounts={accountsSameProperty}
                 duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>

@@ -1,9 +1,24 @@
 /**
  * Per-property form layout: which fields are required and section order.
- * Persisted in localStorage; defaults mirror current app behaviour (mostly optional).
+ * Canonical: `property.formConfigurations` from the API (shared by all staff).
+ * localStorage mirrors the last successful save as an offline cache.
  */
 
 import { normalizeRequestTypeKey } from './beoShared';
+import { apiUrl } from './backendApi';
+
+async function postPropertyPatch(payload: Record<string, unknown>): Promise<boolean> {
+    try {
+        const res = await fetch(apiUrl('/api/properties'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
 
 export const FORM_CONFIGURATION_CHANGED_EVENT = 'visatour-form-configuration-changed';
 
@@ -43,6 +58,11 @@ export type FormOverride = {
 };
 
 export type PropertyFormConfigStore = Partial<Record<FormConfigurationFormId, FormOverride>>;
+
+/** Property slice used to read canonical `formConfigurations` from the API. */
+export type FormConfigurationPropertySource = {
+    formConfigurations?: PropertyFormConfigStore | null;
+} | null | undefined;
 
 function storageKey(propertyId: string) {
     return `${STORAGE_PREFIX}${String(propertyId || '').trim() || '__default__'}`;
@@ -315,7 +335,14 @@ export const FORM_CONFIGURATION_META: { id: FormConfigurationFormId; label: stri
     { id: 'property_new', label: 'New property' },
 ];
 
-export function loadPropertyFormOverrides(propertyId: string | undefined | null): PropertyFormConfigStore {
+export function loadPropertyFormOverrides(
+    propertyId: string | undefined | null,
+    property?: FormConfigurationPropertySource
+): PropertyFormConfigStore {
+    const fc = property && typeof property === 'object' ? property.formConfigurations : undefined;
+    if (fc != null && typeof fc === 'object' && !Array.isArray(fc)) {
+        return clone(fc as PropertyFormConfigStore);
+    }
     if (typeof window === 'undefined') return {};
     try {
         const raw = localStorage.getItem(storageKey(propertyId || ''));
@@ -327,14 +354,39 @@ export function loadPropertyFormOverrides(propertyId: string | undefined | null)
     }
 }
 
-export function savePropertyFormOverrides(propertyId: string | undefined | null, store: PropertyFormConfigStore) {
+function mirrorFormConfigurationsToLocalStorage(propertyId: string, store: PropertyFormConfigStore) {
     if (typeof window === 'undefined') return;
     try {
-        localStorage.setItem(storageKey(propertyId || ''), JSON.stringify(store));
-        window.dispatchEvent(new CustomEvent(FORM_CONFIGURATION_CHANGED_EVENT, { detail: { propertyId } }));
+        localStorage.setItem(storageKey(propertyId), JSON.stringify(store));
     } catch (e) {
-        console.error('savePropertyFormOverrides', e);
+        console.error('mirrorFormConfigurationsToLocalStorage', e);
     }
+}
+
+/**
+ * Persists form rules to the property on the server; on success mirrors localStorage
+ * and dispatches {@link FORM_CONFIGURATION_CHANGED_EVENT} with `formConfigurations` in detail.
+ */
+export async function persistFormConfigurationsForProperty(
+    propertyId: string | undefined | null,
+    store: PropertyFormConfigStore
+): Promise<boolean> {
+    const id = String(propertyId || '').trim();
+    if (!id) return false;
+    const clean = store && typeof store === 'object' ? clone(store) : {};
+    const ok = await postPropertyPatch({ id, formConfigurations: clean });
+    if (!ok) return false;
+    mirrorFormConfigurationsToLocalStorage(id, clean);
+    try {
+        window.dispatchEvent(
+            new CustomEvent(FORM_CONFIGURATION_CHANGED_EVENT, {
+                detail: { propertyId: id, formConfigurations: clean },
+            })
+        );
+    } catch {
+        /* ignore */
+    }
+    return true;
 }
 
 export function getDefaultFormSchema(formId: FormConfigurationFormId): FormSchema {
@@ -366,30 +418,36 @@ function applyFormOverrideToSchema(base: FormSchema, ov?: FormOverride): FormSch
 /**
  * Resolved schema for a form.
  * When `draftStore` is passed (Settings → Configurations), only that store is used for overrides
- * so the preview matches unsaved edits. Otherwise merges from localStorage only.
+ * so the preview matches unsaved edits. Otherwise merges from the property API blob, then localStorage.
  */
 export function getResolvedFormSchemaFromStores(
     propertyId: string | undefined | null,
     formId: FormConfigurationFormId,
-    draftStore?: PropertyFormConfigStore | null
+    draftStore?: PropertyFormConfigStore | null,
+    property?: FormConfigurationPropertySource
 ): FormSchema {
     if (draftStore != null) {
         return applyFormOverrideToSchema(FORM_DEFAULTS[formId], draftStore[formId]);
     }
-    const disk = loadPropertyFormOverrides(propertyId);
+    const disk = loadPropertyFormOverrides(propertyId, property);
     return applyFormOverrideToSchema(FORM_DEFAULTS[formId], disk[formId]);
 }
 
-export function getResolvedFormSchema(propertyId: string | undefined | null, formId: FormConfigurationFormId): FormSchema {
-    return getResolvedFormSchemaFromStores(propertyId, formId, null);
+export function getResolvedFormSchema(
+    propertyId: string | undefined | null,
+    formId: FormConfigurationFormId,
+    property?: FormConfigurationPropertySource
+): FormSchema {
+    return getResolvedFormSchemaFromStores(propertyId, formId, null, property);
 }
 
 export function isFieldRequired(
     propertyId: string | undefined | null,
     formId: FormConfigurationFormId,
-    fieldId: string
+    fieldId: string,
+    property?: FormConfigurationPropertySource
 ): boolean {
-    const schema = getResolvedFormSchema(propertyId, formId);
+    const schema = getResolvedFormSchema(propertyId, formId, property);
     for (const s of schema.sections) {
         const f = s.fields.find((x) => x.id === fieldId);
         if (f) return !!f.required;
@@ -481,11 +539,12 @@ function getRequestScalar(formData: any, fieldId: string, isEventOnly: boolean):
 export function collectRequestFormViolations(
     propertyId: string | undefined | null,
     normalizedType: string,
-    formData: any
+    formData: any,
+    property?: FormConfigurationPropertySource
 ): string[] {
     const nt = normalizeRequestTypeKey(normalizedType);
     const formId = normalizedRequestTypeToFormId(nt);
-    const schema = getResolvedFormSchema(propertyId, formId);
+    const schema = getResolvedFormSchema(propertyId, formId, property);
     const isEventOnly = nt === 'event';
     const msgs: string[] = [];
     for (const sec of schema.sections) {
@@ -498,8 +557,12 @@ export function collectRequestFormViolations(
     return msgs;
 }
 
-export function collectAccountFormViolations(propertyId: string | undefined | null, payload: any): string[] {
-    const schema = getResolvedFormSchema(propertyId, 'account_new');
+export function collectAccountFormViolations(
+    propertyId: string | undefined | null,
+    payload: any,
+    property?: FormConfigurationPropertySource
+): string[] {
+    const schema = getResolvedFormSchema(propertyId, 'account_new', property);
     const c0 = Array.isArray(payload?.contacts) ? payload.contacts[0] : null;
     const msgs: string[] = [];
     for (const sec of schema.sections) {
@@ -561,8 +624,12 @@ export function collectAccountFormViolations(propertyId: string | undefined | nu
     return msgs;
 }
 
-export function collectSalesCallFormViolations(propertyId: string | undefined | null, data: any): string[] {
-    const schema = getResolvedFormSchema(propertyId, 'sales_call_new');
+export function collectSalesCallFormViolations(
+    propertyId: string | undefined | null,
+    data: any,
+    property?: FormConfigurationPropertySource
+): string[] {
+    const schema = getResolvedFormSchema(propertyId, 'sales_call_new', property);
     const msgs: string[] = [];
     for (const sec of schema.sections) {
         for (const field of sec.fields) {
@@ -608,9 +675,10 @@ export function collectSalesCallFormViolations(propertyId: string | undefined | 
 export function collectNewUserFormViolations(
     propertyId: string | undefined | null,
     data: any,
-    isEdit: boolean
+    isEdit: boolean,
+    property?: FormConfigurationPropertySource
 ): string[] {
-    const schema = getResolvedFormSchema(propertyId, 'user_new');
+    const schema = getResolvedFormSchema(propertyId, 'user_new', property);
     const msgs: string[] = [];
     for (const sec of schema.sections) {
         for (const field of sec.fields) {
@@ -645,8 +713,12 @@ export function collectNewUserFormViolations(
     return msgs;
 }
 
-export function collectNewPropertyFormViolations(propertyId: string | undefined | null, data: any): string[] {
-    const schema = getResolvedFormSchema(propertyId, 'property_new');
+export function collectNewPropertyFormViolations(
+    propertyId: string | undefined | null,
+    data: any,
+    property?: FormConfigurationPropertySource
+): string[] {
+    const schema = getResolvedFormSchema(propertyId, 'property_new', property);
     const msgs: string[] = [];
     for (const sec of schema.sections) {
         for (const field of sec.fields) {
@@ -685,8 +757,12 @@ export function collectNewPropertyFormViolations(propertyId: string | undefined 
     return msgs;
 }
 
-export function collectContactFormViolations(propertyId: string | undefined | null, contact: any): string[] {
-    const schema = getResolvedFormSchema(propertyId, 'contact_new');
+export function collectContactFormViolations(
+    propertyId: string | undefined | null,
+    contact: any,
+    property?: FormConfigurationPropertySource
+): string[] {
+    const schema = getResolvedFormSchema(propertyId, 'contact_new', property);
     const msgs: string[] = [];
     for (const sec of schema.sections) {
         for (const field of sec.fields) {
@@ -726,7 +802,8 @@ export function collectContactFormViolations(propertyId: string | undefined | nu
 export function getSectionOrderForForm(
     propertyId: string | undefined | null,
     formId: FormConfigurationFormId,
-    draftStore?: PropertyFormConfigStore | null
+    draftStore?: PropertyFormConfigStore | null,
+    property?: FormConfigurationPropertySource
 ): string[] {
-    return getResolvedFormSchemaFromStores(propertyId, formId, draftStore).sections.map((s) => s.id);
+    return getResolvedFormSchemaFromStores(propertyId, formId, draftStore, property).sections.map((s) => s.id);
 }
