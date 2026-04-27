@@ -563,6 +563,9 @@ export function sumRequestProratedRevenueExTaxInRange(r: any, rangeStart: string
     return room + event + transport + fallback;
 }
 
+/** `day` = one chart bucket per calendar day (rooms sum occupancy each day). `month` = one bucket per month (rooms = line count once per line per month, not sum of daily counts). */
+export type DashboardRoomsChartBucketGranularity = 'day' | 'month';
+
 /**
  * Add prorated revenue / room nights / MICE slices into dashboard-style month (or day) buckets.
  * Caller supplies `includeRoomsChart` / `includeMiceChart` (same gates as AS.tsx).
@@ -573,12 +576,19 @@ export function addProratedRequestFinancialsToDashboardBuckets(
     rangeEnd: string,
     keyFor: (isoYmd: string) => string,
     getBucket: (key: string) => DashboardFinancialBucket | undefined,
-    opts: { skipPerf: boolean; includeRoomsChart: boolean; includeMiceChart: boolean }
+    opts: {
+        skipPerf: boolean;
+        includeRoomsChart: boolean;
+        includeMiceChart: boolean;
+        /** Defaults to `month` when omitted (rooms once per line per period bucket). */
+        roomsChartBucketGranularity?: DashboardRoomsChartBucketGranularity;
+    }
 ): void {
     if (opts.skipPerf || !rangeStart || !rangeEnd) return;
     const br = computeRequestRevenueBreakdownNoTax(r);
     const transport = br.transportRevenue;
     const allocDates: string[] = [];
+    const roomBucketsAreDaily = opts.roomsChartBucketGranularity === 'day';
 
     const touch = (ymd: string, fn: (b: DashboardFinancialBucket) => void) => {
         const k = keyFor(ymd);
@@ -592,7 +602,8 @@ export function addProratedRequestFinancialsToDashboardBuckets(
     const anyRowWithRate = rooms.some((rr: any) => Number(rr?.rate || 0) > 0);
 
     const addRatedRoomRows = (alsoRoomsChart: boolean) => {
-        for (const row of rooms) {
+        for (let ri = 0; ri < rooms.length; ri++) {
+            const row = rooms[ri];
             if (anyRowWithRate && Number(row?.rate || 0) <= 0) continue;
             const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
             const outA = parseYmdAgenda(row?.departure || r?.checkOut);
@@ -602,16 +613,21 @@ export function addProratedRequestFinancialsToDashboardBuckets(
             const tn = Math.max(0, calculateNights(inA, outA));
             if (tn <= 0) continue;
             const perNight = count * rate;
+            const periodSeenForRooms = new Set<string>();
             for (const ny of eachOccupiedNightYmd(inA, outA)) {
                 if (!ymdInInclusiveRange(ny, rangeStart, rangeEnd)) continue;
+                const periodKey = keyFor(ny);
                 touch(ny, (b) => {
                     b.revenue += perNight;
                     if (alsoRoomsChart) {
                         b.roomsRevenue += perNight;
                         b.roomNights += count;
-                        // Per occupied night: full line count (rooms on that night). count/tn prorates to
-                        // fractions so day/month buckets round to 0 and cross-month lines disappear.
-                        b.rooms += count;
+                        if (roomBucketsAreDaily) {
+                            b.rooms += count;
+                        } else if (!periodSeenForRooms.has(periodKey)) {
+                            periodSeenForRooms.add(periodKey);
+                            b.rooms += count;
+                        }
                     }
                 });
             }
@@ -626,14 +642,21 @@ export function addProratedRequestFinancialsToDashboardBuckets(
             const nights = eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd));
             if (tn > 0 && nights.length) {
                 const perNightRoomRev = br.roomsRevenue / tn;
+                const seenPeriodRooms = new Set<string>();
                 for (const ny of nights) {
+                    const periodKey = keyFor(ny);
                     const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNightRoomRev;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNightRoomRev;
                             b.roomNights += nightlyR;
-                            b.rooms += nightlyR;
+                            if (roomBucketsAreDaily) {
+                                b.rooms += nightlyR;
+                            } else if (!seenPeriodRooms.has(periodKey)) {
+                                seenPeriodRooms.add(periodKey);
+                                b.rooms += nightlyR;
+                            }
                         }
                     });
                 }
@@ -657,14 +680,21 @@ export function addProratedRequestFinancialsToDashboardBuckets(
             const nights = inA && outA ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, rangeStart, rangeEnd)) : [];
             if (tn > 0 && nights.length) {
                 const perNight = br.roomsRevenue / tn;
+                const seenPeriodRooms = new Set<string>();
                 for (const ny of nights) {
+                    const periodKey = keyFor(ny);
                     const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNight;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNight;
                             b.roomNights += nightlyR;
-                            b.rooms += nightlyR;
+                            if (roomBucketsAreDaily) {
+                                b.rooms += nightlyR;
+                            } else if (!seenPeriodRooms.has(periodKey)) {
+                                seenPeriodRooms.add(periodKey);
+                                b.rooms += nightlyR;
+                            }
                         }
                     });
                 }

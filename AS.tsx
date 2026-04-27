@@ -4994,6 +4994,7 @@ export default function AdvancedSalesDashboard() {
                         skipPerf: false,
                         includeRoomsChart: shouldIncludeRequestInRoomsChart(req),
                         includeMiceChart: isEventsCateringEligibleRequest(req),
+                        roomsChartBucketGranularity: axisConfig.granularity,
                     }
                 );
             }
