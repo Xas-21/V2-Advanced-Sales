@@ -402,18 +402,15 @@ export default function CRM({
                 revenue
             };
         });
-        const qualified = (byStage.get('qualified') || []).length;
-        const proposal = (byStage.get('proposal') || []).length;
-        const negotiation = (byStage.get('negotiation') || []).length;
         const won = (byStage.get('won') || []).length;
-        const denominator = qualified + proposal + negotiation;
-        const conversionRate = denominator > 0 ? (won / denominator) * 100 : 0;
         const journeyLeadsTotal =
             (byStage.get('waiting') || []).length +
             (byStage.get('qualified') || []).length +
             (byStage.get('proposal') || []).length +
             (byStage.get('negotiation') || []).length +
             (byStage.get('won') || []).length;
+        // Funnel conversion: won leads over all leads currently in the funnel journey.
+        const conversionRate = journeyLeadsTotal > 0 ? (won / journeyLeadsTotal) * 100 : 0;
         const totalRevenue = stageRows.reduce((s, r) => s + r.revenue, 0);
         const allRequestCount = stageRows.reduce((s, r) => s + r.requestsCount, 0);
         const preferredBusinessMap = new Map<string, number>();
