@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Plus, ChevronDown, ChevronRight, Pencil, Trash2, X, Search } from 'lucide-react';
+import AddAccountModal from './AddAccountModal';
+import { resolveUserAttributionId } from './userProfileMetrics';
 import { apiUrl } from './backendApi';
 import { getEventDateWindow } from './beoShared';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
@@ -67,13 +69,32 @@ export default function PromotionsPage({
     canCreate = false,
     canEdit = false,
     canDelete = false,
+    currentUser,
+    setAccounts,
+    accountTypeOptions,
 }: any) {
     const colors = theme.colors;
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [showModal, setShowModal] = useState(false);
     const [draft, setDraft] = useState<PromotionRow>(() => newPromotionDraft(String(activeProperty?.id || '')));
-    const [accountPick, setAccountPick] = useState('');
+    /** Search text — never stores raw account id (avoids uuid showing after pick). */
+    const [linkedAccountSearch, setLinkedAccountSearch] = useState('');
+    /** Last account selected from the dropdown row (preferred when adding). Cleared when the user edits the box. */
+    const [linkedAccountPickId, setLinkedAccountPickId] = useState<string | null>(null);
     const [showAccountDropdown, setShowAccountDropdown] = useState(false);
+    const linkedAccountComboRef = useRef<HTMLDivElement>(null);
+    const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+
+    useEffect(() => {
+        if (!showAccountDropdown) return;
+        const onPointerDown = (e: PointerEvent) => {
+            const root = linkedAccountComboRef.current;
+            if (!root || root.contains(e.target as Node)) return;
+            setShowAccountDropdown(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown, true);
+        return () => document.removeEventListener('pointerdown', onPointerDown, true);
+    }, [showAccountDropdown]);
     const [expandedAccountKey, setExpandedAccountKey] = useState<string | null>(null);
     const [statusFilter, setStatusFilter] = useState('all');
     const [searchQuery, setSearchQuery] = useState('');
@@ -206,7 +227,8 @@ export default function PromotionsPage({
 
     const openCreate = () => {
         setDraft(newPromotionDraft(String(activeProperty?.id || '')));
-        setAccountPick('');
+        setLinkedAccountSearch('');
+        setLinkedAccountPickId(null);
         setShowAccountDropdown(false);
         setShowModal(true);
     };
@@ -217,10 +239,53 @@ export default function PromotionsPage({
             linkedAccounts: Array.isArray(promo.linkedAccounts) ? promo.linkedAccounts : [],
             segments: Array.isArray(promo.segments) && promo.segments.length ? promo.segments : [''],
         });
-        setAccountPick('');
+        setLinkedAccountSearch('');
+        setLinkedAccountPickId(null);
         setShowAccountDropdown(false);
         setShowModal(true);
     };
+
+    const handleSaveAccountFromModal = (accountData: any) => {
+        if (!setAccounts || typeof setAccounts !== 'function') return;
+        if (!accountData?.name) return;
+        const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
+        const act = {
+            id: `acct-${Date.now()}`,
+            at: new Date().toISOString(),
+            title: 'Account created',
+            body: 'Account created from Promotions.',
+            user: u,
+        };
+        const newAccount = {
+            id: `A${Date.now()}`,
+            ...accountData,
+            propertyId: accountData.propertyId || activeProperty?.id || 'P-GLOBAL',
+            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            accountOwnerName: u,
+            activities: [...(accountData.activities || []), act],
+        };
+        setAccounts((prev: any[]) => [newAccount, ...(Array.isArray(prev) ? prev : [])]);
+        setShowAddAccountModal(false);
+        setLinkedAccountSearch(newAccount.name);
+        setLinkedAccountPickId(String(newAccount.id));
+        setShowAccountDropdown(false);
+        setDraft((p: PromotionRow) => {
+            if ((p.linkedAccounts || []).some((x) => String(x.accountId) === String(newAccount.id))) return p;
+            return { ...p, linkedAccounts: [...(p.linkedAccounts || []), { accountId: String(newAccount.id), note: '' }] };
+        });
+    };
+
+    const effectiveAccountTypeOpts = Array.isArray(accountTypeOptions) && accountTypeOptions.length ? accountTypeOptions : undefined;
+
+    const dupCheckAccounts =
+        typeof setAccounts === 'function'
+            ? (accounts || []).filter((a: any) => {
+                  const pid = String(activeProperty?.id || '').trim();
+                  if (!pid) return true;
+                  const p = String(a?.propertyId || '').trim();
+                  return !p || p === 'P-GLOBAL' || p === pid;
+              })
+            : [];
 
     const savePromotion = async () => {
         const payload: PromotionRow = {
@@ -493,12 +558,13 @@ export default function PromotionsPage({
                         <div className="space-y-2">
                             <label className="text-xs font-bold opacity-70">Linked Accounts</label>
                             <div className="flex gap-2">
-                                <div className="relative flex-1">
+                                <div ref={linkedAccountComboRef} className="relative flex-1">
                                     <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
                                     <input
-                                        value={accountPick}
+                                        value={linkedAccountSearch}
                                         onChange={(e) => {
-                                            setAccountPick(e.target.value);
+                                            setLinkedAccountSearch(e.target.value);
+                                            setLinkedAccountPickId(null);
                                             setShowAccountDropdown(true);
                                         }}
                                         onFocus={() => setShowAccountDropdown(true)}
@@ -507,49 +573,81 @@ export default function PromotionsPage({
                                         style={{ borderColor: colors.border, color: colors.textMain }}
                                     />
                                     {showAccountDropdown ? (
-                                        <div className="absolute z-50 top-full mt-1 left-0 right-0 max-h-44 overflow-y-auto rounded border shadow-xl"
+                                        <div className="absolute z-50 top-full mt-1 left-0 right-0 max-h-60 overflow-y-auto rounded border shadow-xl"
                                             style={{ borderColor: colors.border, backgroundColor: colors.card }}>
                                             {(accounts || [])
-                                                .filter((a: any) => String(a?.name || '').toLowerCase().includes(String(accountPick || '').toLowerCase()))
-                                                .slice(0, 50)
+                                                .filter((a: any) =>
+                                                    String(a?.name || '')
+                                                        .toLowerCase()
+                                                        .includes(String(linkedAccountSearch || '').toLowerCase()),
+                                                )
                                                 .map((a: any) => (
                                                     <button
                                                         key={a.id}
                                                         type="button"
                                                         onClick={() => {
-                                                            setAccountPick(String(a.id));
+                                                            setLinkedAccountSearch(String(a.name || ''));
+                                                            setLinkedAccountPickId(String(a.id));
                                                             setShowAccountDropdown(false);
                                                         }}
                                                         className="w-full text-left px-3 py-2 text-sm hover:bg-white/5"
                                                         style={{ color: colors.textMain }}
                                                     >
                                                         {a.name}
+                                                        {a.type ? (
+                                                            <span className="text-[10px] opacity-40 ml-1"> ({a.type})</span>
+                                                        ) : null}
                                                     </button>
                                                 ))}
                                         </div>
                                     ) : null}
                                 </div>
                                 <button type="button" onClick={() => {
-                                    if (!accountPick) return;
+                                    const q = String(linkedAccountSearch || '').trim();
+                                    const byPick =
+                                        linkedAccountPickId &&
+                                        (accounts || []).some((a: any) => String(a?.id) === linkedAccountPickId)
+                                            ? linkedAccountPickId
+                                            : undefined;
+                                    const selectedId =
+                                        byPick ||
+                                        (accounts || []).find((a: any) => String(a?.name || '').toLowerCase() === q.toLowerCase())?.id ||
+                                        (accounts || []).find((a: any) => String(a?.id) === q)?.id;
+                                    if (!selectedId) return;
                                     setDraft((p) => {
-                                        const selectedId = (accounts || []).find((a: any) =>
-                                            String(a?.id) === String(accountPick) ||
-                                            String(a?.name || '').toLowerCase() === String(accountPick || '').toLowerCase()
-                                        )?.id;
-                                        if (!selectedId) return p;
                                         if ((p.linkedAccounts || []).some((x) => String(x.accountId) === String(selectedId))) return p;
-                                        return { ...p, linkedAccounts: [...(p.linkedAccounts || []), { accountId: String(selectedId), note: '' }] };
+                                        return {
+                                            ...p,
+                                            linkedAccounts: [...(p.linkedAccounts || []), { accountId: String(selectedId), note: '' }],
+                                        };
                                     });
-                                    setAccountPick('');
+                                    setLinkedAccountSearch('');
+                                    setLinkedAccountPickId(null);
                                     setShowAccountDropdown(false);
-                                }} className="px-3 py-1.5 rounded border text-xs font-bold" style={{ borderColor: colors.border }}>Add Account</button>
+                                }} className="px-3 py-1.5 rounded border text-xs font-bold shrink-0" style={{ borderColor: colors.border }}>Add Account</button>
+                                {setAccounts && (canCreate || canEdit) ? (
+                                    <button
+                                        type="button"
+                                        title="Create new account"
+                                        onClick={() => setShowAddAccountModal(true)}
+                                        className="px-3 py-1.5 rounded border text-xs font-bold shrink-0 flex items-center gap-1"
+                                        style={{ borderColor: colors.border }}
+                                    >
+                                        <Plus size={14} />
+                                    </button>
+                                ) : null}
                             </div>
                             <div className="max-h-[26vh] overflow-y-auto pr-1 custom-scrollbar space-y-1.5">
                             {(draft.linkedAccounts || []).map((a, idx) => {
                                 const acc = (accounts || []).find((x: any) => String(x.id) === String(a.accountId));
                                 return (
                                     <div key={`${a.accountId}-${idx}`} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-1.5">
-                                        <div className="px-2.5 py-1.5 rounded border bg-black/20 text-sm leading-tight" style={{ borderColor: colors.border }}>{acc?.name || a.accountId}</div>
+                                        <div className="px-2.5 py-1.5 rounded border bg-black/20 text-sm leading-tight flex flex-wrap items-baseline gap-x-2" style={{ borderColor: colors.border }}>
+                                            <span>{acc?.name || a.accountId}</span>
+                                            {acc?.type ? (
+                                                <span className="text-[10px] opacity-40">({acc.type})</span>
+                                            ) : null}
+                                        </div>
                                         <input value={a.note || ''} onChange={(e) => setDraft((p) => ({ ...p, linkedAccounts: p.linkedAccounts.map((row, i) => i === idx ? { ...row, note: e.target.value } : row) }))} placeholder="Account feedback note..." className="px-2.5 py-1.5 rounded border bg-black/20 text-sm" style={{ borderColor: colors.border }} />
                                         <button type="button" onClick={() => setDraft((p) => ({ ...p, linkedAccounts: p.linkedAccounts.filter((_, i) => i !== idx) }))} className="px-2 rounded border" style={{ borderColor: colors.border }}><X size={13} /></button>
                                     </div>
@@ -568,6 +666,17 @@ export default function PromotionsPage({
                     </div>
                 </div>
             ) : null}
+            <AddAccountModal
+                isOpen={showAddAccountModal}
+                onClose={() => setShowAddAccountModal(false)}
+                onSave={handleSaveAccountFromModal}
+                theme={theme}
+                accountTypeOptions={effectiveAccountTypeOpts}
+                duplicateCheckAccounts={dupCheckAccounts}
+                duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                configurationProperty={activeProperty || undefined}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+            />
         </div>
     );
 }

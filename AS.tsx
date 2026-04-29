@@ -6933,12 +6933,15 @@ export default function AdvancedSalesDashboard() {
                             promotions={promotions}
                             setPromotions={setPromotions}
                             accounts={accounts}
+                            setAccounts={setAccounts}
                             sharedRequests={sharedRequests}
                             segmentOptions={propertySegmentLabels}
+                            accountTypeOptions={propertyAccountTypeLabels}
                             currency={currentCurrency}
                             canCreate={canCreatePromotions(currentUser)}
                             canEdit={canEditPromotions(currentUser)}
                             canDelete={canDeletePromotions(currentUser)}
+                            currentUser={currentUser}
                         />
                     ) : currentView === 'crm' ? (
                         <CRM
