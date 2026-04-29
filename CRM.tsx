@@ -27,6 +27,7 @@ import {
     filterSalesCallsForAccount,
     filterOpenOpportunityLeads
 } from './accountProfileData';
+import { sumRequestProratedRevenueExTaxInRange } from './operationalSegmentRevenue';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
@@ -34,6 +35,8 @@ import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accou
 import { collectSalesCallFormViolations } from './formConfigurations';
 import { repointContractRecordsForAccountMerge } from './contractsStore';
 import { createPortal } from 'react-dom';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 /** KPI and kanban tag: only when follow-up is explicitly on and a date exists (matches product behavior; avoids orphan dates counting alone). */
 function crmLeadHasScheduledFollowUp(lead: any): boolean {
@@ -47,7 +50,7 @@ function crmLeadHasScheduledFollowUp(lead: any): boolean {
 
 interface CRMProps {
     theme: any;
-    externalView?: 'pipeline' | 'list';
+    externalView?: 'pipeline' | 'list' | 'dashboard';
     initialAction?: 'add_call' | null;
     activeProperty?: any;
     accounts: any[];
@@ -68,6 +71,7 @@ interface CRMProps {
     currency?: CurrencyCode;
     /** Property staff (id + display name) for “created by” pipeline/list filter. */
     crmFilterUsers?: { id: string; name: string }[];
+    propertyFinancialKpis?: any[];
     setSharedRequests?: React.Dispatch<React.SetStateAction<any[]>>;
     assignableUsersForAccounts?: { id: string; name: string }[];
 }
@@ -93,6 +97,7 @@ export default function CRM({
     visibleMonth,
     currency = 'SAR',
     crmFilterUsers,
+    propertyFinancialKpis = [],
     setSharedRequests,
     assignableUsersForAccounts = [],
 }: CRMProps) {
@@ -106,7 +111,7 @@ export default function CRM({
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
-    const [currentView, setCurrentView] = useState<'pipeline' | 'list' | 'profile'>('pipeline');
+    const [currentView, setCurrentView] = useState<'pipeline' | 'list' | 'dashboard' | 'profile'>('pipeline');
 
     useEffect(() => {
         if (externalView) {
@@ -239,6 +244,423 @@ export default function CRM({
     ];
 
     const stageTitle = (id: string) => stages.find((s) => s.id === id)?.title || id;
+    const stageColor = (id: string) => stages.find((s) => s.id === id)?.color || colors.textMuted;
+    const now = new Date();
+    const [dashboardViewMode, setDashboardViewMode] = useState<'month' | 'year' | 'quarter'>('month');
+    const [dashboardYear, setDashboardYear] = useState<number>(now.getFullYear());
+    const [dashboardMonth, setDashboardMonth] = useState<number>(now.getMonth() + 1);
+    const [dashboardQuarter, setDashboardQuarter] = useState<'Q1' | 'Q2' | 'Q3' | 'Q4' | ''>('');
+    const quarterMonths = useMemo(
+        () => ({
+            Q1: [1, 2, 3],
+            Q2: [4, 5, 6],
+            Q3: [7, 8, 9],
+            Q4: [10, 11, 12],
+        }),
+        []
+    );
+    const dashboardStageOrder = useMemo(
+        () => ['waiting', 'qualified', 'proposal', 'negotiation', 'won'],
+        []
+    );
+    const dashboardStageLabel = (stageId: string, fallback: string) => {
+        if (stageId === 'new') return 'Leads';
+        return fallback;
+    };
+    const monthNamesShort = useMemo(
+        () => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+        []
+    );
+    const currentYear = now.getFullYear();
+    const piePalette = [colors.primary, colors.cyan, colors.orange, colors.yellow, colors.green, colors.blue];
+
+    const toYmd = (raw: any): string => {
+        const s = String(raw || '').trim();
+        if (!s) return '';
+        return s.slice(0, 10);
+    };
+    const toMonthNum = (ymd: string) => {
+        if (!ymd || ymd.length < 7) return 0;
+        return Number(ymd.slice(5, 7)) || 0;
+    };
+    const toYearNum = (ymd: string) => {
+        if (!ymd || ymd.length < 4) return 0;
+        return Number(ymd.slice(0, 4)) || 0;
+    };
+    const monthNameToNumber = (raw: any): number => {
+        const s = String(raw || '').trim().toLowerCase();
+        if (!s) return 0;
+        const names = [
+            'january', 'february', 'march', 'april', 'may', 'june',
+            'july', 'august', 'september', 'october', 'november', 'december'
+        ];
+        const idx = names.findIndex((n) => n === s || n.startsWith(s));
+        if (idx >= 0) return idx + 1;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    const crmLeadsForCreatorOnly = useMemo(() => {
+        const fid = String(createdByUserFilterId || '').trim();
+        if (!fid) return crmLeads;
+        const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
+        if (!userRow) return crmLeads;
+        const filterUser = { id: userRow.id, name: userRow.name };
+        const out: Record<string, any[]> = { ...crmLeads };
+        (Object.keys(out) as string[]).forEach((k) => {
+            out[k] = (out[k] || []).filter((l: any) => crmLeadAttributedToUser(l, filterUser));
+        });
+        return out;
+    }, [crmLeads, createdByUserFilterId, crmFilterUsers]);
+
+    const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
+
+    const dashboardFilteredLeads = useMemo(() => {
+        const y = dashboardYear;
+        const m = dashboardMonth;
+        const quarterSet = dashboardQuarter ? new Set(quarterMonths[dashboardQuarter]) : null;
+        return allCreatorScopedLeads.filter((lead: any) => {
+            const d = toYmd(lead?.lastContact || lead?.date);
+            if (!d) return false;
+            if (toYearNum(d) !== y) return false;
+            const leadMonth = toMonthNum(d);
+            if (dashboardViewMode === 'month' && leadMonth !== m) return false;
+            if (dashboardViewMode === 'quarter' && quarterSet && !quarterSet.has(leadMonth)) return false;
+            return true;
+        });
+    }, [allCreatorScopedLeads, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]);
+
+    const dashboardRange = useMemo(() => {
+        const y = dashboardYear;
+        if (dashboardViewMode === 'year') {
+            return { start: `${y}-01-01`, end: `${y}-12-31` };
+        }
+        if (dashboardViewMode === 'quarter' && dashboardQuarter) {
+            const months = quarterMonths[dashboardQuarter];
+            const startMonth = String(months[0]).padStart(2, '0');
+            const endMonthNum = months[2];
+            const endMonth = String(endMonthNum).padStart(2, '0');
+            const endDay = new Date(y, endMonthNum, 0).getDate();
+            return { start: `${y}-${startMonth}-01`, end: `${y}-${endMonth}-${String(endDay).padStart(2, '0')}` };
+        }
+        const m = String(dashboardMonth).padStart(2, '0');
+        const endDay = new Date(y, dashboardMonth, 0).getDate();
+        return { start: `${y}-${m}-01`, end: `${y}-${m}-${String(endDay).padStart(2, '0')}` };
+    }, [dashboardViewMode, dashboardYear, dashboardMonth, dashboardQuarter, quarterMonths]);
+
+    const requestOperationalDate = (req: any) =>
+        toYmd(req?.checkIn || req?.arrivalDate || req?.eventStart || req?.requestDate || req?.createdAt || req?.updatedAt);
+
+    const scopedRequestsAll = useMemo(
+        () => (Array.isArray(sharedRequests) ? sharedRequests : []),
+        [sharedRequests]
+    );
+
+    const linkedRequestsForLead = (lead: any) => {
+        const aid = String(lead?.accountId || '').trim();
+        const company = String(lead?.company || '').trim().toLowerCase();
+        const leadDate = toYmd(lead?.lastContact || lead?.date);
+        return scopedRequestsAll.filter((req: any) => {
+            const opDate = requestOperationalDate(req);
+            if (leadDate && opDate && opDate < leadDate) return false;
+            const reqAid = String(req?.accountId || '').trim();
+            const reqAcc = accounts.find((a: any) => String(a?.id || '') === reqAid);
+            const reqName = String(reqAcc?.name || req?.account || req?.accountName || '').trim().toLowerCase();
+            if (aid && reqAid) return aid === reqAid;
+            if (!company) return false;
+            return reqName === company;
+        });
+    };
+
+    const dashboardStats = useMemo(() => {
+        const byStage = new Map<string, any[]>();
+        stages.forEach((s) => byStage.set(s.id, []));
+        for (const lead of dashboardFilteredLeads) {
+            const sid = String(lead?.stage || 'new');
+            if (!byStage.has(sid)) byStage.set(sid, []);
+            byStage.get(sid)!.push(lead);
+        }
+        const orderedStages = dashboardStageOrder
+            .map((id) => stages.find((s) => s.id === id))
+            .filter(Boolean) as typeof stages;
+        const includedLeadsTotal = orderedStages.reduce((acc, s) => acc + (byStage.get(s.id) || []).length, 0);
+        const stageRows = orderedStages.map((s) => {
+            const leads = byStage.get(s.id) || [];
+            let requestsCount = 0;
+            let revenue = 0;
+            leads.forEach((lead: any) => {
+                const reqs = linkedRequestsForLead(lead);
+                requestsCount += reqs.length;
+                revenue += reqs.reduce((sum: number, req: any) => sum + sumRequestProratedRevenueExTaxInRange(req, '1900-01-01', '2100-12-31'), 0);
+            });
+            return {
+                stageId: s.id,
+                stageTitle: dashboardStageLabel(s.id, s.title),
+                count: leads.length,
+                pct: includedLeadsTotal ? (leads.length / includedLeadsTotal) * 100 : 0,
+                requestsCount,
+                revenue
+            };
+        });
+        const qualified = (byStage.get('qualified') || []).length;
+        const proposal = (byStage.get('proposal') || []).length;
+        const negotiation = (byStage.get('negotiation') || []).length;
+        const won = (byStage.get('won') || []).length;
+        const denominator = qualified + proposal + negotiation;
+        const conversionRate = denominator > 0 ? (won / denominator) * 100 : 0;
+        const journeyLeadsTotal =
+            (byStage.get('waiting') || []).length +
+            (byStage.get('qualified') || []).length +
+            (byStage.get('proposal') || []).length +
+            (byStage.get('negotiation') || []).length +
+            (byStage.get('won') || []).length;
+        const totalRevenue = stageRows.reduce((s, r) => s + r.revenue, 0);
+        const allRequestCount = stageRows.reduce((s, r) => s + r.requestsCount, 0);
+        const preferredBusinessMap = new Map<string, number>();
+        dashboardFilteredLeads.forEach((lead: any) => {
+            linkedRequestsForLead(lead).forEach((req: any) => {
+                const seg = String(req?.segment || 'Uncategorized').trim() || 'Uncategorized';
+                preferredBusinessMap.set(seg, (preferredBusinessMap.get(seg) || 0) + 1);
+            });
+        });
+        const preferredBusinessData = [...preferredBusinessMap.entries()]
+            .map(([name, value]) => ({ name, value }))
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 6);
+        return {
+            stageRows,
+            totalLeads: journeyLeadsTotal,
+            totalClients: won,
+            totalRevenue,
+            avgRevenue: dashboardFilteredLeads.length ? totalRevenue / dashboardFilteredLeads.length : 0,
+            conversionRate,
+            totalRequests: allRequestCount,
+            preferredBusinessData,
+        };
+    }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll]);
+
+    const monthlyTarget = useMemo(() => {
+        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === dashboardYear);
+        if (!row) return 0;
+        const months = Array.isArray(row?.months) ? row.months : [];
+        if (dashboardViewMode === 'quarter' && dashboardQuarter) {
+            const quarterSet = new Set(quarterMonths[dashboardQuarter]);
+            return months.reduce((sum: number, m: any) => {
+                const mn = monthNameToNumber(m?.month);
+                if (!quarterSet.has(mn)) return sum;
+                return sum + (Number(m?.salesCalls || 0) || 0);
+            }, 0);
+        }
+        const monthRow = months.find((m: any) => monthNameToNumber(m?.month) === dashboardMonth);
+        return Number(monthRow?.salesCalls || 0) || 0;
+    }, [propertyFinancialKpis, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]);
+
+    const ytdTarget = useMemo(() => {
+        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === dashboardYear);
+        if (!row) return 0;
+        const months = Array.isArray(row?.months) ? row.months : [];
+        let sum = 0;
+        for (let m = 1; m <= dashboardMonth; m += 1) {
+            const monthRow = months.find((x: any) => monthNameToNumber(x?.month) === m);
+            sum += Number(monthRow?.salesCalls || 0) || 0;
+        }
+        return sum;
+    }, [propertyFinancialKpis, dashboardYear, dashboardMonth]);
+
+    const monthlyActual = useMemo(
+        () =>
+            allCreatorScopedLeads.filter((lead: any) => {
+                const d = toYmd(lead?.lastContact || lead?.date);
+                if (!d || toYearNum(d) !== dashboardYear) return false;
+                const mm = toMonthNum(d);
+                if (dashboardViewMode === 'quarter' && dashboardQuarter) {
+                    return quarterMonths[dashboardQuarter].includes(mm);
+                }
+                return mm === dashboardMonth;
+            }).length,
+        [allCreatorScopedLeads, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]
+    );
+    const ytdActual = useMemo(
+        () =>
+            allCreatorScopedLeads.filter((lead: any) => {
+                const d = toYmd(lead?.lastContact || lead?.date);
+                if (!d || toYearNum(d) !== dashboardYear) return false;
+                return toMonthNum(d) <= dashboardMonth;
+            }).length,
+        [allCreatorScopedLeads, dashboardYear, dashboardMonth]
+    );
+    const [expandedDashboardAccounts, setExpandedDashboardAccounts] = useState<string[]>([]);
+    const dashboardAccountRows = useMemo(() => {
+        const stageRank = new Map<string, number>();
+        dashboardStageOrder.forEach((id, idx) => stageRank.set(id, idx));
+        const accountMap = new Map<string, any>();
+        for (const lead of dashboardFilteredLeads) {
+            const stageId = String(lead?.stage || '').trim();
+            if (!stageRank.has(stageId)) continue;
+            const accountId = String(lead?.accountId || '').trim();
+            const accountName = String(lead?.company || '').trim() || 'Unknown account';
+            const key = accountId || `name:${accountName.toLowerCase()}`;
+            const requests = linkedRequestsForLead(lead);
+            const reqMap = new Map<string, any>();
+            requests.forEach((req: any) => {
+                const reqKey = String(req?.id || `${req?.requestDate || ''}-${req?.accountId || ''}-${req?.requestName || ''}`);
+                reqMap.set(reqKey, req);
+            });
+            const requestRows = [...reqMap.values()].map((req: any) => {
+                const startDate = String(req?.checkIn || req?.arrivalDate || req?.eventStart || req?.requestDate || '').slice(0, 10);
+                const endDate = String(req?.checkOut || req?.departureDate || req?.eventEnd || req?.requestDate || '').slice(0, 10);
+                return {
+                    id: String(req?.id || `${req?.requestName || 'request'}-${startDate}`),
+                    requestName: String(req?.requestName || req?.eventName || req?.requestType || 'Request'),
+                    startDate,
+                    endDate,
+                    requestSegment: String(req?.segment || '—'),
+                    accountType: String(
+                        accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''))?.type ||
+                        req?.accountType ||
+                        '—'
+                    ),
+                    revenue: sumRequestProratedRevenueExTaxInRange(req, '1900-01-01', '2100-12-31'),
+                };
+            });
+            const totalRevenue = requestRows.reduce((sum, r) => sum + (Number(r.revenue) || 0), 0);
+            const candidate = {
+                key,
+                accountId,
+                accountName,
+                stageId,
+                stageTitle: dashboardStageLabel(stageId, stageTitle(stageId)),
+                stageColor: stageColor(stageId),
+                requestCount: requestRows.length,
+                totalRevenue,
+                requests: requestRows,
+                rank: stageRank.get(stageId) || 0,
+            };
+            const existing = accountMap.get(key);
+            if (!existing || candidate.rank > existing.rank) {
+                accountMap.set(key, candidate);
+            } else if (existing) {
+                const merged = new Map<string, any>();
+                [...existing.requests, ...requestRows].forEach((r: any) => merged.set(String(r.id), r));
+                existing.requests = [...merged.values()];
+                existing.requestCount = existing.requests.length;
+                existing.totalRevenue = existing.requests.reduce((sum: number, r: any) => sum + (Number(r.revenue) || 0), 0);
+                accountMap.set(key, existing);
+            }
+        }
+        return [...accountMap.values()].sort((a, b) => (b.totalRevenue - a.totalRevenue) || (b.requestCount - a.requestCount));
+    }, [dashboardFilteredLeads, dashboardStageOrder, accounts, dashboardRange]);
+
+    const downloadFile = (fileName: string, content: string, mimeType: string) => {
+        const blob = new Blob([content], { type: mimeType });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    };
+    const dashboardSnapshotRef = useRef<HTMLDivElement>(null);
+    const captureDashboardSnapshot = async (): Promise<string | null> => {
+        const node = dashboardSnapshotRef.current;
+        if (!node) return null;
+        const canvas = await html2canvas(node, {
+            scale: 2,
+            backgroundColor: colors.bg,
+            useCORS: true,
+            logging: false,
+            windowWidth: Math.max(document.documentElement.clientWidth, node.scrollWidth),
+            windowHeight: Math.max(document.documentElement.clientHeight, node.scrollHeight),
+        });
+        return canvas.toDataURL('image/png');
+    };
+
+    const exportDashboardExcel = async () => {
+        const title = `Sales Funnel Dashboard (${dashboardViewMode === 'month' ? `${monthNamesShort[dashboardMonth - 1]} ${dashboardYear}` : dashboardViewMode === 'quarter' && dashboardQuarter ? `${dashboardQuarter} ${dashboardYear}` : dashboardYear})`;
+        const imageDataUrl = await captureDashboardSnapshot();
+        if (!imageDataUrl) return;
+        const imageBase64 = imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl;
+        const boundary = '----=_NextPart_CRM_SNAPSHOT';
+        const imageContentLocation = 'file:///dashboard-snapshot.png';
+        const sheetContentLocation = 'file:///sales-funnel-snapshot.htm';
+        const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body style="margin:0;padding:16px;font-family:Arial,sans-serif;"><h3 style="margin:0 0 12px 0;">${title}</h3><img src="${imageContentLocation}" style="width:100%;height:auto;border:1px solid #ddd;" /></body></html>`;
+        const mhtml = [
+            'MIME-Version: 1.0',
+            `Content-Type: multipart/related; boundary="${boundary}"`,
+            '',
+            `--${boundary}`,
+            `Content-Location: ${sheetContentLocation}`,
+            'Content-Type: text/html; charset="utf-8"',
+            'Content-Transfer-Encoding: 8bit',
+            '',
+            html,
+            `--${boundary}`,
+            `Content-Location: ${imageContentLocation}`,
+            'Content-Type: image/png',
+            'Content-Transfer-Encoding: base64',
+            '',
+            imageBase64,
+            `--${boundary}--`,
+            '',
+        ].join('\r\n');
+        downloadFile(`sales_funnel_snapshot_${dashboardYear}_${String(dashboardMonth).padStart(2, '0')}.xls`, mhtml, 'application/vnd.ms-excel');
+    };
+
+    const exportDashboardPdf = async () => {
+        const imageDataUrl = await captureDashboardSnapshot();
+        if (!imageDataUrl) return;
+        const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+        const pageW = pdf.internal.pageSize.getWidth();
+        const pageH = pdf.internal.pageSize.getHeight();
+        const img = new Image();
+        img.src = imageDataUrl;
+        await new Promise((resolve) => {
+            img.onload = resolve;
+            img.onerror = resolve;
+        });
+        const imgW = img.width || 1;
+        const imgH = img.height || 1;
+        const scale = Math.min(pageW / imgW, pageH / imgH);
+        const drawW = imgW * scale;
+        const drawH = imgH * scale;
+        const x = (pageW - drawW) / 2;
+        const y = (pageH - drawH) / 2;
+        pdf.addImage(imageDataUrl, 'PNG', x, y, drawW, drawH);
+        pdf.save(`sales_funnel_snapshot_${dashboardYear}_${String(dashboardMonth).padStart(2, '0')}.pdf`);
+    };
+    const CircularIndicator = ({
+        label,
+        value,
+        suffix = '%',
+        tone = colors.primary,
+    }: {
+        label: string;
+        value: number;
+        suffix?: string;
+        tone?: string;
+    }) => {
+        const safe = Number.isFinite(value) ? Math.max(0, value) : 0;
+        const pct = Math.min(100, safe);
+        return (
+            <div className="p-3 rounded-xl border flex items-center gap-3" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                <div
+                    className="w-14 h-14 rounded-full grid place-items-center text-[11px] font-black"
+                    style={{
+                        color: colors.textMain,
+                        background: `conic-gradient(${tone} ${pct * 3.6}deg, ${colors.card} 0deg)`,
+                    }}
+                >
+                    <div className="w-10 h-10 rounded-full grid place-items-center text-[10px] font-black" style={{ backgroundColor: colors.bg }}>
+                        {Math.round(safe)}{suffix}
+                    </div>
+                </div>
+                <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>{label}</p>
+                </div>
+            </div>
+        );
+    };
 
     const findLeadStageId = (leads: Record<string, any[]>, leadId: string): string | null => {
         for (const k of Object.keys(leads)) {
@@ -992,6 +1414,26 @@ export default function CRM({
                                 ))}
                             </select>
                         )}
+                        {currentView === 'dashboard' && (
+                            <>
+                                <button
+                                    type="button"
+                                    className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    onClick={exportDashboardExcel}
+                                >
+                                    Export Excel
+                                </button>
+                                <button
+                                    type="button"
+                                    className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                    onClick={exportDashboardPdf}
+                                >
+                                    Export PDF
+                                </button>
+                            </>
+                        )}
                         {!crmReadOnly && (
                             <button
                                 onClick={() => setShowAddCallModal(true)}
@@ -1005,29 +1447,228 @@ export default function CRM({
                 </div>
 
                 {/* Stats Row */}
-                <div className="grid grid-cols-4 gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                    <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                        <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Total Calls</p>
-                        <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{totalLeads}</p>
+                {currentView === 'dashboard' ? (
+                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-1 p-1 rounded-lg border" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                                <button type="button" onClick={() => { setDashboardViewMode('month'); setDashboardQuarter(''); }} className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${dashboardViewMode === 'month' ? 'bg-white/10' : 'hover:bg-white/5'}`} style={{ color: dashboardViewMode === 'month' ? colors.primary : colors.textMuted }}>Month View</button>
+                                <button type="button" onClick={() => { setDashboardViewMode('year'); setDashboardQuarter(''); }} className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${dashboardViewMode === 'year' ? 'bg-white/10' : 'hover:bg-white/5'}`} style={{ color: dashboardViewMode === 'year' ? colors.primary : colors.textMuted }}>Year View</button>
+                            </div>
+                            <select value={dashboardMonth} onChange={(e) => setDashboardMonth(Number(e.target.value) || 1)} className="text-xs font-bold px-2 py-1.5 rounded border outline-none" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
+                                {monthNamesShort.map((m, idx) => <option key={m} value={idx + 1}>{m}</option>)}
+                            </select>
+                            <select value={dashboardYear} onChange={(e) => setDashboardYear(Number(e.target.value) || currentYear)} className="text-xs font-bold px-2 py-1.5 rounded border outline-none" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
+                                {Array.from({ length: 8 }, (_, i) => currentYear - 3 + i).map((y) => <option key={y} value={y}>{y}</option>)}
+                            </select>
+                            {Object.entries(quarterMonths).map(([label, months]) => (
+                                <button
+                                    key={label}
+                                    type="button"
+                                    onClick={() => {
+                                        setDashboardViewMode('quarter');
+                                        setDashboardQuarter(label as 'Q1' | 'Q2' | 'Q3' | 'Q4');
+                                        setDashboardMonth(months[2]);
+                                    }}
+                                    className={`text-[10px] px-2 py-1 rounded border font-bold uppercase tracking-wide hover:bg-white/5 ${dashboardViewMode === 'quarter' && dashboardQuarter === label ? 'bg-white/10' : ''}`}
+                                    style={{ borderColor: colors.border, color: dashboardViewMode === 'quarter' && dashboardQuarter === label ? colors.primary : colors.textMuted }}
+                                    title={`Filter to ${label} of selected year`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                    <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                        <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>High Potential Client</p>
-                        <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{highPotentialCount}</p>
+                ) : (
+                    <div className="grid grid-cols-4 gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Total Calls</p>
+                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{totalLeads}</p>
+                        </div>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>High Potential Client</p>
+                            <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{highPotentialCount}</p>
+                        </div>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Follow up Required</p>
+                            <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{followUpRequiredCount}</p>
+                        </div>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>
+                            <p className="text-2xl font-bold" style={{ color: colors.green }}>{(((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
+                        </div>
                     </div>
-                    <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                        <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Follow up Required</p>
-                        <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{followUpRequiredCount}</p>
-                    </div>
-                    <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                        <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>
-                        <p className="text-2xl font-bold" style={{ color: colors.green }}>{(((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
-                    </div>
-                </div>
+                )}
             </div>
 
             {/* Pipeline or List Content */}
-            <div className="flex-1 overflow-hidden flex flex-col p-4 pt-2">
-                {currentView === 'list' ? (
+            <div ref={currentView === 'dashboard' ? dashboardSnapshotRef : undefined} className="flex-1 overflow-hidden flex flex-col p-4 pt-2">
+                {currentView === 'dashboard' ? (
+                    <div className="flex-1 min-h-0 grid grid-cols-1 gap-4 overflow-y-auto">
+                        <div className="rounded-xl border p-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <h3 className="text-sm font-bold uppercase tracking-wide mb-3 text-center" style={{ color: colors.textMain }}>Sales Funnel - Conversion Rate Tracking</h3>
+                            <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
+                                <div className="xl:col-span-2 space-y-2">
+                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Total Leads</p>
+                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalLeads}</p>
+                                    </div>
+                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Revenues</p>
+                                        <p className="text-xl font-black" style={{ color: colors.primary }}>{formatMoney(dashboardStats.totalRevenue)}</p>
+                                    </div>
+                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Avg Revenue</p>
+                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{formatMoney(dashboardStats.avgRevenue)}</p>
+                                    </div>
+                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Requests</p>
+                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalRequests}</p>
+                                    </div>
+                                </div>
+                                <div className="xl:col-span-8 rounded-xl border p-3 overflow-x-auto" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                    <div className="min-w-[760px] flex items-center h-[230px]">
+                                        {dashboardStats.stageRows.map((row, idx) => {
+                                            const total = dashboardStats.stageRows.length || 1;
+                                            const startH = 190 - idx * (110 / total);
+                                            const endH = idx === total - 1 ? startH : 190 - (idx + 1) * (110 / total);
+                                            return (
+                                                <div
+                                                    key={row.stageId}
+                                                    className="relative flex-1 flex items-center justify-center text-center font-bold text-white"
+                                                    style={{
+                                                        height: `${Math.max(56, startH)}px`,
+                                                        backgroundColor: stageColor(row.stageId),
+                                                        clipPath: idx === total - 1
+                                                            ? 'polygon(0 0, 82% 0, 100% 50%, 82% 100%, 0 100%)'
+                                                            : 'polygon(0 0, 88% 0, 100% 50%, 88% 100%, 0 100%, 10% 50%)',
+                                                        marginLeft: idx === 0 ? 0 : '-18px',
+                                                        marginTop: `${(190 - startH) / 2}px`,
+                                                        marginBottom: `${(190 - startH) / 2}px`,
+                                                    }}
+                                                >
+                                                    <div className="text-[11px] leading-tight px-2">
+                                                        <div>{row.pct.toFixed(0)}%</div>
+                                                        <div>{row.stageTitle.replace('Upcoming Sales Calls', 'Inquiries')}</div>
+                                                        <div>{row.count}</div>
+                                                    </div>
+                                                    {idx === total - 1 && (
+                                                        <div className="absolute -right-6 w-12 h-12 rounded-full grid place-items-center text-[11px] font-black" style={{ backgroundColor: stageColor(row.stageId) }}>
+                                                            {row.count}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="xl:col-span-2 space-y-2">
+                                    <CircularIndicator label="Conversion Rate" value={dashboardStats.conversionRate} tone={colors.green} />
+                                    <CircularIndicator label="Monthly Goal" value={monthlyTarget > 0 ? (monthlyActual / monthlyTarget) * 100 : 0} tone={colors.cyan} />
+                                    <CircularIndicator label="YTD Goal" value={ytdTarget > 0 ? (ytdActual / ytdTarget) * 100 : 0} tone={colors.primary} />
+                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Customers</p>
+                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalClients}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                            {[
+                                { id: 'proposal', label: 'Proposal' },
+                                { id: 'negotiation', label: 'Negotiation' },
+                                { id: 'won', label: 'Won' },
+                            ].map((stageCfg) => {
+                                const stageRows = dashboardAccountRows.filter((r: any) => r.stageId === stageCfg.id);
+                                const stageTone = stageColor(stageCfg.id);
+                                return (
+                                    <div key={stageCfg.id} className="rounded-xl border overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                                        <div
+                                            className="px-4 py-3 border-b text-xs font-bold uppercase tracking-wide text-center"
+                                            style={{ borderColor: colors.border, color: '#fff', backgroundColor: stageTone }}
+                                        >
+                                            {stageCfg.label}
+                                        </div>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left border-collapse">
+                                                <thead className="text-[10px] uppercase tracking-wider font-semibold" style={{ backgroundColor: colors.bg, color: colors.textMuted }}>
+                                                    <tr>
+                                                        <th className="px-4 py-3">Account</th>
+                                                        <th className="px-4 py-3">Requests</th>
+                                                        <th className="px-4 py-3">Revenue</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="text-xs">
+                                                    {stageRows.map((row: any) => {
+                                                        const expanded = expandedDashboardAccounts.includes(row.key);
+                                                        return (
+                                                            <React.Fragment key={`${stageCfg.id}-${row.key}`}>
+                                                                <tr className="border-t" style={{ borderColor: colors.border }}>
+                                                                    <td className="px-4 py-3 font-bold">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                setExpandedDashboardAccounts((prev) =>
+                                                                                    prev.includes(row.key) ? prev.filter((k) => k !== row.key) : [...prev, row.key]
+                                                                                );
+                                                                            }}
+                                                                            className="text-left hover:underline"
+                                                                            style={{ color: colors.textMain }}
+                                                                        >
+                                                                            {row.accountName}
+                                                                        </button>
+                                                                    </td>
+                                                                    <td className="px-4 py-3" style={{ color: colors.textMain }}>{row.requestCount}</td>
+                                                                    <td className="px-4 py-3 font-mono" style={{ color: colors.primary }}>{formatMoney(row.totalRevenue)}</td>
+                                                                </tr>
+                                                                {expanded && (
+                                                                    <tr className="border-t" style={{ borderColor: colors.border }}>
+                                                                        <td colSpan={3} className="px-4 py-3" style={{ backgroundColor: colors.bg }}>
+                                                                            <table className="w-full text-left border-collapse">
+                                                                                <thead className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: colors.textMuted }}>
+                                                                                    <tr>
+                                                                                        <th className="py-2 pr-3">Request</th>
+                                                                                        <th className="py-2 pr-3">Start Date</th>
+                                                                                        <th className="py-2 pr-3">End Date</th>
+                                                                                        <th className="py-2 pr-3">Request Segment</th>
+                                                                                        <th className="py-2 pr-3">Account Type</th>
+                                                                                        <th className="py-2 pr-3">Total Revenue</th>
+                                                                                    </tr>
+                                                                                </thead>
+                                                                                <tbody>
+                                                                                    {row.requests.map((req: any) => (
+                                                                                        <tr key={req.id} className="border-t" style={{ borderColor: colors.border }}>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestName}</td>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMuted }}>{req.startDate || '—'}</td>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMuted }}>{req.endDate || '—'}</td>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestSegment || '—'}</td>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.accountType || '—'}</td>
+                                                                                            <td className="py-2 pr-3 font-mono" style={{ color: colors.primary }}>{formatMoney(req.revenue)}</td>
+                                                                                        </tr>
+                                                                                    ))}
+                                                                                </tbody>
+                                                                            </table>
+                                                                        </td>
+                                                                    </tr>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })}
+                                                    {stageRows.length === 0 && (
+                                                        <tr className="border-t" style={{ borderColor: colors.border }}>
+                                                            <td colSpan={3} className="px-4 py-6 text-center text-xs" style={{ color: colors.textMuted }}>
+                                                                No accounts in {stageCfg.label} for this period.
+                                                            </td>
+                                                        </tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                ) : currentView === 'list' ? (
                     <div className="flex-1 rounded-xl border overflow-hidden flex flex-col" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                         <div className="shrink-0 flex flex-wrap items-center justify-end gap-2 px-4 py-2 border-b" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                             <button

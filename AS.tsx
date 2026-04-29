@@ -3997,7 +3997,7 @@ export default function AdvancedSalesDashboard() {
 
     // Events Sub-View State: 'pipeline' (default), 'calendar', 'availability', 'beo'
     const [eventsSubView, setEventsSubView] = useState('pipeline');
-    const [crmSubView, setCrmSubView] = useState('pipeline');
+    const [crmSubView, setCrmSubView] = useState<'pipeline' | 'list' | 'dashboard'>('pipeline');
     const [dashboardPeriodMode, setDashboardPeriodMode] = useState<DashboardPeriodMode>('autoCurrentYear');
     const [dashboardNowAnchor, setDashboardNowAnchor] = useState(() => Date.now());
     const [chartTab, setChartTab] = useState('Performance');
@@ -5750,6 +5750,17 @@ export default function AdvancedSalesDashboard() {
             default: return 'Dashboard';
         }
     };
+    const mainNavItems = [
+        { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
+        { icon: CalendarDays, label: 'Calendar', id: 'calendar' },
+        { icon: ListTodo, label: 'To Do', id: 'todo' },
+        { icon: Wine, label: 'Events & Catering', id: 'events' },
+        { icon: BedDouble, label: 'Requests Management', id: 'requests' },
+        { icon: Users, label: 'Sales Calls Management', id: 'crm' },
+        { icon: FileText, label: 'Contracts', id: 'contracts' },
+        { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' },
+        { icon: Target, label: 'Promotions', id: 'promotions' }
+    ];
 
     // Main Dashboard (when authenticated)
     return (
@@ -5803,17 +5814,7 @@ export default function AdvancedSalesDashboard() {
 
                     {/* Main Navigation */}
                     <div className="flex-1 py-4 px-2 space-y-1 overflow-y-auto custom-scrollbar">
-                        {[
-                            { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
-                            { icon: CalendarDays, label: 'Calendar', id: 'calendar' },
-                            { icon: ListTodo, label: 'To Do', id: 'todo' },
-                            { icon: Wine, label: 'Events & Catering', id: 'events' },
-                            { icon: BedDouble, label: 'Requests Management', id: 'requests' },
-                            { icon: Users, label: 'Sales Calls Management', id: 'crm' },
-                            { icon: FileText, label: 'Contracts', id: 'contracts' },
-                            { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' },
-                            { icon: Target, label: 'Promotions', id: 'promotions' }
-                        ]
+                        {mainNavItems
                             .filter((item) => {
                                 if (item.id === 'accounts') return canShowAccountsNavItem(currentUser);
                                 if (item.id === 'promotions') return canAccessPromotions(currentUser);
@@ -5821,24 +5822,25 @@ export default function AdvancedSalesDashboard() {
                                 return perm ? can(currentUser, perm) : false;
                             })
                             .map((item, i) => (
-                            <button
-                                key={i}
-                                onClick={() => {
-                                    setCurrentView(item.id);
-                                    setPendingCrmAction(null);
-                                    setPendingRequestType(null);
-                                    if (!isSidebarPinned) setIsSideNavOpen(false);
-                                }}
-                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors hover:bg-white/5 ${currentView === item.id ? 'bg-white/5 border-r-2' : ''}`}
-                                style={{
-                                    color: currentView === item.id ? colors.primary : colors.textMain,
-                                    borderColor: currentView === item.id ? colors.primary : 'transparent'
-                                }}
-                            >
-                                <item.icon size={18} style={{ color: currentView === item.id ? colors.primary : colors.textMuted }} />
-                                <span className={`text-sm ${currentView === item.id ? 'font-bold' : ''}`}>{item.label}</span>
-                            </button>
-                        ))}
+                                <button
+                                    key={i}
+                                    onClick={() => {
+                                        setCurrentView(item.id);
+                                        if (item.id === 'crm') setCrmSubView('pipeline');
+                                        setPendingCrmAction(null);
+                                        setPendingRequestType(null);
+                                        if (!isSidebarPinned) setIsSideNavOpen(false);
+                                    }}
+                                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors hover:bg-white/5 ${currentView === item.id ? 'bg-white/5 border-r-2' : ''}`}
+                                    style={{
+                                        color: currentView === item.id ? colors.primary : colors.textMain,
+                                        borderColor: currentView === item.id ? colors.primary : 'transparent'
+                                    }}
+                                >
+                                    <item.icon size={18} style={{ color: currentView === item.id ? colors.primary : colors.textMuted }} />
+                                    <span className={`text-sm ${currentView === item.id ? 'font-bold' : ''}`}>{item.label}</span>
+                                </button>
+                            ))}
                     </div>
 
                     {/* Bottom Navigation & Logout */}
@@ -6437,6 +6439,13 @@ export default function AdvancedSalesDashboard() {
                                     >
                                         <List size={14} style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }} />
                                     </button>
+                                    <button
+                                        onClick={() => setCrmSubView('dashboard')}
+                                        className={`p-1.5 rounded transition-all ${crmSubView === 'dashboard' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        title="Sales Funnel Dashboard"
+                                    >
+                                        <BarChart3 size={14} style={{ color: crmSubView === 'dashboard' ? colors.primary : colors.textMuted }} />
+                                    </button>
                                 </div>
                             </div>
                         ) : currentView === 'settings' ? (
@@ -6755,7 +6764,7 @@ export default function AdvancedSalesDashboard() {
                     ) : currentView === 'crm' ? (
                         <CRM
                             theme={theme}
-                            externalView={crmSubView as 'pipeline' | 'list'}
+                            externalView={crmSubView as 'pipeline' | 'list' | 'dashboard'}
                             initialAction={pendingCrmAction}
                             activeProperty={activeProperty}
                             accounts={accounts}
@@ -6778,6 +6787,7 @@ export default function AdvancedSalesDashboard() {
                             visibleMonth={crmVisibleMonth}
                             currency={currentCurrency}
                             crmFilterUsers={taskAssignableUsers}
+                            propertyFinancialKpis={propertyFinancialKpis}
                             setSharedRequests={setSharedRequests}
                             assignableUsersForAccounts={taskAssignableUsers}
                         />
