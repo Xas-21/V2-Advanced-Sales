@@ -614,9 +614,6 @@ function filterTypeMice(r: any) {
     return k === 'event' || k === 'event_rooms';
 }
 
-/** Request-segment labels shown on MICE vs LY only (revenue + counts for request segment). */
-export const MICE_VS_LY_REQUEST_SEGMENTS: readonly string[] = ['Training', 'Weddings', 'MICE', 'Event'];
-
 export function buildYearOptionsForReports(requests: any[]): number[] {
     const set = new Set<number>();
     for (let y = 2023; y <= 2028; y += 1) set.add(y);
@@ -958,9 +955,8 @@ export function buildVsLyMatrix(
     const o = { ...defaultVsLyBuildOptions, ...opts };
     const propertyRequestSegments = normalizeTaxonomyStringList(o.propertyRequestSegments);
     const propertyAccountTypes = normalizeTaxonomyStringList(o.propertyAccountTypes);
-    /** MICE vs LY uses a fixed request-segment list; Rooms vs LY uses the property list. */
-    const requestSegmentsForMatrix =
-        kind === 'mice' ? normalizeTaxonomyStringList([...MICE_VS_LY_REQUEST_SEGMENTS]) : propertyRequestSegments;
+    /** Same taxonomy as Rooms vs LY and Manage Property — new request segments must map here (no hardcoded subset). */
+    const requestSegmentsForMatrix = propertyRequestSegments;
     const includeRequestSegments = o.includeRequestSegments;
     const includeAccountTypes = o.includeAccountTypes;
     const yearLy = selectedYear - 1;
