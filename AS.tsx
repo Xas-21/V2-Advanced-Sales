@@ -1469,6 +1469,7 @@ const EventsView = ({
     const [appliedGridStart, setAppliedGridStart] = useState(todayIso);
     /** How many day columns the availability grid shows (independent of summary range). */
     const [availabilityGridDays, setAvailabilityGridDays] = useState(7);
+    const [availabilityVenueModal, setAvailabilityVenueModal] = useState<{ venueName: string; bookings: any[] } | null>(null);
     const [beoSearch, setBeoSearch] = useState('');
     const [beoSortOrder, setBeoSortOrder] = useState<'newest' | 'oldest'>('newest');
     const [beoModalRequestId, setBeoModalRequestId] = useState<string | null>(null);
@@ -1643,32 +1644,35 @@ const EventsView = ({
     };
 
     /** Use all eligible MICE requests (not `miceRequests`), so venue availability is not tied to the Events pipeline date filter (e.g. current year only). */
-    const venueBookingLabel = (venueName: string, checkIso: string) => {
-        const order = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual'];
-        let bestIdx = -1;
-        let bestReq: any = null;
+    const venueBookingsOnDate = (venueName: string, checkIso: string) => {
+        const out: any[] = [];
         for (const req of allMiceRequests) {
             const st = String(req.status || 'Inquiry');
             if (st === 'Cancelled' || st === 'Lost') continue;
             const rows = Array.isArray(req.agenda) ? req.agenda : [];
-            const hit = rows.some((row: any) => {
-                if (!agendaCoversDate(row, checkIso, req)) return false;
+            for (const row of rows) {
+                if (!agendaCoversDate(row, checkIso, req)) continue;
                 const want = venueName.trim().toLowerCase();
-                return expandAgendaRowVenueOccupancies(row, req).some((occ) => occ.name.trim().toLowerCase() === want);
-            });
-            if (!hit) continue;
-            const idx = order.indexOf(st);
-            const u = idx >= 0 ? idx : 0;
-            if (u > bestIdx) {
-                bestIdx = u;
-                bestReq = req;
+                const matchesVenue = expandAgendaRowVenueOccupancies(row, req).some((occ) => occ.name.trim().toLowerCase() === want);
+                if (!matchesVenue) continue;
+                out.push({
+                    requestId: String(req.id || ''),
+                    accountName: String(req.account || req.accountName || '—'),
+                    requestName: String(req.requestName || req.confirmationNo || req.id || '—'),
+                    startDate: String(row.startDate || req.eventStart || req.checkIn || '').slice(0, 10),
+                    endDate: String(row.endDate || row.startDate || req.eventEnd || req.checkOut || '').slice(0, 10),
+                    sessionTiming: [row.startTime, row.endTime].filter(Boolean).join(' - ') || '—',
+                    status: st,
+                });
             }
         }
-        if (bestIdx < 0) return { label: 'Available', tone: 'free' as const, requestTitle: null as string | null };
-        const st = order[bestIdx];
-        const title = bestReq ? String(bestReq.requestName || bestReq.confirmationNo || '').trim() || null : null;
-        if (st === 'Definite' || st === 'Actual') return { label: st, tone: 'definite' as const, requestTitle: title };
-        return { label: st, tone: 'tentative' as const, requestTitle: title };
+        return out;
+    };
+
+    const venueBookingLabel = (venueName: string, checkIso: string) => {
+        const bookings = venueBookingsOnDate(venueName, checkIso);
+        if (!bookings.length) return { label: 'Available', tone: 'free' as const, booking: null as any };
+        return { label: 'Booked', tone: 'booked' as const, booking: bookings[0] };
     };
 
     const expandAvailabilityDays = (fromIso: string, toIso: string, maxCols: number) => {
@@ -1690,21 +1694,19 @@ const EventsView = ({
 
     const venueRangeSummary = (venueName: string, dayList: string[]) => {
         if (!dayList.length) return { label: '—', tone: 'free' as const };
-        let anyBusy = false;
-        let worst: 'free' | 'tentative' | 'definite' = 'free';
-        let lastTitle: string | null = null;
+        const seen = new Set<string>();
+        const bookings: any[] = [];
         for (const d of dayList) {
-            const { label, tone, requestTitle } = venueBookingLabel(venueName, d);
-            if (tone !== 'free') {
-                anyBusy = true;
-                lastTitle = requestTitle || lastTitle;
+            const daily = venueBookingsOnDate(venueName, d);
+            for (const b of daily) {
+                const key = `${b.requestId}__${b.startDate}__${b.endDate}__${b.sessionTiming}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                bookings.push(b);
             }
-            if (tone === 'definite') worst = 'definite';
-            else if (tone === 'tentative' && worst === 'free') worst = 'tentative';
         }
-        if (!anyBusy) return { label: 'Available', tone: 'free' as const };
-        if (worst === 'definite') return { label: 'Held / Definite', tone: 'definite' as const, requestTitle: lastTitle };
-        return { label: 'Tentative / In pipeline', tone: 'tentative' as const, requestTitle: lastTitle };
+        if (!bookings.length) return { label: 'Available', tone: 'free' as const, bookings: [] as any[] };
+        return { label: 'Booked', tone: 'booked' as const, bookings };
     };
 
     const beoCandidates = useMemo(() => {
@@ -1864,19 +1866,29 @@ const EventsView = ({
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 w-full">
                         {(list.length ? list : [{ id: 'none', name: 'No venues configured' }]).map((v: any) => {
                             const nm = v.name || 'Venue';
-                            const { label, tone, requestTitle } = venueRangeSummary(nm, summaryDays);
-                            const statusColor = tone === 'free' ? colors.green : tone === 'definite' ? colors.green : colors.yellow;
+                            const { label, tone, bookings } = venueRangeSummary(nm, summaryDays);
+                            const isBooked = tone === 'booked';
+                            const statusColor = isBooked ? (colors.red || '#ef4444') : colors.green;
                             return (
-                                <div key={v.id || nm} className="p-3 rounded border text-left" style={{ borderColor: colors.border }}>
+                                <button
+                                    key={v.id || nm}
+                                    type="button"
+                                    disabled={!isBooked || !list.length}
+                                    onClick={() => setAvailabilityVenueModal({ venueName: nm, bookings })}
+                                    className="p-3 rounded border text-left disabled:cursor-default disabled:opacity-100 hover:bg-white/5 transition-colors"
+                                    style={{ borderColor: colors.border }}
+                                >
                                     <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Venue</div>
                                     <div className="font-bold text-sm" style={{ color: colors.textMain }}>{nm}</div>
                                     <div className="mt-1 text-xs font-bold" style={{ color: statusColor }}>
                                         {list.length ? label : 'Set venues in settings'}
                                     </div>
-                                    {requestTitle && list.length ? (
-                                        <div className="text-[10px] mt-1 truncate" style={{ color: colors.textMuted }} title={requestTitle}>{requestTitle}</div>
+                                    {isBooked && list.length ? (
+                                        <div className="text-[10px] mt-1" style={{ color: colors.textMuted }}>
+                                            {bookings.length} booking{bookings.length === 1 ? '' : 's'}
+                                        </div>
                                     ) : null}
-                                </div>
+                                </button>
                             );
                         })}
                     </div>
@@ -1951,22 +1963,27 @@ const EventsView = ({
                                                 {nm}
                                             </td>
                                             {gridDayColumns.map((d) => {
-                                                const { label, tone, requestTitle } = venueBookingLabel(nm, d);
-                                                const bg = tone === 'free' ? 'transparent' : tone === 'definite' ? colors.green + '18' : colors.yellow + '18';
+                                                const { tone, booking } = venueBookingLabel(nm, d);
+                                                const statusColor = booking ? calendarRequestStatusColor(String(booking.status || ''), colors) : colors.textMuted;
+                                                const bg = tone === 'free' ? 'transparent' : `${statusColor}1f`;
                                                 const fg = tone === 'free' ? colors.textMuted : colors.textMain;
                                                 return (
                                                     <td
                                                         key={d}
                                                         className="p-2 border-b align-top text-center"
                                                         style={{ borderColor: colors.border, backgroundColor: bg, color: fg }}
-                                                        title={requestTitle ? `${label}: ${requestTitle}` : label}
+                                                        title={booking ? `${booking.accountName} • ${booking.status}` : 'Available'}
                                                     >
                                                         {tone === 'free' ? (
                                                             <span className="opacity-50">—</span>
                                                         ) : (
                                                             <div className="flex flex-col gap-0.5">
-                                                                <span className="font-bold text-[10px]">{label}</span>
-                                                                {requestTitle ? <span className="text-[9px] leading-tight line-clamp-2 break-words">{requestTitle}</span> : null}
+                                                                {booking ? (
+                                                                    <>
+                                                                        <span className="text-[9px] leading-tight line-clamp-2 break-words">{booking.accountName}</span>
+                                                                        <span className="text-[9px] leading-tight line-clamp-2 break-words font-bold" style={{ color: statusColor }}>{booking.status}</span>
+                                                                    </>
+                                                                ) : null}
                                                             </div>
                                                         )}
                                                     </td>
@@ -1979,6 +1996,55 @@ const EventsView = ({
                         </table>
                     </div>
                 </div>
+                {availabilityVenueModal ? (
+                    <div className="fixed inset-0 z-[90] bg-black/60 flex items-center justify-center p-4" onClick={() => setAvailabilityVenueModal(null)}>
+                        <div
+                            className="w-full max-w-4xl max-h-[80vh] overflow-y-auto rounded-xl border p-4"
+                            style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between mb-3">
+                                <h4 className="font-black text-sm uppercase tracking-wider">
+                                    {availabilityVenueModal.venueName} bookings
+                                </h4>
+                                <button type="button" onClick={() => setAvailabilityVenueModal(null)} className="px-2 py-1 rounded border text-xs" style={{ borderColor: colors.border }}>
+                                    Close
+                                </button>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className="border-b" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                            <th className="text-left py-2 pr-2">Account</th>
+                                            <th className="text-left py-2 pr-2">Request</th>
+                                            <th className="text-left py-2 pr-2">Start</th>
+                                            <th className="text-left py-2 pr-2">End</th>
+                                            <th className="text-left py-2 pr-2">Session timing</th>
+                                            <th className="text-left py-2 pr-2">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {availabilityVenueModal.bookings.map((b: any, i: number) => (
+                                            <tr key={`${b.requestId || 'req'}-${i}`} className="border-b" style={{ borderColor: colors.border }}>
+                                                <td className="py-2 pr-2">{b.accountName || '—'}</td>
+                                                <td className="py-2 pr-2">{b.requestName || '—'}</td>
+                                                <td className="py-2 pr-2">{b.startDate || '—'}</td>
+                                                <td className="py-2 pr-2">{b.endDate || '—'}</td>
+                                                <td className="py-2 pr-2">{b.sessionTiming || '—'}</td>
+                                                <td className="py-2 pr-2">{b.status || '—'}</td>
+                                            </tr>
+                                        ))}
+                                        {availabilityVenueModal.bookings.length === 0 ? (
+                                            <tr>
+                                                <td className="py-3 opacity-60" colSpan={6}>No bookings in selected range.</td>
+                                            </tr>
+                                        ) : null}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
             </div>
         );
     }

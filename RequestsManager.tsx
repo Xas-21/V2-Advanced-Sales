@@ -849,8 +849,6 @@ export default function RequestsManager({
         [propertyVenues]
     );
 
-    const defaultVenueName = () => (propertyVenues[0] as any)?.name || '';
-
     const openRequestForEdit = (req: any) => {
         if (readOnlyOperational) return;
         if (!req?.id) return;
@@ -1724,7 +1722,7 @@ export default function RequestsManager({
                       id: Date.now(),
                       startDate: '',
                       endDate: '',
-                      venue: defaultVenueName(),
+                      venue: '',
                       shape: 'Theater',
                       startTime: '',
                       endTime: '',
@@ -2540,6 +2538,7 @@ export default function RequestsManager({
                                                 <label className="text-[10px] font-black uppercase opacity-40 mb-1.5 block">Meeting Room</label>
                                                 <select value={row.venue} onChange={e => updateAgendaRow(row.id, 'venue', e.target.value)}
                                                     className="w-full px-3 py-2 rounded-xl bg-black/20 border-2 border-transparent focus:border-primary outline-none transition-all text-sm font-bold">
+                                                    <option value="">Select meeting room</option>
                                                     {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
                                                 </select>
                                             </div>
@@ -3201,6 +3200,7 @@ export default function RequestsManager({
                                     <div>
                                         <label className="text-[10px] font-bold uppercase opacity-50 block mb-1">Venue</label>
                                         <select className="w-full p-2 text-sm rounded bg-black/20 border border-transparent outline-none">
+                                            <option value="">Select meeting room</option>
                                             {venueOptions.map((v: any) => <option key={v.id || v.name} value={v.name}>{v.name}</option>)}
                                         </select>
                                     </div>
