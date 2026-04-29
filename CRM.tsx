@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from 'react';
 import {
     Users, Phone, Mail, MapPin, Tag, TrendingUp, DollarSign,
     Calendar, MessageSquare, FileText, MoreVertical, MoreHorizontal, X, ArrowRight,
@@ -38,6 +38,44 @@ import { createPortal } from 'react-dom';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
+/** Period filter for pipeline, list, and funnel dashboard (controlled from app header). */
+export type CrmSalesPeriod = {
+    mode: 'month' | 'year' | 'quarter';
+    year: number;
+    month: number;
+    quarter: 'Q1' | 'Q2' | 'Q3' | 'Q4' | null;
+};
+
+export const CRM_QUARTER_MONTH_BLOCKS: Record<'Q1' | 'Q2' | 'Q3' | 'Q4', number[]> = {
+    Q1: [1, 2, 3],
+    Q2: [4, 5, 6],
+    Q3: [7, 8, 9],
+    Q4: [10, 11, 12],
+};
+
+function leadMatchesSalesPeriod(
+    lead: any,
+    period: CrmSalesPeriod,
+    quarterBuckets: Record<string, number[]>
+): boolean {
+    const d = String(lead?.lastContact || lead?.date || '').trim().slice(0, 10);
+    if (!d || d.length < 7) return false;
+    const y = Number(d.slice(0, 4));
+    const mo = Number(d.slice(5, 7));
+    if (!Number.isFinite(y) || !Number.isFinite(mo)) return false;
+    if (period.mode === 'month') {
+        return d.slice(0, 7) === `${period.year}-${String(period.month).padStart(2, '0')}`;
+    }
+    if (period.mode === 'year') {
+        return y === period.year;
+    }
+    if (period.mode === 'quarter' && period.quarter) {
+        const months = quarterBuckets[period.quarter];
+        return Boolean(months?.length) && y === period.year && months.includes(mo);
+    }
+    return false;
+}
+
 /** KPI and kanban tag: only when follow-up is explicitly on and a date exists (matches product behavior; avoids orphan dates counting alone). */
 function crmLeadHasScheduledFollowUp(lead: any): boolean {
     const date = String(lead?.followUpDate ?? '').trim();
@@ -66,8 +104,13 @@ interface CRMProps {
     onNavigateToRequest?: (requestId: string) => void;
     onConsumedInitialAction?: () => void;
     accountTypeOptions?: string[];
-    /** YYYY-MM: filter pipeline/list by `lastContact` / `date` in that month. */
-    visibleMonth?: string;
+    /** Month / year / quarter filter for pipeline, list, and dashboard (controlled from Sales Calls header). */
+    crmSalesPeriod: CrmSalesPeriod;
+    /** Filter by creator-user (controlled from Sales Calls header). */
+    createdByUserFilterId: string;
+    onCreatedByUserFilterIdChange?: (userId: string) => void;
+    /** Increments → open Add Sales Call (header button). */
+    openAddSalesCallNonce?: number;
     currency?: CurrencyCode;
     /** Property staff (id + display name) for “created by” pipeline/list filter. */
     crmFilterUsers?: { id: string; name: string }[];
@@ -94,7 +137,10 @@ export default function CRM({
     onNavigateToRequest,
     onConsumedInitialAction,
     accountTypeOptions,
-    visibleMonth,
+    crmSalesPeriod,
+    createdByUserFilterId,
+    onCreatedByUserFilterIdChange,
+    openAddSalesCallNonce = 0,
     currency = 'SAR',
     crmFilterUsers,
     propertyFinancialKpis = [],
@@ -154,20 +200,14 @@ export default function CRM({
     }, [accounts, activeProperty?.id]);
 
     const crmLeadsForView = useMemo(() => {
-        const ym = String(visibleMonth || '').trim();
-        if (!ym || ym.length < 7) return crmLeads;
-        const match = (l: any) => {
-            const raw = String(l.lastContact || l.date || '').trim();
-            return raw.length >= 7 && raw.slice(0, 7) === ym.slice(0, 7);
-        };
         const out: Record<string, any[]> = { ...crmLeads };
         (Object.keys(out) as string[]).forEach((k) => {
-            out[k] = (out[k] || []).filter(match);
+            out[k] = (out[k] || []).filter((l: any) =>
+                leadMatchesSalesPeriod(l, crmSalesPeriod, CRM_QUARTER_MONTH_BLOCKS)
+            );
         });
         return out;
-    }, [crmLeads, visibleMonth]);
-
-    const [createdByUserFilterId, setCreatedByUserFilterId] = useState('');
+    }, [crmLeads, crmSalesPeriod]);
 
     const crmLeadsForDisplay = useMemo(() => {
         const fid = String(createdByUserFilterId || '').trim();
@@ -246,19 +286,6 @@ export default function CRM({
     const stageTitle = (id: string) => stages.find((s) => s.id === id)?.title || id;
     const stageColor = (id: string) => stages.find((s) => s.id === id)?.color || colors.textMuted;
     const now = new Date();
-    const [dashboardViewMode, setDashboardViewMode] = useState<'month' | 'year' | 'quarter'>('month');
-    const [dashboardYear, setDashboardYear] = useState<number>(now.getFullYear());
-    const [dashboardMonth, setDashboardMonth] = useState<number>(now.getMonth() + 1);
-    const [dashboardQuarter, setDashboardQuarter] = useState<'Q1' | 'Q2' | 'Q3' | 'Q4' | ''>('');
-    const quarterMonths = useMemo(
-        () => ({
-            Q1: [1, 2, 3],
-            Q2: [4, 5, 6],
-            Q3: [7, 8, 9],
-            Q4: [10, 11, 12],
-        }),
-        []
-    );
     const dashboardStageOrder = useMemo(
         () => ['waiting', 'qualified', 'proposal', 'negotiation', 'won'],
         []
@@ -302,51 +329,41 @@ export default function CRM({
 
     const crmLeadsForCreatorOnly = useMemo(() => {
         const fid = String(createdByUserFilterId || '').trim();
-        if (!fid) return crmLeads;
+        if (!fid) return crmLeadsForView;
         const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
-        if (!userRow) return crmLeads;
+        if (!userRow) return crmLeadsForView;
         const filterUser = { id: userRow.id, name: userRow.name };
-        const out: Record<string, any[]> = { ...crmLeads };
+        const out: Record<string, any[]> = { ...crmLeadsForView };
         (Object.keys(out) as string[]).forEach((k) => {
             out[k] = (out[k] || []).filter((l: any) => crmLeadAttributedToUser(l, filterUser));
         });
         return out;
-    }, [crmLeads, createdByUserFilterId, crmFilterUsers]);
+    }, [crmLeadsForView, createdByUserFilterId, crmFilterUsers]);
 
     const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
 
-    const dashboardFilteredLeads = useMemo(() => {
-        const y = dashboardYear;
-        const m = dashboardMonth;
-        const quarterSet = dashboardQuarter ? new Set(quarterMonths[dashboardQuarter]) : null;
-        return allCreatorScopedLeads.filter((lead: any) => {
-            const d = toYmd(lead?.lastContact || lead?.date);
-            if (!d) return false;
-            if (toYearNum(d) !== y) return false;
-            const leadMonth = toMonthNum(d);
-            if (dashboardViewMode === 'month' && leadMonth !== m) return false;
-            if (dashboardViewMode === 'quarter' && quarterSet && !quarterSet.has(leadMonth)) return false;
-            return true;
-        });
-    }, [allCreatorScopedLeads, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]);
+    const dashboardFilteredLeads = useMemo(
+        () => flattenCrmLeads(crmLeadsForCreatorOnly),
+        [crmLeadsForCreatorOnly]
+    );
 
     const dashboardRange = useMemo(() => {
-        const y = dashboardYear;
-        if (dashboardViewMode === 'year') {
+        const y = crmSalesPeriod.year;
+        if (crmSalesPeriod.mode === 'year') {
             return { start: `${y}-01-01`, end: `${y}-12-31` };
         }
-        if (dashboardViewMode === 'quarter' && dashboardQuarter) {
-            const months = quarterMonths[dashboardQuarter];
+        if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
+            const months = CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter];
             const startMonth = String(months[0]).padStart(2, '0');
             const endMonthNum = months[2];
             const endMonth = String(endMonthNum).padStart(2, '0');
             const endDay = new Date(y, endMonthNum, 0).getDate();
             return { start: `${y}-${startMonth}-01`, end: `${y}-${endMonth}-${String(endDay).padStart(2, '0')}` };
         }
-        const m = String(dashboardMonth).padStart(2, '0');
-        const endDay = new Date(y, dashboardMonth, 0).getDate();
+        const m = String(crmSalesPeriod.month).padStart(2, '0');
+        const endDay = new Date(y, crmSalesPeriod.month, 0).getDate();
         return { start: `${y}-${m}-01`, end: `${y}-${m}-${String(endDay).padStart(2, '0')}` };
-    }, [dashboardViewMode, dashboardYear, dashboardMonth, dashboardQuarter, quarterMonths]);
+    }, [crmSalesPeriod]);
 
     const requestOperationalDate = (req: any) =>
         toYmd(req?.checkIn || req?.arrivalDate || req?.eventStart || req?.requestDate || req?.createdAt || req?.updatedAt);
@@ -437,54 +454,54 @@ export default function CRM({
     }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll]);
 
     const monthlyTarget = useMemo(() => {
-        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === dashboardYear);
+        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
-        if (dashboardViewMode === 'quarter' && dashboardQuarter) {
-            const quarterSet = new Set(quarterMonths[dashboardQuarter]);
+        if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
+            const quarterSet = new Set(CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter]);
             return months.reduce((sum: number, m: any) => {
                 const mn = monthNameToNumber(m?.month);
                 if (!quarterSet.has(mn)) return sum;
                 return sum + (Number(m?.salesCalls || 0) || 0);
             }, 0);
         }
-        const monthRow = months.find((m: any) => monthNameToNumber(m?.month) === dashboardMonth);
+        const monthRow = months.find((m: any) => monthNameToNumber(m?.month) === crmSalesPeriod.month);
         return Number(monthRow?.salesCalls || 0) || 0;
-    }, [propertyFinancialKpis, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]);
+    }, [propertyFinancialKpis, crmSalesPeriod]);
 
     const ytdTarget = useMemo(() => {
-        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === dashboardYear);
+        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
         let sum = 0;
-        for (let m = 1; m <= dashboardMonth; m += 1) {
+        for (let m = 1; m <= crmSalesPeriod.month; m += 1) {
             const monthRow = months.find((x: any) => monthNameToNumber(x?.month) === m);
             sum += Number(monthRow?.salesCalls || 0) || 0;
         }
         return sum;
-    }, [propertyFinancialKpis, dashboardYear, dashboardMonth]);
+    }, [propertyFinancialKpis, crmSalesPeriod]);
 
     const monthlyActual = useMemo(
         () =>
             allCreatorScopedLeads.filter((lead: any) => {
                 const d = toYmd(lead?.lastContact || lead?.date);
-                if (!d || toYearNum(d) !== dashboardYear) return false;
+                if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
                 const mm = toMonthNum(d);
-                if (dashboardViewMode === 'quarter' && dashboardQuarter) {
-                    return quarterMonths[dashboardQuarter].includes(mm);
+                if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
+                    return CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter].includes(mm);
                 }
-                return mm === dashboardMonth;
+                return mm === crmSalesPeriod.month;
             }).length,
-        [allCreatorScopedLeads, dashboardYear, dashboardMonth, dashboardViewMode, dashboardQuarter, quarterMonths]
+        [allCreatorScopedLeads, crmSalesPeriod]
     );
     const ytdActual = useMemo(
         () =>
             allCreatorScopedLeads.filter((lead: any) => {
                 const d = toYmd(lead?.lastContact || lead?.date);
-                if (!d || toYearNum(d) !== dashboardYear) return false;
-                return toMonthNum(d) <= dashboardMonth;
+                if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
+                return toMonthNum(d) <= crmSalesPeriod.month;
             }).length,
-        [allCreatorScopedLeads, dashboardYear, dashboardMonth]
+        [allCreatorScopedLeads, crmSalesPeriod]
     );
     const [expandedDashboardAccounts, setExpandedDashboardAccounts] = useState<string[]>([]);
     const dashboardAccountRows = useMemo(() => {
@@ -573,8 +590,8 @@ export default function CRM({
         return canvas.toDataURL('image/png');
     };
 
-    const exportDashboardExcel = async () => {
-        const title = `Sales Funnel Dashboard (${dashboardViewMode === 'month' ? `${monthNamesShort[dashboardMonth - 1]} ${dashboardYear}` : dashboardViewMode === 'quarter' && dashboardQuarter ? `${dashboardQuarter} ${dashboardYear}` : dashboardYear})`;
+    const exportDashboardExcel = useCallback(async () => {
+        const title = `Sales Funnel Dashboard (${crmSalesPeriod.mode === 'month' ? `${monthNamesShort[crmSalesPeriod.month - 1]} ${crmSalesPeriod.year}` : crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter ? `${crmSalesPeriod.quarter} ${crmSalesPeriod.year}` : crmSalesPeriod.year})`;
         const imageDataUrl = await captureDashboardSnapshot();
         if (!imageDataUrl) return;
         const imageBase64 = imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl;
@@ -601,10 +618,14 @@ export default function CRM({
             `--${boundary}--`,
             '',
         ].join('\r\n');
-        downloadFile(`sales_funnel_snapshot_${dashboardYear}_${String(dashboardMonth).padStart(2, '0')}.xls`, mhtml, 'application/vnd.ms-excel');
-    };
+        downloadFile(
+            `sales_funnel_snapshot_${crmSalesPeriod.year}_${String(crmSalesPeriod.month).padStart(2, '0')}.xls`,
+            mhtml,
+            'application/vnd.ms-excel'
+        );
+    }, [crmSalesPeriod, monthNamesShort, colors.bg]);
 
-    const exportDashboardPdf = async () => {
+    const exportDashboardPdf = useCallback(async () => {
         const imageDataUrl = await captureDashboardSnapshot();
         if (!imageDataUrl) return;
         const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -624,8 +645,14 @@ export default function CRM({
         const x = (pageW - drawW) / 2;
         const y = (pageH - drawH) / 2;
         pdf.addImage(imageDataUrl, 'PNG', x, y, drawW, drawH);
-        pdf.save(`sales_funnel_snapshot_${dashboardYear}_${String(dashboardMonth).padStart(2, '0')}.pdf`);
-    };
+        pdf.save(`sales_funnel_snapshot_${crmSalesPeriod.year}_${String(crmSalesPeriod.month).padStart(2, '0')}.pdf`);
+    }, [crmSalesPeriod, colors.bg]);
+
+    useEffect(() => {
+        if (!openAddSalesCallNonce) return;
+        if (crmReadOnly) return;
+        setShowAddCallModal(true);
+    }, [openAddSalesCallNonce, crmReadOnly]);
     const CircularIndicator = ({
         label,
         value,
@@ -1383,119 +1410,28 @@ export default function CRM({
     return (
         <>
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
-            {/* Header */}
-            <div className="shrink-0 p-4 pt-3 pb-4 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                <div className="flex justify-between items-center mb-3">
-                    <div>
-                        <h1 className="text-xl font-bold" style={{ color: colors.textMain }}>Summary</h1>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                        {(crmFilterUsers || []).length > 0 && (
-                            <select
-                                value={createdByUserFilterId}
-                                onChange={(e) => setCreatedByUserFilterId(e.target.value)}
-                                className="text-sm font-bold px-3 py-2 rounded-lg border outline-none min-w-[11rem] max-w-[16rem] truncate scale-90"
-                                style={{
-                                    backgroundColor: colors.bg,
-                                    borderColor: colors.border,
-                                    color: colors.textMain,
-                                }}
-                                aria-label="Filter sales calls by creator"
-                                title="Show only sales calls created by this user"
-                            >
-                                <option value="">All users</option>
-                                {(crmFilterUsers || []).map((u) => (
-                                    <option key={u.id} value={u.id}>
-                                        {u.name}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                        {currentView === 'dashboard' && (
-                            <>
-                                <button
-                                    type="button"
-                                    className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
-                                    style={{ borderColor: colors.border, color: colors.textMain }}
-                                    onClick={exportDashboardExcel}
-                                >
-                                    Export Excel
-                                </button>
-                                <button
-                                    type="button"
-                                    className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
-                                    style={{ borderColor: colors.border, color: colors.textMain }}
-                                    onClick={exportDashboardPdf}
-                                >
-                                    Export PDF
-                                </button>
-                            </>
-                        )}
-                        {!crmReadOnly && (
-                            <button
-                                onClick={() => setShowAddCallModal(true)}
-                                className="px-4 py-2 rounded font-bold flex items-center gap-2 shadow-lg scale-90"
-                                style={{ backgroundColor: colors.primary, color: '#000' }}
-                            >
-                                <Plus size={18} /> Add Sales Call
-                            </button>
-                        )}
-                    </div>
-                </div>
-
-                {/* Stats Row */}
-                {currentView === 'dashboard' ? (
-                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex items-center gap-1 p-1 rounded-lg border" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                                <button type="button" onClick={() => { setDashboardViewMode('month'); setDashboardQuarter(''); }} className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${dashboardViewMode === 'month' ? 'bg-white/10' : 'hover:bg-white/5'}`} style={{ color: dashboardViewMode === 'month' ? colors.primary : colors.textMuted }}>Month View</button>
-                                <button type="button" onClick={() => { setDashboardViewMode('year'); setDashboardQuarter(''); }} className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${dashboardViewMode === 'year' ? 'bg-white/10' : 'hover:bg-white/5'}`} style={{ color: dashboardViewMode === 'year' ? colors.primary : colors.textMuted }}>Year View</button>
-                            </div>
-                            <select value={dashboardMonth} onChange={(e) => setDashboardMonth(Number(e.target.value) || 1)} className="text-xs font-bold px-2 py-1.5 rounded border outline-none" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
-                                {monthNamesShort.map((m, idx) => <option key={m} value={idx + 1}>{m}</option>)}
-                            </select>
-                            <select value={dashboardYear} onChange={(e) => setDashboardYear(Number(e.target.value) || currentYear)} className="text-xs font-bold px-2 py-1.5 rounded border outline-none" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
-                                {Array.from({ length: 8 }, (_, i) => currentYear - 3 + i).map((y) => <option key={y} value={y}>{y}</option>)}
-                            </select>
-                            {Object.entries(quarterMonths).map(([label, months]) => (
-                                <button
-                                    key={label}
-                                    type="button"
-                                    onClick={() => {
-                                        setDashboardViewMode('quarter');
-                                        setDashboardQuarter(label as 'Q1' | 'Q2' | 'Q3' | 'Q4');
-                                        setDashboardMonth(months[2]);
-                                    }}
-                                    className={`text-[10px] px-2 py-1 rounded border font-bold uppercase tracking-wide hover:bg-white/5 ${dashboardViewMode === 'quarter' && dashboardQuarter === label ? 'bg-white/10' : ''}`}
-                                    style={{ borderColor: colors.border, color: dashboardViewMode === 'quarter' && dashboardQuarter === label ? colors.primary : colors.textMuted }}
-                                    title={`Filter to ${label} of selected year`}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-4 gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+            {currentView !== 'dashboard' && (
+                <div className="shrink-0 px-4 py-3 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Total Calls</p>
                             <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{totalLeads}</p>
                         </div>
-                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>High Potential Client</p>
                             <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{highPotentialCount}</p>
                         </div>
-                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Follow up Required</p>
                             <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{followUpRequiredCount}</p>
                         </div>
-                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.05] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                        <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>
                             <p className="text-2xl font-bold" style={{ color: colors.green }}>{(((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
                         </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
 
             {/* Pipeline or List Content */}
             <div ref={currentView === 'dashboard' ? dashboardSnapshotRef : undefined} className="flex-1 overflow-hidden flex flex-col p-4 pt-2">
@@ -1663,6 +1599,24 @@ export default function CRM({
                                     </div>
                                 );
                             })}
+                        </div>
+                        <div className="flex justify-end gap-2 pt-1">
+                            <button
+                                type="button"
+                                className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                onClick={exportDashboardExcel}
+                            >
+                                Export Excel
+                            </button>
+                            <button
+                                type="button"
+                                className="px-3 py-2 rounded border text-[10px] font-bold uppercase tracking-wide"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                onClick={exportDashboardPdf}
+                            >
+                                Export PDF
+                            </button>
                         </div>
                     </div>
                 ) : currentView === 'list' ? (

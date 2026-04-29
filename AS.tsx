@@ -79,7 +79,7 @@ import {
 } from 'recharts';
 import Login from './Login';
 import LandingPage from './LandingPage';
-import CRM from './CRM';
+import CRM, { CRM_QUARTER_MONTH_BLOCKS, type CrmSalesPeriod } from './CRM';
 import Contracts from './Contracts';
 import Reports from './Reports';
 import SettingsPage from './Settings';
@@ -3880,10 +3880,44 @@ const AlertsBell = memo(function AlertsBell({
     );
 });
 
+const APP_SHELL_VIEW_IDS = new Set<string>([
+    'dashboard',
+    'calendar',
+    'events',
+    'requests',
+    'crm',
+    'contracts',
+    'accounts',
+    'promotions',
+    'reports',
+    'todo',
+    'settings',
+]);
+
+function readInitialShellView(): string {
+    try {
+        const raw = localStorage.getItem('as_currentView');
+        if (raw && APP_SHELL_VIEW_IDS.has(raw)) return raw;
+        if (raw) localStorage.removeItem('as_currentView');
+    } catch {
+        /* ignore */
+    }
+    return 'dashboard';
+}
+
 export default function AdvancedSalesDashboard() {
-    const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('as_themeId') || 'light');
+    const [currentThemeId, setCurrentThemeId] = useState(() => {
+        try {
+            const raw = localStorage.getItem('as_themeId');
+            if (raw && (THEMES as any)[raw]) return raw;
+            if (raw) localStorage.removeItem('as_themeId');
+        } catch {
+            /* ignore */
+        }
+        return 'light';
+    });
     const [isSidebarPinned, setIsSidebarPinned] = useState(false);
-    const [currentView, setCurrentView] = useState(() => localStorage.getItem('as_currentView') || 'dashboard');
+    const [currentView, setCurrentView] = useState(() => readInitialShellView());
 
     // Authentication State
     const [currentUser, setCurrentUser] = useState<any>(() => {
@@ -4062,11 +4096,17 @@ export default function AdvancedSalesDashboard() {
     // Date Picker State
     const [showDatePicker, setShowDatePicker] = useState(false);
     const [customDates, setCustomDates] = useState(() => getCurrentYearRange());
-    const [crmVisibleMonth, setCrmVisibleMonth] = useState(() => {
+    const [crmSalesPeriod, setCrmSalesPeriod] = useState<CrmSalesPeriod>(() => {
         const d = new Date();
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        return {
+            mode: 'month',
+            year: d.getFullYear(),
+            month: d.getMonth() + 1,
+            quarter: null,
+        };
     });
-    const [showCrmMonthPicker, setShowCrmMonthPicker] = useState(false);
+    const [crmCreatedByFilterId, setCrmCreatedByFilterId] = useState('');
+    const [crmAddCallNonce, setCrmAddCallNonce] = useState(0);
 
     /** Accounts: which account profile is open (non-null → show performance picker in shell header). */
     const [accountsProfileLeadKey, setAccountsProfileLeadKey] = useState<string | null>(null);
@@ -5488,7 +5528,6 @@ export default function AdvancedSalesDashboard() {
     const calendarPickerRef = useRef<HTMLDivElement>(null);
     const dashboardPickerRef = useRef<HTMLDivElement>(null);
     const accountShellPerfPickerRef = useRef<HTMLDivElement>(null);
-    const crmMonthPickerRef = useRef<HTMLDivElement>(null);
     const userDropdownRef = useRef<HTMLDivElement>(null);
     /** Mobile header avatar (must be included in click-outside for profile menu). */
     const userProfileMobileRef = useRef<HTMLDivElement>(null);
@@ -5509,9 +5548,6 @@ export default function AdvancedSalesDashboard() {
             }
             if (accountShellPerfPickerRef.current && !accountShellPerfPickerRef.current.contains(event.target as Node)) {
                 setShowAccountShellPerfPicker(false);
-            }
-            if (crmMonthPickerRef.current && !crmMonthPickerRef.current.contains(event.target as Node)) {
-                setShowCrmMonthPicker(false);
             }
             const profileTarget = event.target as Node;
             const inDesktopProfile = userDropdownRef.current?.contains(profileTarget);
@@ -5540,7 +5576,6 @@ export default function AdvancedSalesDashboard() {
         setShowCalendarDatePicker(false);
         setShowDatePicker(false);
         setShowAccountShellPerfPicker(false);
-        setShowCrmMonthPicker(false);
         setCalendarDetailModal(null);
         setAlertsPanelOpen(false);
     }, [currentView, eventsSubView, requestsSubView]);
@@ -5908,6 +5943,22 @@ export default function AdvancedSalesDashboard() {
                         </div>
                         {/* Mobile Only Tools */}
                         <div className="flex md:hidden items-center gap-3">
+                            {currentView === 'crm' && canMutateOperational(currentUser) && (
+                                <button
+                                    type="button"
+                                    onClick={() => setCrmAddCallNonce((n) => n + 1)}
+                                    className="p-1.5 rounded-lg border font-bold shrink-0"
+                                    style={{
+                                        borderColor: colors.border,
+                                        backgroundColor: colors.primary + '25',
+                                        color: colors.primary,
+                                    }}
+                                    title="Add Sales Call"
+                                    aria-label="Add Sales Call"
+                                >
+                                    <Plus size={18} strokeWidth={2.5} />
+                                </button>
+                            )}
                             <AlertsBell
                                 colors={colors}
                                 bellSize={20}
@@ -5951,7 +6002,13 @@ export default function AdvancedSalesDashboard() {
                     </div>
 
                     {/* Center: Context-Aware Navigation */}
-                    <div className="w-full md:w-auto md:absolute md:left-1/2 md:top-1/2 md:transform md:-translate-x-1/2 md:-translate-y-1/2 flex items-center justify-center gap-3">
+                    <div
+                        className={`w-full md:w-auto flex items-center justify-center gap-3 ${
+                            currentView === 'crm'
+                                ? 'md:relative'
+                                : 'md:absolute md:left-1/2 md:top-1/2 md:transform md:-translate-x-1/2 md:-translate-y-1/2'
+                        }`}
+                    >
 
                         {currentView === 'calendar' ? (
                             /* CALENDAR HEADER CONTROLS */
@@ -6381,70 +6438,156 @@ export default function AdvancedSalesDashboard() {
                                 </div>
                             ) : null
                         ) : currentView === 'crm' ? (
-                            /* CRM HEADER CONTROLS */
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center justify-center gap-2 w-full overflow-x-auto whitespace-nowrap px-1">
                                 <div
-                                    className="relative flex items-center gap-2 px-2 py-1 rounded-lg border transition-colors duration-300"
+                                    className="flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300 shrink-0"
                                     style={{ backgroundColor: colors.card, borderColor: colors.border }}
-                                    ref={crmMonthPickerRef}
                                 >
                                     <button
                                         type="button"
-                                        onClick={() => setShowCrmMonthPicker((v) => !v)}
-                                        className="p-1 rounded hover:bg-white/10 transition-colors"
-                                        title="Filter sales calls by month"
+                                        onClick={() =>
+                                            setCrmSalesPeriod((p) => ({
+                                                ...p,
+                                                mode: 'month',
+                                                quarter: null,
+                                            }))
+                                        }
+                                        className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${crmSalesPeriod.mode === 'month' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        style={{
+                                            color: crmSalesPeriod.mode === 'month' ? colors.primary : colors.textMuted,
+                                        }}
                                     >
-                                        <CalendarDays size={14} style={{ color: showCrmMonthPicker ? colors.primary : colors.textMuted }} className="shrink-0" />
+                                        Month View
                                     </button>
-                                    <span className="text-[10px] font-bold uppercase tracking-wide whitespace-nowrap" style={{ color: colors.textMuted }}>
-                                        {crmVisibleMonth}
-                                    </span>
-                                    {showCrmMonthPicker && (
-                                        <div
-                                            className="absolute top-full left-0 mt-2 p-3 rounded-xl border shadow-2xl z-50 flex flex-col gap-2 min-w-[220px]"
-                                            style={{ backgroundColor: colors.card, borderColor: colors.border }}
-                                        >
-                                            <label className="text-[9px] uppercase tracking-wider" style={{ color: colors.textMuted }}>Show month (last contact)</label>
-                                            <input
-                                                type="month"
-                                                value={crmVisibleMonth}
-                                                onChange={(e) => setCrmVisibleMonth(e.target.value)}
-                                                className="w-full text-xs p-2 rounded bg-black/20 border outline-none"
-                                                style={{ color: colors.textMain, borderColor: colors.border }}
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => setShowCrmMonthPicker(false)}
-                                                className="w-full py-1.5 rounded text-[10px] uppercase font-bold tracking-wide hover:brightness-110 transition-all"
-                                                style={{ backgroundColor: colors.primary, color: '#000' }}
-                                            >
-                                                Done
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                     <button
+                                        type="button"
+                                        onClick={() =>
+                                            setCrmSalesPeriod((p) => ({
+                                                ...p,
+                                                mode: 'year',
+                                                quarter: null,
+                                            }))
+                                        }
+                                        className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${crmSalesPeriod.mode === 'year' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        style={{
+                                            color: crmSalesPeriod.mode === 'year' ? colors.primary : colors.textMuted,
+                                        }}
+                                    >
+                                        Year View
+                                    </button>
+                                </div>
+                                <select
+                                    value={crmSalesPeriod.month}
+                                    onChange={(e) =>
+                                        setCrmSalesPeriod((p) => ({
+                                            ...p,
+                                            month: Number(e.target.value) || 1,
+                                            mode: 'month',
+                                            quarter: null,
+                                        }))
+                                    }
+                                    className="text-[10px] font-bold px-2 py-1.5 rounded border outline-none w-[4.5rem] shrink-0"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    aria-label="Month"
+                                >
+                                    {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map(
+                                        (m, idx) => (
+                                            <option key={m} value={idx + 1}>
+                                                {m}
+                                            </option>
+                                        )
+                                    )}
+                                </select>
+                                <select
+                                    value={crmSalesPeriod.year}
+                                    onChange={(e) =>
+                                        setCrmSalesPeriod((p) => ({
+                                            ...p,
+                                            year: Number(e.target.value) || new Date().getFullYear(),
+                                        }))
+                                    }
+                                    className="text-[10px] font-bold px-2 py-1.5 rounded border outline-none w-[4.8rem] shrink-0"
+                                    style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    aria-label="Year"
+                                >
+                                    {Array.from({ length: 8 }, (_, i) => new Date().getFullYear() - 3 + i).map((y) => (
+                                        <option key={y} value={y}>
+                                            {y}
+                                        </option>
+                                    ))}
+                                </select>
+                                {(['Q1', 'Q2', 'Q3', 'Q4'] as const).map((qk) => {
+                                    const months = CRM_QUARTER_MONTH_BLOCKS[qk];
+                                    return (
+                                        <button
+                                            key={qk}
+                                            type="button"
+                                            onClick={() =>
+                                                setCrmSalesPeriod((prev) => ({
+                                                    ...prev,
+                                                    mode: 'quarter',
+                                                    quarter: qk,
+                                                    month: months[2],
+                                                    year: prev.year,
+                                                }))
+                                            }
+                                            className={`text-[10px] px-2 py-1 rounded border font-bold uppercase tracking-wide hover:bg-white/5 shrink-0 ${
+                                                crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter === qk
+                                                    ? 'bg-white/10'
+                                                    : ''
+                                            }`}
+                                            style={{
+                                                borderColor: colors.border,
+                                                color:
+                                                    crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter === qk
+                                                        ? colors.primary
+                                                        : colors.textMuted,
+                                            }}
+                                            title={`Filter to ${qk} of selected year`}
+                                        >
+                                            {qk}
+                                        </button>
+                                    );
+                                })}
+                                <div className="w-[1px] h-5 bg-white/10 mx-1 hidden sm:block" aria-hidden />
+                                <div
+                                    className="flex items-center gap-1 p-1 rounded-lg border transition-colors duration-300 shrink-0"
+                                    style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                >
+                                    <button
+                                        type="button"
                                         onClick={() => setCrmSubView('pipeline')}
                                         className={`p-1.5 rounded transition-all ${crmSubView === 'pipeline' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                         title="Pipeline View"
                                     >
-                                        <Grid size={14} style={{ color: crmSubView === 'pipeline' ? colors.primary : colors.textMuted }} />
+                                        <Grid
+                                            size={14}
+                                            style={{ color: crmSubView === 'pipeline' ? colors.primary : colors.textMuted }}
+                                        />
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => setCrmSubView('list')}
                                         className={`p-1.5 rounded transition-all ${crmSubView === 'list' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                         title="Table List View"
                                     >
-                                        <List size={14} style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }} />
+                                        <List
+                                            size={14}
+                                            style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }}
+                                        />
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => setCrmSubView('dashboard')}
                                         className={`p-1.5 rounded transition-all ${crmSubView === 'dashboard' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                         title="Sales Funnel Dashboard"
                                     >
-                                        <BarChart3 size={14} style={{ color: crmSubView === 'dashboard' ? colors.primary : colors.textMuted }} />
+                                        <BarChart3
+                                            size={14}
+                                            style={{
+                                                color: crmSubView === 'dashboard' ? colors.primary : colors.textMuted,
+                                            }}
+                                        />
                                     </button>
                                 </div>
                             </div>
@@ -6530,6 +6673,42 @@ export default function AdvancedSalesDashboard() {
 
                     {/* Right: User & Tools (Desktop Only) */}
                     <div className="hidden md:flex items-center gap-4">
+                        {currentView === 'crm' && (
+                            <>
+                                {(taskAssignableUsers || []).length > 0 && (
+                                    <select
+                                        value={crmCreatedByFilterId}
+                                        onChange={(e) => setCrmCreatedByFilterId(e.target.value)}
+                                        className="text-[10px] font-bold px-2 py-1.5 rounded-lg border outline-none min-w-[9rem] max-w-[13rem] truncate"
+                                        style={{
+                                            backgroundColor: colors.card,
+                                            borderColor: colors.border,
+                                            color: colors.textMain,
+                                        }}
+                                        aria-label="Filter sales calls by creator"
+                                        title="Show only sales calls created by this user"
+                                    >
+                                        <option value="">All users</option>
+                                        {(taskAssignableUsers || []).map((u: { id: string; name: string }) => (
+                                            <option key={u.id} value={u.id}>
+                                                {u.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
+                                {canMutateOperational(currentUser) && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setCrmAddCallNonce((n) => n + 1)}
+                                        className="px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 text-[10px] uppercase tracking-wide shadow-lg"
+                                        style={{ backgroundColor: colors.primary, color: '#000' }}
+                                    >
+                                        <Plus size={14} /> Add Sales Call
+                                    </button>
+                                )}
+                                <div className="w-[1px] h-6" style={{ backgroundColor: colors.border }} aria-hidden />
+                            </>
+                        )}
                         <div className="flex items-center gap-2 mr-2">
                             <button
                                 onClick={cycleTheme}
@@ -6784,7 +6963,10 @@ export default function AdvancedSalesDashboard() {
                             }}
                             onConsumedInitialAction={() => setPendingCrmAction(null)}
                             accountTypeOptions={propertyAccountTypeLabels}
-                            visibleMonth={crmVisibleMonth}
+                            crmSalesPeriod={crmSalesPeriod}
+                            createdByUserFilterId={crmCreatedByFilterId}
+                            onCreatedByUserFilterIdChange={setCrmCreatedByFilterId}
+                            openAddSalesCallNonce={crmAddCallNonce}
                             currency={currentCurrency}
                             crmFilterUsers={taskAssignableUsers}
                             propertyFinancialKpis={propertyFinancialKpis}
