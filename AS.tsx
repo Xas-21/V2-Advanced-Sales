@@ -87,6 +87,7 @@ import RequestsManager from './RequestsManager';
 import AddSalesCallModal from './AddSalesCallModal';
 import AddAccountModal from './AddAccountModal';
 import AccountsPage from './AccountsPage';
+import PromotionsPage from './PromotionsPage';
 import { collectSalesCallFormViolations, FORM_CONFIGURATION_CHANGED_EVENT } from './formConfigurations';
 import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
 import { formatCompactAmount, formatCompactCurrency } from './formatCompactCurrency';
@@ -141,6 +142,11 @@ import {
 import {
     can,
     canAccessReports,
+    canAccessPromotions,
+    canCreatePromotions,
+    canEditPromotions,
+    canDeletePromotions,
+    canLinkRequestPromotions,
     canShowAccountsNavItem,
     getAllowedAppViewsForUser,
     MAIN_NAV_ITEM_PERMISSIONS,
@@ -3583,10 +3589,19 @@ const DistributionChart = ({ distTab, segmentData, accountTypeData, colors }: an
     return (
         <ResponsiveContainer width="100%" height="100%">
             {distTab === 'Segments' ? (
-                <BarChart layout="vertical" data={segmentData} margin={{ top: 5, right: 30, left: 56, bottom: 5 }}>
+                <BarChart layout="vertical" data={segmentData} margin={{ top: 5, right: 30, left: 72, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={colors.border} horizontal={false} />
                     <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
-                    <YAxis dataKey="name" type="category" width={80} axisLine={false} tickLine={false} tick={{ fill: colors.textMuted, fontSize: 9 }} />
+                    <YAxis
+                        dataKey="name"
+                        type="category"
+                        width={118}
+                        tickMargin={10}
+                        interval={0}
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: colors.textMuted, fontSize: 9 }}
+                    />
                     <Tooltip {...rechartsTooltipThemeProps(colors)} cursor={{ fill: colors.border, fillOpacity: 0.1 }} />
                     <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={12}>
                         {(segmentData || []).map((entry: any, index: number) => (
@@ -4351,6 +4366,7 @@ export default function AdvancedSalesDashboard() {
     }, [tasks, activeProperty?.id]);
 
     const [sharedRequests, setSharedRequests] = useState<any[]>([]);
+    const [promotions, setPromotions] = useState<any[]>([]);
     const [propertyFinancialKpis, setPropertyFinancialKpis] = useState<any[]>([]);
     const [pendingOpenRequestId, setPendingOpenRequestId] = useState<string | null>(null);
     /** Headless RequestsManager on Events page for in-place OPTS (see eventsOptsBootstrapId). */
@@ -4422,6 +4438,27 @@ export default function AdvancedSalesDashboard() {
 
     useEffect(() => {
         refreshSharedRequests();
+    }, [activeProperty?.id]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const pid = String(activeProperty?.id || '').trim();
+        if (!pid) {
+            setPromotions([]);
+            return;
+        }
+        fetch(apiUrl(`/api/promotions?propertyId=${encodeURIComponent(pid)}`))
+            .then((res) => (res.ok ? res.json() : []))
+            .then((data) => {
+                if (cancelled) return;
+                setPromotions(Array.isArray(data) ? data : []);
+            })
+            .catch(() => {
+                if (!cancelled) setPromotions([]);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [activeProperty?.id]);
 
     useEffect(() => {
@@ -5640,6 +5677,7 @@ export default function AdvancedSalesDashboard() {
             case 'crm': return 'Sales Calls';
             case 'contracts': return 'Contracts';
             case 'accounts': return 'Accounts';
+            case 'promotions': return 'Promotions';
             case 'reports': return 'Reports';
             case 'todo': return 'To-Do Management';
             case 'settings': return 'Settings';
@@ -5707,10 +5745,12 @@ export default function AdvancedSalesDashboard() {
                             { icon: BedDouble, label: 'Requests Management', id: 'requests' },
                             { icon: Users, label: 'Sales Calls Management', id: 'crm' },
                             { icon: FileText, label: 'Contracts', id: 'contracts' },
-                            { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' }
+                            { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' },
+                            { icon: Target, label: 'Promotions', id: 'promotions' }
                         ]
                             .filter((item) => {
                                 if (item.id === 'accounts') return canShowAccountsNavItem(currentUser);
+                                if (item.id === 'promotions') return canAccessPromotions(currentUser);
                                 const perm = MAIN_NAV_ITEM_PERMISSIONS[item.id];
                                 return perm ? can(currentUser, perm) : false;
                             })
@@ -6632,6 +6672,20 @@ export default function AdvancedSalesDashboard() {
                             setSharedRequests={setSharedRequests}
                             assignableUsersForAccounts={taskAssignableUsers}
                         />
+                    ) : currentView === 'promotions' ? (
+                        <PromotionsPage
+                            theme={theme}
+                            activeProperty={activeProperty}
+                            promotions={promotions}
+                            setPromotions={setPromotions}
+                            accounts={accounts}
+                            sharedRequests={sharedRequests}
+                            segmentOptions={propertySegmentLabels}
+                            currency={currentCurrency}
+                            canCreate={canCreatePromotions(currentUser)}
+                            canEdit={canEditPromotions(currentUser)}
+                            canDelete={canDeletePromotions(currentUser)}
+                        />
                     ) : currentView === 'crm' ? (
                         <CRM
                             theme={theme}
@@ -6708,7 +6762,7 @@ export default function AdvancedSalesDashboard() {
                                 setRequestsSubView(p.subView);
                             }
                             setRequestSearchParams(p);
-                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} />
+                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} promotionOptions={promotions} canLinkRequestPromotions={canLinkRequestPromotions(currentUser)} />
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">
@@ -7426,6 +7480,8 @@ export default function AdvancedSalesDashboard() {
                             readOnlyOperational={!canMutateOperational(currentUser)}
                             currentUser={currentUser}
                             currency={currentCurrency}
+                            promotionOptions={promotions}
+                            canLinkRequestPromotions={canLinkRequestPromotions(currentUser)}
                         />
                     </div>
                 </div>
@@ -7466,6 +7522,8 @@ export default function AdvancedSalesDashboard() {
                     readOnlyOperational={!canMutateOperational(currentUser)}
                     currentUser={currentUser}
                     currency={currentCurrency}
+                    promotionOptions={promotions}
+                    canLinkRequestPromotions={canLinkRequestPromotions(currentUser)}
                 />
             )}
 

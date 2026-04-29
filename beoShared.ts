@@ -1,4 +1,5 @@
 import { contactDisplayName } from './accountLeadMapping';
+import { DEFAULT_EVENT_PACKAGES, getAgendaTimingSlotsForPackageName } from './propertyMealsPackages';
 
 export function sumPaymentAmounts(payments: any[] | undefined): number {
     return (payments || []).reduce((acc, p) => acc + Number(p?.amount ?? 0), 0);
@@ -521,15 +522,30 @@ export function printBeoDocument(req: any, fin: any, notes: string, accounts: an
 
     const specialRequestsCombined = formatBeoSpecialRequestsCombined(req);
 
+    const packageTimingSummary = (row: any) => {
+        const slots = getAgendaTimingSlotsForPackageName(String(row?.package || ''), DEFAULT_EVENT_PACKAGES);
+        if (!slots.length) return '';
+        const getVal = (field: string) => {
+            if (field === 'coffee1') return String(row?.coffee1 ?? row?.coffeeTime ?? '').trim();
+            if (field === 'coffee2') return String(row?.coffee2 ?? '').trim();
+            if (field === 'lunchTime') return String(row?.lunchTime ?? row?.lunch ?? '').trim();
+            if (field === 'dinnerTime') return String(row?.dinnerTime ?? row?.dinner ?? '').trim();
+            return '';
+        };
+        return slots
+            .map((slot) => {
+                const v = getVal(slot.field);
+                return v ? `${slot.label}: ${v}` : '';
+            })
+            .filter(Boolean)
+            .join(' | ');
+    };
     const agendaRows = (req.agenda || []).length === 0
-        ? '<tr><td colspan="13" class="sub">No agenda rows</td></tr>'
+        ? '<tr><td colspan="11" class="sub">No agenda rows</td></tr>'
         : (req.agenda || []).map((row: any) => {
             const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
-            const coffee = formatAgendaRowCoffeeBreak(row);
-            const lunch = formatAgendaRowLunch(row);
-            const dinner = formatAgendaRowDinner(row);
             const venueCell = formatAgendaRowVenueDisplay(row) || '—';
-            return `<tr><td>${escapeHtml(row.startDate || '—')}</td><td>${escapeHtml(row.endDate || row.startDate || '—')}</td><td>${escapeHtml([row.startTime, row.endTime].filter(Boolean).join(' – ') || '—')}</td><td>${escapeHtml(coffee || '—')}</td><td>${escapeHtml(lunch || '—')}</td><td>${escapeHtml(dinner || '—')}</td><td>${escapeHtml(venueCell)}</td><td>${escapeHtml(row.shape || '—')}</td><td>${escapeHtml(row.package || '—')}</td><td style="text-align:center">${escapeHtml(String(row.pax ?? '—'))}</td><td style="text-align:right">${Number(row.rate || 0).toLocaleString()}</td><td style="text-align:right">${Number(row.rental || 0).toLocaleString()}</td><td style="text-align:right">${line.toLocaleString()}</td></tr>`;
+            return `<tr><td>${escapeHtml(row.startDate || '—')}</td><td>${escapeHtml(row.endDate || row.startDate || '—')}</td><td>${escapeHtml([row.startTime, row.endTime].filter(Boolean).join(' – ') || '—')}</td><td>${escapeHtml(packageTimingSummary(row) || '—')}</td><td>${escapeHtml(venueCell)}</td><td>${escapeHtml(row.shape || '—')}</td><td>${escapeHtml(row.package || '—')}</td><td style="text-align:center">${escapeHtml(String(row.pax ?? '—'))}</td><td style="text-align:right">${Number(row.rate || 0).toLocaleString()}</td><td style="text-align:right">${Number(row.rental || 0).toLocaleString()}</td><td style="text-align:right">${line.toLocaleString()}</td></tr>`;
         }).join('');
 
     const remainingBlock = remaining > 0
@@ -567,7 +583,7 @@ ${activeProperty?.logoUrl ? `<img src="${escapeHtml(activeProperty.logoUrl)}" cl
 <p><strong>Total attendees (pax × days per row):</strong> ${fin.totalEventAttendeeDays ?? fin.totalEventPax} &nbsp;|&nbsp; <strong>Headcount (agenda pax):</strong> ${fin.totalEventPax} &nbsp;|&nbsp; <strong>Event days:</strong> ${fin.totalEventDays || fallbackDays}</p>
 <p><strong>DDR (per person, excl. tax basis):</strong> ${fin.ddr.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR &nbsp;|&nbsp; <strong>Event cost per day (incl. tax):</strong> ${eventCostPerDay.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
 <h2>Agenda</h2>
-<table><thead><tr><th>Start</th><th>End</th><th>Session time</th><th>Coffee break</th><th>Lunch</th><th>Dinner</th><th>Venue</th><th>Shape</th><th>Package</th><th>Pax</th><th class="num">Rate</th><th class="num">Rental</th><th class="num">Line</th></tr></thead><tbody>${agendaRows}</tbody></table>
+<table><thead><tr><th>Start</th><th>End</th><th>Session time</th><th>Package timing</th><th>Venue</th><th>Shape</th><th>Package</th><th>Pax</th><th class="num">Rate</th><th class="num">Rental</th><th class="num">Line</th></tr></thead><tbody>${agendaRows}</tbody></table>
 <h2>Pricing</h2>
 <p><strong>Event total (incl. tax):</strong> ${scopeGrand.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAR</p>
 <div class="paybox">

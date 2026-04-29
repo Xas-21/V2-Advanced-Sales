@@ -40,6 +40,11 @@ export const ALL_PERMISSION_IDS = [
     'requests.alerts',
     'crm.deleteCalls',
     'accounts.timelineManual',
+    'promotions.view',
+    'promotions.create',
+    'promotions.edit',
+    'promotions.delete',
+    'promotions.linkRequests',
     'mutate.operational',
     /** Sidebar: show each main app page (Settings / Sign out stay visible for all users). */
     'nav.dashboard',
@@ -50,6 +55,7 @@ export const ALL_PERMISSION_IDS = [
     'nav.crm',
     'nav.contracts',
     'nav.accounts',
+    'nav.promotions',
     'settings.admin',
     'settings.globalStaff',
 ] as const;
@@ -77,6 +83,11 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'requests.alerts': 'Requests: alerts (add, edit, delete & toolbar)',
     'crm.deleteCalls': 'Delete sales calls',
     'accounts.timelineManual': 'Edit / delete manual timeline activities',
+    'promotions.view': 'Promotions: view page and performance list',
+    'promotions.create': 'Promotions: create promotions',
+    'promotions.edit': 'Promotions: edit promotions (accounts, segments, dates, terms, notes)',
+    'promotions.delete': 'Promotions: delete promotions',
+    'promotions.linkRequests': 'Requests: select/link a promotion on create/edit request form',
     'mutate.operational': 'Create & edit operational data (not view-only)',
     'nav.dashboard': 'Main menu: Dashboard',
     'nav.calendar': 'Main menu: Calendar',
@@ -86,6 +97,7 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'nav.crm': 'Main menu: Sales Calls (CRM)',
     'nav.contracts': 'Main menu: Contracts',
     'nav.accounts': 'Main menu: Accounts',
+    'nav.promotions': 'Main menu: Promotions',
     'settings.admin': 'Settings: Properties, Configurations, property tools',
     'settings.globalStaff': 'Global Staff Management (all users)',
 };
@@ -109,6 +121,7 @@ const DEFAULT_NAV_PERMISSIONS: readonly PermissionId[] = [
     'nav.crm',
     'nav.contracts',
     'nav.accounts',
+    'nav.promotions',
 ] as const;
 
 export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
@@ -129,6 +142,17 @@ export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
         id: 'accounts',
         title: 'Accounts',
         permissions: ['accounts.viewOnly', 'accounts.mergeAndAssignOwner', 'accounts.delete', 'accounts.timelineManual'],
+    },
+    {
+        id: 'promotions',
+        title: 'Promotions',
+        permissions: [
+            'promotions.view',
+            'promotions.create',
+            'promotions.edit',
+            'promotions.delete',
+            'promotions.linkRequests',
+        ],
     },
     {
         id: 'requests',
@@ -196,6 +220,11 @@ export const REPORTS_DATA_SOURCE_PERMISSIONS: PermissionId[] = [
 const HEAD_OF_SALES_LIKE_DEFAULTS = permSet(
     'mutate.operational',
     ...DEFAULT_NAV_PERMISSIONS,
+    'promotions.view',
+    'promotions.create',
+    'promotions.edit',
+    'promotions.delete',
+    'promotions.linkRequests',
     'reports.access',
     'reports.sourceRows',
     ...REPORTS_DATA_SOURCE_PERMISSIONS,
@@ -214,15 +243,16 @@ export const ROLE_DEFAULTS: Record<UserRoleId, Set<PermissionId>> = {
     Admin: permSet(...ALL_PERMISSION_IDS),
     'General Manager': permSet(
         ...DEFAULT_NAV_PERMISSIONS,
+        'promotions.view',
         'reports.access',
         'reports.sourceRows',
         ...REPORTS_DATA_SOURCE_PERMISSIONS
     ),
     'Head of Sales': new Set(HEAD_OF_SALES_LIKE_DEFAULTS),
     'Director of Revenue': new Set(HEAD_OF_SALES_LIKE_DEFAULTS),
-    'Sales Manager': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
-    'Sales Executive': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
-    'Sales Coordinator': permSet('mutate.operational', 'requests.alerts', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Manager': permSet('mutate.operational', 'requests.alerts', 'promotions.view', 'promotions.linkRequests', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Executive': permSet('mutate.operational', 'requests.alerts', 'promotions.view', 'promotions.linkRequests', ...DEFAULT_NAV_PERMISSIONS),
+    'Sales Coordinator': permSet('mutate.operational', 'requests.alerts', 'promotions.view', 'promotions.linkRequests', ...DEFAULT_NAV_PERMISSIONS),
     'Reservations Team': permSet(
         'mutate.operational',
         'accounts.viewOnly',
@@ -310,6 +340,7 @@ export const MAIN_NAV_ITEM_PERMISSIONS: Record<string, PermissionId> = {
     requests: 'nav.requests',
     crm: 'nav.crm',
     contracts: 'nav.contracts',
+    promotions: 'nav.promotions',
 };
 
 /** Reservations Team uses Accounts only with view-only grant; other roles use nav.accounts. */
@@ -327,6 +358,7 @@ export function getAllowedAppViewsForUser(user: any): Set<string> {
         if (can(user, perm)) allowed.add(viewId);
     }
     if (canShowAccountsNavItem(user)) allowed.add('accounts');
+    if (canAccessPromotions(user)) allowed.add('promotions');
     if (canAccessReports(user)) allowed.add('reports');
     return allowed;
 }
@@ -339,6 +371,7 @@ const REPORT_ENTITY_TO_PERM: Record<string, PermissionId | undefined> = {
     'Sales Calls': 'reports.dataSalesCalls',
     'Rooms vs LY': 'reports.dataRequests',
     'MICE vs LY': 'reports.dataMice',
+    Promotions: 'reports.dataRequests',
 };
 
 /** True if user has any per–data-source Reports permission (restricts which sources appear). */
@@ -416,6 +449,26 @@ export function canMergeAccountsAndAssignOwner(user: any): boolean {
 
 export function canMutateOperational(user: any): boolean {
     return can(user, 'mutate.operational');
+}
+
+export function canAccessPromotions(user: any): boolean {
+    return can(user, 'nav.promotions') && can(user, 'promotions.view');
+}
+
+export function canCreatePromotions(user: any): boolean {
+    return can(user, 'promotions.create');
+}
+
+export function canEditPromotions(user: any): boolean {
+    return can(user, 'promotions.edit');
+}
+
+export function canDeletePromotions(user: any): boolean {
+    return can(user, 'promotions.delete');
+}
+
+export function canLinkRequestPromotions(user: any): boolean {
+    return can(user, 'promotions.linkRequests');
 }
 
 /** Reservations Team: show Accounts in nav when this is granted (also assignable to any role). */

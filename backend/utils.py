@@ -19,6 +19,7 @@ FINANCIALS_FILE = os.path.join(DATA_DIR, "financials.json")
 REQUESTS_FILE = os.path.join(DATA_DIR, "requests.json")
 CRM_STATE_FILE = os.path.join(DATA_DIR, "crm_state.json")
 ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
+PROMOTIONS_FILE = os.path.join(DATA_DIR, "promotions.json")
 TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
 CONTRACT_TEMPLATES_FILE = os.path.join(DATA_DIR, "contract_templates.json")
 
@@ -742,6 +743,66 @@ def sync_accounts_rows(property_id: str, incoming: list[dict], allow_clear: bool
         "saved": len([x for x in incoming if isinstance(x, dict)]),
         "propertyId": pid,
     }
+
+
+def list_promotions_rows(property_id: str | None = None) -> list[dict]:
+    if storage_mode() == "postgres":
+        return list_collection_rows("promotions", property_id)
+    rows = read_json_file(PROMOTIONS_FILE, default=[])
+    if not isinstance(rows, list):
+        return []
+    if not property_id:
+        return [r for r in rows if isinstance(r, dict)]
+    pid = str(property_id)
+    return [r for r in rows if isinstance(r, dict) and str(r.get("propertyId") or "") == pid]
+
+
+def upsert_promotion_row(data: dict) -> dict:
+    item = {**(data if isinstance(data, dict) else {})}
+    item_id = str(item.get("id") or f"PR{uuid.uuid4().hex[:8]}")
+    item["id"] = item_id
+    item["propertyId"] = str(item.get("propertyId") or "")
+    if storage_mode() == "postgres":
+        return upsert_collection_row("promotions", item, prefix="PR", row_id_with_property=True)
+    rows = read_json_file(PROMOTIONS_FILE, default=[])
+    if not isinstance(rows, list):
+        rows = []
+    out: list[dict] = []
+    replaced = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "") == item_id and str(row.get("propertyId") or "") == item["propertyId"]:
+            out.append(item)
+            replaced = True
+        else:
+            out.append(row)
+    if not replaced:
+        out.insert(0, item)
+    write_json_file(PROMOTIONS_FILE, out)
+    return item
+
+
+def delete_promotion_row(promotion_id: str, property_id: str):
+    pid = str(property_id or "").strip()
+    promo_id = str(promotion_id or "").strip()
+    if not pid or not promo_id:
+        return
+    if storage_mode() == "postgres":
+        delete_property_collection_row("promotions", promo_id, pid)
+        return
+    rows = read_json_file(PROMOTIONS_FILE, default=[])
+    if not isinstance(rows, list):
+        rows = []
+    next_rows = [
+        row for row in rows
+        if not (
+            isinstance(row, dict)
+            and str(row.get("id") or "") == promo_id
+            and str(row.get("propertyId") or "") == pid
+        )
+    ]
+    write_json_file(PROMOTIONS_FILE, next_rows)
 
 
 def list_collection_rows(collection_name: str, property_id: str | None = None) -> list[dict]:

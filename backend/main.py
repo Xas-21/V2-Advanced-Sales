@@ -10,7 +10,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
-from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts, tasks, uploads, contracts, cxl_reasons
+from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts, tasks, uploads, contracts, cxl_reasons, promotions
 from utils import close_database, init_database, storage_mode
 
 app = FastAPI(title="VisaTour ERP Backend", version="1.0.0", redirect_slashes=False)
@@ -39,6 +39,7 @@ app.include_router(tasks.router)
 app.include_router(uploads.router)
 app.include_router(contracts.router)
 app.include_router(cxl_reasons.router)
+app.include_router(promotions.router)
 
 
 @app.on_event("startup")

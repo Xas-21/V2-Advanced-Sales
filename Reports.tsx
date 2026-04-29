@@ -17,6 +17,7 @@ import {
     LineChart,
     Layers,
 } from 'lucide-react';
+import { apiUrl } from './backendApi';
 import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
@@ -64,7 +65,8 @@ type ReportEntity =
     | 'Sales Calls'
     | 'Rooms vs LY'
     | 'MICE vs LY'
-    | 'Full Report';
+    | 'Full Report'
+    | 'Promotions';
 
 function normalizeRequestTypeKey(raw: string = '') {
     const t = String(raw || '').toLowerCase().trim();
@@ -151,6 +153,15 @@ function formatSar(n: number, currency: CurrencyCode): string {
     return formatCurrencyAmount(Number(n) || 0, currency, { maximumFractionDigits: 2 });
 }
 
+function pctGrowth(current: number, previous: number): string {
+    const c = Number(current) || 0;
+    const p = Number(previous) || 0;
+    if (p <= 0) return c > 0 ? '+100.0%' : '0.0%';
+    const pct = ((c - p) / p) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    return `${sign}${pct.toFixed(1)}%`;
+}
+
 function csvEscape(v: any): string {
     const s = String(v ?? '');
     return `"${s.replace(/"/g, '""')}"`;
@@ -192,6 +203,12 @@ export default function Reports({
         /** Rooms / MICE vs LY: show request-segment and/or account-type breakdown rows */
         vsLyByRequestSegment: true,
         vsLyByAccountType: true,
+        promotionsYear: new Date().getFullYear(),
+        promotionsSelectedIds: [] as string[],
+        promotionsFromYear: new Date().getFullYear(),
+        promotionsFromMonth: 1,
+        promotionsToYear: new Date().getFullYear(),
+        promotionsToMonth: 12,
     });
     const [selectedColumns, setSelectedColumns] = useState<string[]>([
         'Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Paid Amount', 'Unpaid Amount', 'Amount',
@@ -201,6 +218,7 @@ export default function Reports({
     const [savedReports] = useState(initialSavedReports);
     /** Vs LY: row id or segmentGroupKey to exclude from preview + export (unchecked in Columns) */
     const [vsLyRowHidden, setVsLyRowHidden] = useState<Set<string>>(() => new Set());
+    const [promotionsData, setPromotionsData] = useState<any[]>([]);
 
     const pid = activeProperty?.id;
 
@@ -244,6 +262,27 @@ export default function Reports({
         });
     }, [crmLeads, accounts, pid]);
 
+    useEffect(() => {
+        let cancelled = false;
+        const propertyId = String(pid || '').trim();
+        if (!propertyId) {
+            setPromotionsData([]);
+            return;
+        }
+        fetch(apiUrl(`/api/promotions?propertyId=${encodeURIComponent(propertyId)}`))
+            .then((res) => (res.ok ? res.json() : []))
+            .then((rows) => {
+                if (cancelled) return;
+                setPromotionsData(Array.isArray(rows) ? rows : []);
+            })
+            .catch(() => {
+                if (!cancelled) setPromotionsData([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [pid]);
+
     const entities = [
         { id: 'Requests' as ReportEntity, icon: BedDouble, label: 'Requests' },
         { id: 'Accounts' as ReportEntity, icon: Briefcase, label: 'Accounts' },
@@ -251,6 +290,7 @@ export default function Reports({
         { id: 'Rooms vs LY' as ReportEntity, icon: LineChart, label: 'Rooms vs LY' },
         { id: 'MICE vs LY' as ReportEntity, icon: BarChart3, label: 'MICE vs LY' },
         { id: 'Full Report' as ReportEntity, icon: Layers, label: 'Full Report' },
+        { id: 'Promotions' as ReportEntity, icon: Layers, label: 'Promotions' },
         { id: 'Tasks' as ReportEntity, icon: Users, label: 'Tasks' },
         { id: 'Sales Calls' as ReportEntity, icon: PhoneCall, label: 'Sales Calls' },
     ];
@@ -261,7 +301,6 @@ export default function Reports({
     useEffect(() => {
         setVsLyRowHidden(new Set());
     }, [selectedEntity, filters.vsReportYear]);
-
     const canUseSelectedSource = canReportsUseDataSource(currentUser, selectedEntity);
     const canPreviewRows = canReportsPreviewSourceRows(currentUser);
 
@@ -332,6 +371,14 @@ export default function Reports({
         'Rooms vs LY': [],
         'MICE vs LY': [],
         'Full Report': [],
+        Promotions: [
+            'Promotion',
+            'Row',
+            'Status Breakdown',
+            'YTD Requests',
+            'YTD Amount',
+            'YTD LM %',
+        ],
     };
 
     useEffect(() => {
@@ -386,6 +433,274 @@ export default function Reports({
     };
 
     const reportPack = useMemo(() => {
+        if (selectedEntity === 'Promotions') {
+            const fromYear = Number(filters.promotionsFromYear) || new Date().getFullYear();
+            const fromMonth = Math.min(12, Math.max(1, Number(filters.promotionsFromMonth) || 1));
+            const toYear = Number(filters.promotionsToYear) || fromYear;
+            const toMonth = Math.min(12, Math.max(1, Number(filters.promotionsToMonth) || 12));
+            const fromCode = fromYear * 100 + fromMonth;
+            const toCode = toYear * 100 + toMonth;
+            const startCode = Math.min(fromCode, toCode);
+            const endCode = Math.max(fromCode, toCode);
+            const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const periods: { key: string; label: string; year: number; month: number }[] = [];
+            for (let y = Math.floor(startCode / 100); y <= Math.floor(endCode / 100); y++) {
+                const mStart = y === Math.floor(startCode / 100) ? startCode % 100 : 1;
+                const mEnd = y === Math.floor(endCode / 100) ? endCode % 100 : 12;
+                for (let m = mStart; m <= mEnd; m++) {
+                    periods.push({ key: `${y}-${String(m).padStart(2, '0')}`, label: `${monthName[m - 1]} ${y}`, year: y, month: m });
+                }
+            }
+            const first = periods[0] || { year: fromYear, month: fromMonth };
+            const last = periods[periods.length - 1] || { year: toYear, month: toMonth };
+            const yearStart = `${first.year}-${String(first.month).padStart(2, '0')}-01`;
+            const endDay = new Date(last.year, last.month, 0).getDate();
+            const yearEnd = `${last.year}-${String(last.month).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+            const selectedIds = Array.isArray(filters.promotionsSelectedIds) ? filters.promotionsSelectedIds : [];
+            const includedPromotions = (promotionsData || []).filter((p: any) => !selectedIds.length || selectedIds.includes(String(p?.id || '')));
+            const overlap = (aStart: string, aEnd: string, bStart: string, bEnd: string) => !!aStart && !!aEnd && !!bStart && !!bEnd && !(aEnd < bStart || bEnd < aStart);
+            const reqWindow = (req: any) => {
+                const start = String(req?.eventStart || req?.checkIn || req?.requestDate || req?.receivedDate || '').slice(0, 10);
+                const end = String(req?.eventEnd || req?.checkOut || start).slice(0, 10);
+                return { start, end: end || start };
+            };
+            const periodCodeFromIso = (iso: string) => {
+                const y = Number(String(iso || '').slice(0, 4)) || 0;
+                const m = Number(String(iso || '').slice(5, 7)) || 0;
+                return y > 0 && m > 0 ? y * 100 + m : 0;
+            };
+            const scopedReqs = (scopedRequests || []).filter((r: any) => {
+                if (String(r?.status || '').trim().toLowerCase() === 'cancelled') return false;
+                const w = reqWindow(r);
+                const code = periodCodeFromIso(w.start);
+                if (!code) return false;
+                return code >= startCode && code <= endCode;
+            });
+            const reqSegment = (req: any) => String(req?.segment || '').trim().toLowerCase();
+            const reqStatus = (req: any) => String(req?.status || 'Unknown').trim() || 'Unknown';
+            const reqRevenueBreakdown = (req: any) => {
+                const b = computeRequestRevenueBreakdownNoTax(req) || {};
+                const roomsRaw = Number((b as any).roomsNoTax || 0) || 0;
+                const eventsRaw = Number((b as any).eventNoTax || 0) || 0;
+                const totalRaw = Number((b as any).totalLineNoTax || 0) || 0;
+                const totalFallback = totalRaw > 0
+                    ? totalRaw
+                    : (parseFloat(String(req?.totalCost || req?.grandTotalNoTax || 0).replace(/,/g, '')) || 0);
+                const type = normalizeRequestTypeKey(String(req?.requestType || ''));
+                if (roomsRaw > 0 || eventsRaw > 0) {
+                    const combined = roomsRaw + eventsRaw;
+                    if (combined >= totalFallback || totalFallback <= 0) return { rooms: roomsRaw, events: eventsRaw };
+                    if (type === 'event') return { rooms: 0, events: totalFallback };
+                    if (type === 'accommodation' || type === 'series') return { rooms: totalFallback, events: 0 };
+                    return { rooms: roomsRaw, events: Math.max(0, totalFallback - roomsRaw) };
+                }
+                if (type === 'event') return { rooms: 0, events: totalFallback };
+                if (type === 'accommodation' || type === 'series') return { rooms: totalFallback, events: 0 };
+                if (type === 'event_rooms') {
+                    const roomsShare = Math.max(0, Number(req?.totalRooms || 0)) > 0 ? 0.5 : 0;
+                    return { rooms: totalFallback * roomsShare, events: totalFallback * (1 - roomsShare) };
+                }
+                return { rooms: totalFallback, events: 0 };
+            };
+            const reqRoomsRev = (req: any) => reqRevenueBreakdown(req).rooms;
+            const reqEventsRev = (req: any) => reqRevenueBreakdown(req).events;
+            const makeMonthly = () => Object.fromEntries(periods.map((p) => [p.key, 0])) as Record<string, number>;
+            const makeMonthlyReq = () => Object.fromEntries(periods.map((p) => [p.key, 0])) as Record<string, number>;
+            const mkStatusText = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' | ') || '—';
+
+            const requestMatchesPromotionRule = (req: any, promo: any) => {
+                const accountId = String(req?.accountId || '').trim();
+                const reqSeg = reqSegment(req);
+                const linkedAccounts = new Set((promo?.linkedAccounts || []).map((a: any) => String(a?.accountId || '').trim()).filter(Boolean));
+                const linkedSegments = new Set((promo?.segments || []).map((s: any) => String(s || '').trim().toLowerCase()).filter(Boolean));
+                if (!accountId || !reqSeg) return false;
+                if (!linkedAccounts.has(accountId)) return false;
+                if (!linkedSegments.has(reqSeg)) return false;
+                const w = reqWindow(req);
+                return overlap(w.start, w.end, String(promo?.startDate || ''), String(promo?.endDate || ''));
+            };
+
+            const reqPromoMap = new Map<string, string>();
+            for (const req of scopedReqs) {
+                const reqId = String(req?.id || '').trim();
+                if (!reqId) continue;
+                const explicitPromo = String(req?.promotionId || '').trim();
+                if (explicitPromo) {
+                    const promo = includedPromotions.find((p: any) => String(p?.id || '') === explicitPromo);
+                    if (promo && requestMatchesPromotionRule(req, promo)) {
+                        reqPromoMap.set(reqId, explicitPromo);
+                    }
+                    continue;
+                }
+                const matches = includedPromotions.filter((p: any) => requestMatchesPromotionRule(req, p));
+                if (matches.length === 1) reqPromoMap.set(reqId, String(matches[0]?.id || ''));
+            }
+
+            const matrixRows: any[] = [];
+            const exportRows: any[] = [];
+            const allMonthly = makeMonthly();
+            const allMonthlyReq = makeMonthlyReq();
+            let allReq = 0;
+            let allRooms = 0;
+            let allEvents = 0;
+
+            const accountTypeForReq = (req: any) => {
+                const aid = String(req?.accountId || '').trim();
+                const acc = aid ? (accounts || []).find((a: any) => String(a?.id || '').trim() === aid) : null;
+                return String(acc?.type || acc?.accountType || req?.accountType || 'Unspecified').trim() || 'Unspecified';
+            };
+
+            const buildDataRow = (
+                promotion: string,
+                rowLabel: string,
+                reqs: any[],
+                mode: 'rooms' | 'events' | 'combined'
+            ) => {
+                const monthly = makeMonthly();
+                const monthlyReq = makeMonthlyReq();
+                const stMap = new Map<string, number>();
+                let rooms = 0;
+                let events = 0;
+                for (const r of reqs) {
+                    const opMonth = (() => {
+                        const w = reqWindow(r);
+                        const y = Number(String(w.start || '').slice(0, 4)) || first.year;
+                        const m = Number(String(w.start || '').slice(5, 7)) || first.month;
+                        return `${y}-${String(Math.min(12, Math.max(1, m))).padStart(2, '0')}`;
+                    })();
+                    const mk = opMonth;
+                    if (!Object.prototype.hasOwnProperty.call(monthly, mk)) continue;
+                    monthlyReq[mk] += 1;
+                    const rr = reqRoomsRev(r);
+                    const er = reqEventsRev(r);
+                    const amount = mode === 'rooms' ? rr : mode === 'events' ? er : (rr + er);
+                    monthly[mk] += amount;
+                    rooms += rr;
+                    events += er;
+                    const st = reqStatus(r);
+                    stMap.set(st, (stMap.get(st) || 0) + 1);
+                }
+                const ytdAmount = periods.reduce((s, p) => s + (monthly[p.key] || 0), 0);
+                const ytdLm = periods.length >= 2
+                    ? pctGrowth(Number(monthly[periods[periods.length - 1].key] || 0), Number(monthly[periods[periods.length - 2].key] || 0))
+                    : '—';
+                const matrix = {
+                    rowKind: 'data',
+                    promotion,
+                    label: rowLabel,
+                    requests: reqs.length,
+                    statusBreakdown: mkStatusText(stMap),
+                    roomsRevenue: formatSar(rooms, selectedCurrency),
+                    eventsRevenue: formatSar(events, selectedCurrency),
+                    combinedRevenue: formatSar(rooms + events, selectedCurrency),
+                    months: periods.map((p, i) => ({
+                        month: p.key,
+                        label: p.label,
+                        requests: Number(monthlyReq[p.key] || 0),
+                        amount: formatSar(monthly[p.key] || 0, selectedCurrency),
+                        lmPct: i === 0 ? '—' : pctGrowth(Number(monthly[p.key] || 0), Number(monthly[periods[i - 1].key] || 0)),
+                    })),
+                    ytd: { requests: reqs.length, amount: formatSar(ytdAmount, selectedCurrency), lmPct: ytdLm },
+                };
+                const flat: any = {
+                    Promotion: promotion,
+                    Row: rowLabel,
+                    'Status Breakdown': matrix.statusBreakdown,
+                    'YTD Requests': matrix.ytd.requests,
+                    'YTD Amount': matrix.ytd.amount,
+                    'YTD LM %': matrix.ytd.lmPct,
+                };
+                for (const mo of matrix.months) {
+                    flat[`${mo.label} Requests`] = mo.requests;
+                    flat[`${mo.label} Amount`] = mo.amount;
+                    flat[`${mo.label} LM %`] = mo.lmPct;
+                }
+                return { matrix, flat, monthly, monthlyReq, rooms, events, reqCount: reqs.length };
+            };
+
+            for (const promo of includedPromotions) {
+                const promoId = String(promo?.id || '');
+                const promoName = String(promo?.name || 'Promotion');
+                const promoReqs = scopedReqs.filter((r: any) => reqPromoMap.get(String(r?.id || '')) === promoId);
+                matrixRows.push({ rowKind: 'promotionHeader', label: promoName });
+                const linkedAccountIds = new Set((promo?.linkedAccounts || []).map((a: any) => String(a?.accountId || '').trim()).filter(Boolean));
+                const linkedAccountTypes = new Set(
+                    (accounts || [])
+                        .filter((a: any) => linkedAccountIds.has(String(a?.id || '').trim()))
+                        .map((a: any) => String(a?.type || a?.accountType || 'Unspecified').trim() || 'Unspecified')
+                );
+
+                const summary = buildDataRow(promoName, `Accounts linked (${linkedAccountIds.size})`, promoReqs, 'combined');
+                matrixRows.push(summary.matrix);
+                exportRows.push(summary.flat);
+
+                const includeRooms = Boolean((promo as any)?.includeRoomsRevenue ?? true);
+                const includeEvents = Boolean((promo as any)?.includeEventsRevenue ?? true);
+                if (includeRooms) {
+                    const rr = buildDataRow(promoName, 'Rooms Revenue', promoReqs, 'rooms');
+                    matrixRows.push(rr.matrix);
+                    exportRows.push(rr.flat);
+                }
+                if (includeEvents) {
+                    const er = buildDataRow(promoName, 'Events Revenue', promoReqs, 'events');
+                    matrixRows.push(er.matrix);
+                    exportRows.push(er.flat);
+                }
+                if (includeRooms && includeEvents) {
+                    const tr = buildDataRow(promoName, 'Total Revenue (Combined)', promoReqs, 'combined');
+                    matrixRows.push(tr.matrix);
+                    exportRows.push(tr.flat);
+                }
+
+                matrixRows.push({ rowKind: 'sectionHeader', label: `${promoName} — Revenue by Account Type` });
+                const reqsByType = new Map<string, any[]>();
+                for (const r of promoReqs) {
+                    const k = accountTypeForReq(r);
+                    const cur = reqsByType.get(k) || [];
+                    cur.push(r);
+                    reqsByType.set(k, cur);
+                }
+                [...reqsByType.entries()]
+                    .sort((a, b) => a[0].localeCompare(b[0]))
+                    .forEach(([typeLabel, reqs]) => {
+                        const row = buildDataRow(promoName, typeLabel, reqs, 'combined');
+                        matrixRows.push(row.matrix);
+                        exportRows.push(row.flat);
+                    });
+
+                allReq += summary.reqCount;
+                allRooms += summary.rooms;
+                allEvents += summary.events;
+                for (const p of periods) {
+                    allMonthly[p.key] += summary.monthly[p.key];
+                    allMonthlyReq[p.key] += summary.monthlyReq[p.key];
+                }
+            }
+
+            matrixRows.push({ rowKind: 'sectionHeader', label: 'All Promotions Totals' });
+            const totalReqsForRow = allReq;
+            const totalsReqList = scopedReqs.filter((r: any) => reqPromoMap.has(String(r?.id || '')));
+            const totals = buildDataRow('All Promotions', 'Grand Total', totalsReqList, 'combined');
+            matrixRows.push(totals.matrix);
+            exportRows.push(totals.flat);
+
+            return {
+                rows: exportRows,
+                summary: {
+                    'From': `${first.year}-${String(first.month).padStart(2, '0')}`,
+                    'To': `${last.year}-${String(last.month).padStart(2, '0')}`,
+                    Promotions: includedPromotions.length,
+                    'Total requests': totalReqsForRow,
+                    'Combined revenue': formatSar(allRooms + allEvents, selectedCurrency),
+                },
+                exportColumns: availableColumns.Promotions,
+                isVsLyMatrix: false,
+                isPromotionsMatrix: true,
+                promotionsMatrixRows: matrixRows,
+                promotionsPeriods: periods,
+            };
+        }
+
         if (selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY' || selectedEntity === 'Full Report') {
             const y = Number(filters.vsReportYear) || new Date().getFullYear();
             const vsOpts = {
@@ -813,8 +1128,15 @@ export default function Reports({
         filters.vsReportYear,
         filters.vsLyByRequestSegment,
         filters.vsLyByAccountType,
+        filters.promotionsYear,
+        filters.promotionsSelectedIds,
+        filters.promotionsFromYear,
+        filters.promotionsFromMonth,
+        filters.promotionsToYear,
+        filters.promotionsToMonth,
         selectedCurrency,
         propertyTaxes,
+        promotionsData,
     ]);
 
     const previewData = reportPack.rows;
@@ -865,9 +1187,11 @@ export default function Reports({
         });
     };
 
-    const showDateFilters = selectedEntity !== 'Accounts' && !isVsLySource;
+    const displayedPreviewData = previewData;
+
+    const showDateFilters = selectedEntity !== 'Accounts' && !isVsLySource && selectedEntity !== 'Promotions';
     const showStatusFilters =
-        (selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls') && !isVsLySource;
+        (selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls') && !isVsLySource && selectedEntity !== 'Promotions';
     const showValueFilters = (selectedEntity === 'Requests' || selectedEntity === 'MICE') && !isVsLySource;
 
     const pctClass = (pct: string) => {
@@ -882,6 +1206,79 @@ export default function Reports({
 
     const handleExport = () => {
         if (!canReportsUseDataSource(currentUser, selectedEntity)) return;
+        if (selectedEntity === 'Promotions' && reportPackAny.isPromotionsMatrix && Array.isArray(reportPackAny.promotionsMatrixRows)) {
+            const stamp = new Date().toISOString().slice(0, 10);
+            const base = `promotions-report-${stamp}`;
+            const rows = reportPackAny.promotionsMatrixRows as any[];
+            const periods = Array.isArray(reportPackAny.promotionsPeriods) ? reportPackAny.promotionsPeriods : [];
+            const totalCols = 1 + (periods.length * 3) + 3;
+            const buildHtml = () => {
+                const headerMonths = periods
+                    .map((p: any) => `<th colspan="3" style="text-align:center;padding:6px;border:1px solid #70839a;background:#1d3f67;color:#fff;">${p.label}</th>`)
+                    .join('');
+                const subMonths = periods
+                    .map(() => `<th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">Req</th><th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">Amount</th><th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">LM %</th>`)
+                    .join('');
+                const body = rows.map((r: any) => {
+                    if (r.rowKind === 'promotionHeader') {
+                        return `<tr><td colspan="${totalCols}" style="padding:7px;border:1px solid #6d7e90;background:#9eb6d0;color:#102a43;font-weight:700;text-transform:uppercase;">${r.label}</td></tr>`;
+                    }
+                    if (r.rowKind === 'sectionHeader') {
+                        return `<tr><td colspan="${totalCols}" style="padding:7px;border:1px solid #6d7e90;background:#dbe7f3;color:#17324d;font-weight:700;">${r.label}</td></tr>`;
+                    }
+                    const monthCells = (r.months || []).map((mo: any) => {
+                        const lm = String(mo.lmPct || '—');
+                        const n = parseFloat(lm.replace(/[^\d.-]/g, ''));
+                        const color = Number.isNaN(n) ? '#111' : (n >= 0 ? '#0f7a31' : '#b42318');
+                        return `<td style="padding:4px;border:1px solid #c5cfda;">${mo.requests ?? '—'}</td><td style="padding:4px;border:1px solid #c5cfda;">${mo.amount}</td><td style="padding:4px;border:1px solid #c5cfda;color:${color};font-weight:700;">${lm}</td>`;
+                    }).join('');
+                    const yLm = String(r.ytd?.lmPct || '—');
+                    const yN = parseFloat(yLm.replace(/[^\d.-]/g, ''));
+                    const yColor = Number.isNaN(yN) ? '#111' : (yN >= 0 ? '#0f7a31' : '#b42318');
+                    return `<tr>
+                        <td style="padding:6px;border:1px solid #c5cfda;background:#f7fafc;"><div style="font-weight:700;">${r.label}</div></td>
+                        ${monthCells}
+                        <td style="padding:4px;border:1px solid #c5cfda;background:#edf2f7;">${r.ytd?.requests ?? '—'}</td>
+                        <td style="padding:4px;border:1px solid #c5cfda;background:#edf2f7;">${r.ytd?.amount || '—'}</td>
+                        <td style="padding:4px;border:1px solid #c5cfda;background:#edf2f7;color:${yColor};font-weight:700;">${yLm}</td>
+                    </tr>`;
+                }).join('');
+                return `<html><head><meta charset="utf-8" /></head><body>
+                    <h2 style="margin:0 0 6px;color:#1d3f67;">Promotions report vs LM</h2>
+                    <div style="font-size:12px;color:#425466;margin-bottom:10px;">${activeProperty?.name || 'All properties'} — ${String(reportPack.summary?.From || '')} to ${String(reportPack.summary?.To || '')}</div>
+                    <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:11px;">
+                        <thead>
+                            <tr>
+                                <th rowspan="2" style="padding:6px;border:1px solid #70839a;background:#1d3f67;color:#fff;text-align:left;">Promotion / Metric</th>
+                                ${headerMonths}
+                                <th colspan="3" style="padding:6px;border:1px solid #70839a;background:#1d3f67;color:#fff;">YTD</th>
+                            </tr>
+                            <tr>${subMonths}<th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">Req</th><th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">Amount</th><th style="padding:4px;border:1px solid #95a4b3;background:#d5dde5;">LM %</th></tr>
+                        </thead>
+                        <tbody>${body}</tbody>
+                    </table>
+                </body></html>`;
+            };
+            if (exportFormat === 'csv') {
+                const cols = reportPack.exportColumns;
+                const csv = [
+                    cols.map(csvEscape).join(','),
+                    ...reportPack.rows.map((row: any) => cols.map((c: string) => csvEscape(row[c] ?? '—')).join(',')),
+                ].join('\n');
+                triggerDownload(csv, `${base}.csv`, 'text/csv;charset=utf-8;');
+            } else if (exportFormat === 'excel') {
+                triggerDownload(buildHtml(), `${base}.xls`, 'application/vnd.ms-excel');
+            } else {
+                const w = window.open('', '_blank', 'width=1400,height=900');
+                if (w) {
+                    w.document.write(buildHtml());
+                    w.document.close();
+                    w.focus();
+                    w.print();
+                }
+            }
+            return;
+        }
         if (isVsMatrixPack && reportPackAny.vsLyRows?.length) {
             const vsRows = vsLyRowsFiltered;
             if (!vsRows.length) return;
@@ -911,12 +1308,13 @@ export default function Reports({
             }
             return;
         }
-        if (!reportPack.rows.length) return;
+        const exportRows = reportPack.rows;
+        if (!exportRows.length) return;
         const stamp = new Date().toISOString().slice(0, 10);
         const base = `${String(selectedEntity).toLowerCase()}-report-${stamp}`;
         const cols = (selectedColumns && selectedColumns.length ? selectedColumns : reportPack.exportColumns)
             .filter((c) => reportPack.exportColumns.includes(c));
-        const rows = reportPack.rows;
+        const rows = exportRows;
 
         if (exportFormat === 'csv') {
             const csv = [
@@ -1155,6 +1553,96 @@ export default function Reports({
                                 </div>
                             )}
 
+                            {selectedEntity === 'Promotions' && (
+                                <div className="mb-4 space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>From (Year / Month)</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <select
+                                                value={Number(filters.promotionsFromYear) || new Date().getFullYear()}
+                                                onChange={(e) => setFilters({ ...filters, promotionsFromYear: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {yearOptionsForVs.map((y) => (
+                                                    <option key={`from-y-${y}`} value={y}>{y}</option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                value={Number(filters.promotionsFromMonth) || 1}
+                                                onChange={(e) => setFilters({ ...filters, promotionsFromMonth: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                                                    <option key={`from-m-${m}`} value={m}>{String(m).padStart(2, '0')}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>To (Year / Month)</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <select
+                                                value={Number(filters.promotionsToYear) || new Date().getFullYear()}
+                                                onChange={(e) => setFilters({ ...filters, promotionsToYear: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {yearOptionsForVs.map((y) => (
+                                                    <option key={`to-y-${y}`} value={y}>{y}</option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                value={Number(filters.promotionsToMonth) || 12}
+                                                onChange={(e) => setFilters({ ...filters, promotionsToMonth: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                                                    <option key={`to-m-${m}`} value={m}>{String(m).padStart(2, '0')}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Promotions</label>
+                                        <div className="max-h-36 overflow-y-auto pr-1 space-y-1">
+                                            <label className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: colors.textMain }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={!filters.promotionsSelectedIds?.length}
+                                                    onChange={() => setFilters({ ...filters, promotionsSelectedIds: [] })}
+                                                    className="w-4 h-4 rounded"
+                                                    style={{ accentColor: colors.primary }}
+                                                />
+                                                All promotions
+                                            </label>
+                                            {(promotionsData || []).map((p: any) => {
+                                                const id = String(p?.id || '');
+                                                const sel = Array.isArray(filters.promotionsSelectedIds) && filters.promotionsSelectedIds.includes(id);
+                                                return (
+                                                    <label key={id} className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: colors.textMain }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={sel}
+                                                            onChange={() => {
+                                                                const cur: string[] = Array.isArray(filters.promotionsSelectedIds) ? filters.promotionsSelectedIds : [];
+                                                                const next = sel ? cur.filter((x) => x !== id) : [...cur, id];
+                                                                setFilters({ ...filters, promotionsSelectedIds: next });
+                                                            }}
+                                                            className="w-4 h-4 rounded"
+                                                            style={{ accentColor: colors.primary }}
+                                                        />
+                                                        {String(p?.name || id)}
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             {showDateFilters && (
                                 <div className="mb-4">
                                     <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Date range</label>
@@ -1257,19 +1745,21 @@ export default function Reports({
                                     </div>
                                 </div>
                             ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-                                {availableColumns[selectedEntity]?.map((column: string) => (
-                                    <label key={column} className="flex items-center gap-2 cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedColumns.includes(column)}
-                                            onChange={() => toggleColumn(column)}
-                                            className="w-4 h-4 rounded"
-                                            style={{ accentColor: colors.primary }}
-                                        />
-                                        <span className="text-sm" style={{ color: colors.textMain }}>{column}</span>
-                                    </label>
-                                ))}
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                    {availableColumns[selectedEntity]?.map((column: string) => (
+                                        <label key={column} className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedColumns.includes(column)}
+                                                onChange={() => toggleColumn(column)}
+                                                className="w-4 h-4 rounded"
+                                                style={{ accentColor: colors.primary }}
+                                            />
+                                            <span className="text-sm" style={{ color: colors.textMain }}>{column}</span>
+                                        </label>
+                                    ))}
+                                </div>
                             </div>
                             )}
                         </div>
@@ -1471,7 +1961,86 @@ export default function Reports({
                                         </div>
                                     ))}
                                 </div>
-                                <p className="text-sm" style={{ color: colors.textMuted }}>Showing {previewData.length} rows</p>
+                                <p className="text-sm" style={{ color: colors.textMuted }}>Showing {displayedPreviewData.length} rows</p>
+                                {selectedEntity === 'Promotions' ? (
+                                <div className="overflow-x-auto rounded-lg border" style={{ borderColor: colors.border }}>
+                                    {(() => {
+                                        const periodList: any[] = Array.isArray(reportPackAny.promotionsPeriods) ? reportPackAny.promotionsPeriods : [];
+                                        return (
+                                    <table className="w-full min-w-[1800px] text-xs" style={{ color: colors.textMain }}>
+                                        <thead>
+                                            <tr style={{ backgroundColor: colors.bg }}>
+                                                <th rowSpan={2} className="text-left p-2 sticky left-0 z-20 min-w-[18rem] border-r align-bottom" style={{ color: colors.textMuted, backgroundColor: colors.card, borderColor: colors.border }}>Promotion / Metric</th>
+                                                {periodList.map((p: any) => (
+                                                    <th key={p.key} colSpan={3} className="text-center p-2 border-b font-bold" style={{ color: colors.primary, borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                        {p.label}
+                                                    </th>
+                                                ))}
+                                                <th colSpan={2} className="text-center p-2 font-bold" style={{ color: colors.primary, borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                    YTD
+                                                </th>
+                                            </tr>
+                                            <tr style={{ backgroundColor: colors.bg }}>
+                                                {periodList.map((_: any, i: number) => (
+                                                    <React.Fragment key={`sub-${i}`}>
+                                                        <th className="p-1.5 text-[10px] font-semibold" style={{ color: colors.textMain, backgroundColor: colors.card }}>Req</th>
+                                                        <th className="p-1.5 text-[10px] font-semibold" style={{ color: colors.textMain, backgroundColor: colors.card }}>Amount</th>
+                                                        <th className="p-1.5 text-[10px] font-semibold" style={{ color: colors.textMain, backgroundColor: colors.card }}>LM %</th>
+                                                    </React.Fragment>
+                                                ))}
+                                                <th className="p-1.5 text-[10px] font-bold" style={{ color: colors.primary, backgroundColor: colors.card }}>Req</th>
+                                                <th className="p-1.5 text-[10px] font-bold" style={{ color: colors.primary, backgroundColor: colors.card }}>Amount</th>
+                                                <th className="p-1.5 text-[10px] font-bold" style={{ color: colors.primary, backgroundColor: colors.card }}>LM %</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(reportPackAny.promotionsMatrixRows || []).map((r: any, idx: number) => {
+                                                if (r.rowKind === 'promotionHeader') {
+                                                    return (
+                                                        <tr key={`promo-${idx}`} style={{ backgroundColor: colors.primary + '20' }}>
+                                                            <td colSpan={39} className="p-2 text-xs font-bold uppercase tracking-wide border-t border-r" style={{ color: colors.textMain, borderColor: colors.border }}>
+                                                                {r.label}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                }
+                                                if (r.rowKind === 'sectionHeader') {
+                                                    return (
+                                                        <tr key={`section-${idx}`} style={{ backgroundColor: colors.bg }}>
+                                                            <td colSpan={39} className="p-2 text-xs font-bold border-t border-r" style={{ color: colors.primary, borderColor: colors.border }}>
+                                                                {r.label}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                }
+                                                return (
+                                                    <tr key={`data-${idx}`} style={{ borderTop: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
+                                                        <td className="p-2 font-medium text-xs sticky left-0 z-10 border-r" style={{ color: colors.textMain, backgroundColor: colors.card, borderColor: colors.border }}>
+                                                            {r.label}
+                                                        </td>
+                                                        {(r.months || []).map((mo: any, i: number) => {
+                                                            const lmN = parseFloat(String(mo.lmPct || '').replace(/[^\d.-]/g, ''));
+                                                            const lmStyle = Number.isNaN(lmN) ? { color: colors.textMuted } : (lmN >= 0 ? { color: colors.green || '#22c55e' } : { color: colors.red || '#ef4444' });
+                                                            return (
+                                                                <React.Fragment key={`m-${idx}-${i}`}>
+                                                                    <td className="p-1.5 font-mono">{mo.requests}</td>
+                                                                    <td className="p-1.5 font-mono">{mo.amount}</td>
+                                                                    <td className="p-1.5 font-mono font-bold" style={lmStyle}>{mo.lmPct}</td>
+                                                                </React.Fragment>
+                                                            );
+                                                        })}
+                                                        <td className="p-1.5 font-mono">{r.ytd?.requests ?? '—'}</td>
+                                                        <td className="p-1.5 font-mono">{r.ytd?.amount || '—'}</td>
+                                                        <td className="p-1.5 font-mono font-bold" style={pctClass(r.ytd?.lmPct || '0%')}>{r.ytd?.lmPct || '—'}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                        );
+                                    })()}
+                                </div>
+                                ) : (
                                 <div className="overflow-x-auto rounded-lg border" style={{ borderColor: colors.border }}>
                                     <table className="w-full">
                                         <thead>
@@ -1484,18 +2053,35 @@ export default function Reports({
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {previewData.map((row: any, idx: number) => (
+                                            {displayedPreviewData.map((row: any, idx: number) => (
                                                 <tr key={`${row['Request ID'] || row.ID || 'row'}-${idx}`} className="hover:bg-white/5 transition-colors" style={{ borderTop: `1px solid ${colors.border}` }}>
-                                                    {selectedColumns.map((col) => (
-                                                        <td key={col} className="p-3 text-sm" style={{ color: colors.textMain }}>
-                                                            {row[col] != null && row[col] !== '' ? String(row[col]) : '—'}
-                                                        </td>
-                                                    ))}
+                                                    {selectedColumns.map((col) => {
+                                                        const rawVal = row[col] != null && row[col] !== '' ? String(row[col]) : '—';
+                                                        let textColor = colors.textMain;
+                                                        if (selectedEntity === 'Promotions') {
+                                                            if (col === 'LM %') {
+                                                                const n = parseFloat(rawVal.replace(/[^\d.-]/g, ''));
+                                                                if (!Number.isNaN(n)) textColor = n >= 0 ? (colors.green || '#22c55e') : (colors.red || '#ef4444');
+                                                            } else if (/^[A-Z][a-z]{2}$/.test(col)) {
+                                                                const m = rawVal.match(/\(([-+]?[\d.]+)%\)\s*$/);
+                                                                if (m) {
+                                                                    const n = parseFloat(m[1]);
+                                                                    if (!Number.isNaN(n)) textColor = n >= 0 ? (colors.green || '#22c55e') : (colors.red || '#ef4444');
+                                                                }
+                                                            }
+                                                        }
+                                                        return (
+                                                            <td key={col} className="p-3 text-sm" style={{ color: colors.textMain }}>
+                                                                <span style={{ color: textColor }}>{rawVal}</span>
+                                                            </td>
+                                                        );
+                                                    })}
                                                 </tr>
                                             ))}
                                         </tbody>
                                     </table>
                                 </div>
+                                )}
                             </div>
                         )}
 

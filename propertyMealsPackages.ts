@@ -10,6 +10,7 @@ const MEAL_PLANS_PREFIX = 'visatour_property_meal_plans_v1::';
 const EVENT_PACKAGES_PREFIX = 'visatour_property_event_packages_v1::';
 
 export type EventPackageTimingId =
+    | 'rental_only'
     | 'coffee_1'
     | 'coffee_2'
     | 'coffee_1_lunch'
@@ -34,6 +35,7 @@ export interface EventPackageEntry {
 }
 
 export const EVENT_PACKAGE_TIMING_OPTIONS: { id: EventPackageTimingId; label: string }[] = [
+    { id: 'rental_only', label: 'Rental only (no catering timings)' },
     { id: 'coffee_1', label: '1× Coffee break' },
     { id: 'coffee_2', label: '2× Coffee breaks' },
     { id: 'coffee_1_lunch', label: '1× Coffee break + Lunch' },
@@ -54,6 +56,7 @@ export const DEFAULT_MEAL_PLANS: MealPlanEntry[] = [
 
 /** Default names match the standard catering combinations. */
 export const DEFAULT_EVENT_PACKAGES: EventPackageEntry[] = [
+    { id: 'ep-ro', name: 'Rental Only', code: 'RO', timingId: 'rental_only' },
     { id: 'ep-1cb', name: '1 Coffee Break', code: '1CB', timingId: 'coffee_1' },
     { id: 'ep-2cb', name: '2 Coffee Breaks', code: '2CB', timingId: 'coffee_2' },
     { id: 'ep-1cbl', name: '1 Coffee Break with Lunch', code: '1CBL', timingId: 'coffee_1_lunch' },
@@ -71,6 +74,8 @@ export const DEFAULT_EVENT_PACKAGES: EventPackageEntry[] = [
 ];
 
 const LEGACY_EVENT_PACKAGE_TO_TIMING: Record<string, EventPackageTimingId> = {
+    'Rental only': 'rental_only',
+    Rental: 'rental_only',
     'Full Day': 'full_package',
     'Half Day': 'coffee_1_lunch',
     'Coffee Break only': 'coffee_1',
@@ -270,6 +275,8 @@ export function getTimingSlotsForTimingId(timingId: EventPackageTimingId): {
     label: string;
 }[] {
     switch (timingId) {
+        case 'rental_only':
+            return [];
         case 'coffee_1':
             return [{ field: 'coffee1', label: 'Coffee break' }];
         case 'coffee_2':

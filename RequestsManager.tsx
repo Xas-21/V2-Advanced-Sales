@@ -104,6 +104,8 @@ interface RequestsManagerProps {
     currency?: CurrencyCode;
     /** Property staff (Settings assignments); used for "Created by" search filter. */
     assignableUsersForProperty?: { id: string; name: string }[];
+    promotionOptions?: any[];
+    canLinkRequestPromotions?: boolean;
 }
 
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
@@ -164,7 +166,8 @@ const initialAccommodation = {
     status: 'Inquiry',
     payments: [] as any[],
     logs: [] as any[],
-    segment: ''
+    segment: '',
+    promotionId: ''
 };
 
 /** Remove all-zero placeholder room rows (keeps series/event+rooms rows that have stay dates). */
@@ -194,7 +197,8 @@ const initialEvent = {
     }],
     payments: [] as any[],
     logs: [] as any[],
-    segment: ''
+    segment: '',
+    promotionId: ''
 };
 
 export default function RequestsManager({
@@ -225,6 +229,8 @@ export default function RequestsManager({
     canDeleteRequestPayments: canDeletePaymentsProp,
     currency = 'SAR',
     assignableUsersForProperty = [],
+    promotionOptions = [],
+    canLinkRequestPromotions = false,
 }: RequestsManagerProps) {
     const colors = theme.colors;
     /** Saturated status row fills only when the shell is a dark theme (luxury / colorful). */
@@ -250,6 +256,45 @@ export default function RequestsManager({
         if (Array.isArray(accountTypeOptions)) return accountTypeOptions;
         return resolveAccountTypesForProperty(activeProperty?.id || '', activeProperty);
     }, [accountTypeOptions, activeProperty]);
+    const effectivePromotionOptions = useMemo(
+        () => (Array.isArray(promotionOptions) ? promotionOptions : []).filter((p: any) => String(p?.propertyId || '') === String(activeProperty?.id || '')),
+        [promotionOptions, activeProperty?.id]
+    );
+    const reqWindowForPromotion = useCallback((formData: any, typeKeyRaw: string) => {
+        const typeKey = normalizeRequestTypeKey(typeKeyRaw);
+        if (typeKey === 'event') {
+            const ev = getEventDateWindow(formData);
+            const start = String(ev.start || formData.requestDate || '').slice(0, 10);
+            const end = String(ev.end || ev.start || start).slice(0, 10);
+            return { start, end };
+        }
+        const start = String(formData.checkIn || '').slice(0, 10);
+        const end = String(formData.checkOut || start).slice(0, 10);
+        return { start, end };
+    }, []);
+    const overlapsPromoWindow = (aStart: string, aEnd: string, bStart: string, bEnd: string) =>
+        !!aStart && !!aEnd && !!bStart && !!bEnd && !(aEnd < bStart || bEnd < aStart);
+    const matchingPromotionsForDraft = useCallback((formData: any, typeKeyRaw: string) => {
+        const segmentKey = String(formData?.segment || '').trim().toLowerCase();
+        const accountId = String(formData?.accountId || '').trim();
+        const w = reqWindowForPromotion(formData, typeKeyRaw);
+        return effectivePromotionOptions.filter((promo: any) => {
+            if (!segmentKey || !accountId) return false;
+            const segmentOk = (promo?.segments || []).some((s: string) => String(s || '').trim().toLowerCase() === segmentKey);
+            if (!segmentOk) return false;
+            const accountOk = (promo?.linkedAccounts || []).some((a: any) => String(a?.accountId || '').trim() === accountId);
+            if (!accountOk) return false;
+            const pStart = String(promo?.startDate || '').slice(0, 10);
+            const pEnd = String(promo?.endDate || '').slice(0, 10);
+            return overlapsPromoWindow(w.start, w.end, pStart, pEnd);
+        });
+    }, [effectivePromotionOptions, reqWindowForPromotion]);
+    const autoPromotionForDraft = useCallback((formData: any, typeKeyRaw: string) => {
+        const matches = matchingPromotionsForDraft(formData, typeKeyRaw);
+        if (!matches.length) return '';
+        const ordered = [...matches].sort((a: any, b: any) => String(a?.startDate || '').localeCompare(String(b?.startDate || '')));
+        return String(ordered[0]?.id || '');
+    }, [matchingPromotionsForDraft]);
 
     const [mealsPackagesRev, setMealsPackagesRev] = useState(0);
     useEffect(() => {
@@ -315,6 +360,20 @@ export default function RequestsManager({
     // Form Data States
     const [accForm, setAccForm] = useState(initialAccommodation);
     const [evtForm, setEvtForm] = useState(initialEvent);
+
+    useEffect(() => {
+        if (!canLinkRequestPromotions) return;
+        const next = autoPromotionForDraft(accForm, requestType || 'accommodation');
+        if (String(accForm?.promotionId || '') === next) return;
+        setAccForm((prev: any) => ({ ...prev, promotionId: next }));
+    }, [canLinkRequestPromotions, accForm.segment, accForm.accountId, accForm.checkIn, accForm.checkOut, accForm.requestDate, accForm.eventStart, accForm.eventEnd, requestType, autoPromotionForDraft]);
+
+    useEffect(() => {
+        if (!canLinkRequestPromotions) return;
+        const next = autoPromotionForDraft(evtForm, 'event');
+        if (String(evtForm?.promotionId || '') === next) return;
+        setEvtForm((prev: any) => ({ ...prev, promotionId: next }));
+    }, [canLinkRequestPromotions, evtForm.segment, evtForm.accountId, evtForm.requestDate, evtForm.eventStart, evtForm.eventEnd, autoPromotionForDraft]);
 
     const primaryPropertyRoomType = useMemo(() => propertyRoomNames[0] || '', [propertyRoomNames]);
 
@@ -607,7 +666,8 @@ export default function RequestsManager({
                 accountName: '',
                 accountId: '',
                 confirmationNo: '',
-                segment: ''
+                segment: '',
+                promotionId: ''
             });
 
             setEvtForm({
@@ -617,6 +677,7 @@ export default function RequestsManager({
                 leadId: '',
                 accountId: '',
                 segment: '',
+                promotionId: '',
                 agenda: [{
                     id: 1,
                     startDate: '', endDate: '', venue: '', shape: 'Theater',
@@ -899,6 +960,7 @@ export default function RequestsManager({
                 payments: savedPayments,
                 logs: req.logs || [],
                 segment: req.segment || '',
+                promotionId: req.promotionId || '',
             });
             if (type === 'event') {
                 setEvtForm({
@@ -915,6 +977,7 @@ export default function RequestsManager({
                     payments: savedPayments,
                     logs: req.logs || [],
                     segment: req.segment || '',
+                    promotionId: req.promotionId || '',
                 });
             }
         } else {
@@ -934,6 +997,7 @@ export default function RequestsManager({
                 payments: savedPayments,
                 logs: req.logs || [],
                 segment: req.segment || '',
+                promotionId: req.promotionId || '',
             });
         }
         setSearchParams({
@@ -991,6 +1055,9 @@ export default function RequestsManager({
             const resolvedTotalCost = (fin.grandTotalWithTax !== undefined ? fin.grandTotalWithTax : fin.totalCostWithTax) || 0;
             const resolvedGrandTotalNoTax = Number(fin.grandTotalNoTax ?? fin.eventCostNoTax ?? 0) || 0;
             const resolvedNights = fin.nights || calculateNights(formData.checkIn, formData.checkOut);
+            const selectedPromotionId = canLinkRequestPromotions
+                ? String(autoPromotionForDraft(formData, normalizedType) || '').trim()
+                : String(formData.promotionId || '').trim();
             
             const existingReq = formData.id ? requests.find((r: any) => r.id === formData.id) : null;
             const isUpdate = !!existingReq;
@@ -1216,6 +1283,7 @@ export default function RequestsManager({
                 logs: updatedLogs,
                 paymentStatus: resolvedPaymentStatus,
                 segment: resolvedSegment,
+                promotionId: selectedPromotionId || '',
                 ...(createdByUserIdOut != null ? { createdByUserId: createdByUserIdOut } : {}),
             };
 
@@ -2070,6 +2138,18 @@ export default function RequestsManager({
                                 ))}
                             </select>
                         </div>
+                        {canLinkRequestPromotions && matchingPromotionsForDraft(accForm, requestType || 'accommodation').length > 0 && (
+                            <div>
+                                <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Promotion</label>
+                                <input
+                                    type="text"
+                                    value={String(matchingPromotionsForDraft(accForm, requestType || 'accommodation').find((p: any) => String(p?.id) === String(accForm.promotionId || ''))?.name || matchingPromotionsForDraft(accForm, requestType || 'accommodation')[0]?.name || '')}
+                                    readOnly
+                                    className="w-full px-3 py-2 rounded border bg-black/20 outline-none text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -3083,6 +3163,18 @@ export default function RequestsManager({
                                 ))}
                             </select>
                         </div>
+                        {canLinkRequestPromotions && matchingPromotionsForDraft(evtForm, 'event').length > 0 && (
+                            <div>
+                                <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Promotion</label>
+                                <input
+                                    type="text"
+                                    value={String(matchingPromotionsForDraft(evtForm, 'event').find((p: any) => String(p?.id) === String(evtForm.promotionId || ''))?.name || matchingPromotionsForDraft(evtForm, 'event')[0]?.name || '')}
+                                    readOnly
+                                    className="w-full px-3 py-2 rounded border bg-black/20 outline-none text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -3167,6 +3259,24 @@ export default function RequestsManager({
     });
 
     // --- Main Render ---
+    const agendaPackageTimingSummary = (row: any) => {
+        const slots = getAgendaTimingSlotsForPackageName(String(row?.package || ''), eventPackagesForProperty);
+        if (!slots.length) return '';
+        const getVal = (field: string) => {
+            if (field === 'coffee1') return String(row?.coffee1 ?? row?.coffeeTime ?? '').trim();
+            if (field === 'coffee2') return String(row?.coffee2 ?? '').trim();
+            if (field === 'lunchTime') return String(row?.lunchTime ?? row?.lunch ?? '').trim();
+            if (field === 'dinnerTime') return String(row?.dinnerTime ?? row?.dinner ?? '').trim();
+            return '';
+        };
+        return slots
+            .map((slot) => {
+                const v = getVal(slot.field);
+                return v ? `${slot.label}: ${v}` : '';
+            })
+            .filter(Boolean)
+            .join(' | ');
+    };
 
     const renderRequestDetailView = ({ request, onClose }: { request: any, onClose: () => void }) => {
         const fin = calculateAccFinancials(request);
@@ -3189,15 +3299,13 @@ export default function RequestsManager({
                     <h3 className="text-xs font-black uppercase tracking-widest opacity-60">Event agenda</h3>
                 </div>
                 <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs min-w-[960px]">
+                    <table className="w-full text-left text-xs min-w-[900px]">
                         <thead>
                             <tr className="bg-black/20 text-[10px] font-bold uppercase opacity-40">
                                 <th className="px-4 py-3">Start</th>
                                 <th className="px-4 py-3">End</th>
                                 <th className="px-4 py-3">Session time</th>
-                                <th className="px-4 py-3">Coffee</th>
-                                <th className="px-4 py-3">Lunch</th>
-                                <th className="px-4 py-3">Dinner</th>
+                                <th className="px-4 py-3">Package timing</th>
                                 <th className="px-4 py-3">Venue</th>
                                 <th className="px-4 py-3">Shape</th>
                                 <th className="px-4 py-3">Package</th>
@@ -3211,7 +3319,7 @@ export default function RequestsManager({
                         <tbody className="divide-y divide-white/5">
                             {agenda.length === 0 ? (
                                 <tr>
-                                    <td colSpan={14} className="px-6 py-8 text-center opacity-40 italic">No agenda rows</td>
+                                    <td colSpan={12} className="px-6 py-8 text-center opacity-40 italic">No agenda rows</td>
                                 </tr>
                             ) : agenda.map((row: any, idx: number) => {
                                 const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
@@ -3220,9 +3328,7 @@ export default function RequestsManager({
                                         <td className="px-4 py-3 font-bold whitespace-nowrap">{row.startDate || '—'}</td>
                                         <td className="px-4 py-3 whitespace-nowrap">{row.endDate || row.startDate || '—'}</td>
                                         <td className="px-4 py-3 whitespace-nowrap">{[row.startTime, row.endTime].filter(Boolean).join(' – ') || '—'}</td>
-                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
-                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
-                                        <td className="px-4 py-3 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{agendaPackageTimingSummary(row) || '—'}</td>
                                         <td className="px-4 py-3 opacity-80">{formatAgendaRowVenueDisplay(row) || '—'}</td>
                                         <td className="px-4 py-3 opacity-80">{row.shape || '—'}</td>
                                         <td className="px-4 py-3">{row.package || '—'}</td>
@@ -4492,15 +4598,13 @@ export default function RequestsManager({
 
                                         <h4 className="text-xs font-black uppercase tracking-widest opacity-50 mb-2">Agenda</h4>
                                         <div className="overflow-x-auto mb-6">
-                                            <table className="w-full text-xs border-collapse min-w-[960px]">
+                                            <table className="w-full text-xs border-collapse min-w-[900px]">
                                                 <thead>
                                                     <tr className="border-b opacity-60" style={{ borderColor: colors.border }}>
                                                         <th className="text-left py-2 pr-2">Start</th>
                                                         <th className="text-left py-2 pr-2">End</th>
                                                         <th className="text-left py-2 pr-2">Session time</th>
-                                                        <th className="text-left py-2 pr-2">Coffee</th>
-                                                        <th className="text-left py-2 pr-2">Lunch</th>
-                                                        <th className="text-left py-2 pr-2">Dinner</th>
+                                                        <th className="text-left py-2 pr-2">Package timing</th>
                                                         <th className="text-left py-2 pr-2">Venue</th>
                                                         <th className="text-left py-2 pr-2">Shape</th>
                                                         <th className="text-left py-2 pr-2">Package</th>
@@ -4512,7 +4616,7 @@ export default function RequestsManager({
                                                 </thead>
                                                 <tbody>
                                                     {beoAgenda.length === 0 ? (
-                                                        <tr><td colSpan={13} className="py-4 italic opacity-50">No agenda</td></tr>
+                                                        <tr><td colSpan={11} className="py-4 italic opacity-50">No agenda</td></tr>
                                                     ) : beoAgenda.map((row: any, i: number) => {
                                                         const line = (Number(row.rate || 0) * Number(row.pax || 0)) + Number(row.rental || 0);
                                                         return (
@@ -4520,9 +4624,7 @@ export default function RequestsManager({
                                                                 <td className="py-2 pr-2">{row.startDate || '—'}</td>
                                                                 <td className="py-2 pr-2">{row.endDate || row.startDate || '—'}</td>
                                                                 <td className="py-2 pr-2 whitespace-nowrap">{[row.startTime, row.endTime].filter(Boolean).join(' – ') || '—'}</td>
-                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowCoffeeBreak(row) || '—'}</td>
-                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowLunch(row) || '—'}</td>
-                                                                <td className="py-2 pr-2 whitespace-nowrap">{formatAgendaRowDinner(row) || '—'}</td>
+                                                                <td className="py-2 pr-2 whitespace-nowrap">{agendaPackageTimingSummary(row) || '—'}</td>
                                                                 <td className="py-2 pr-2">{formatAgendaRowVenueDisplay(row) || '—'}</td>
                                                                 <td className="py-2 pr-2">{row.shape || '—'}</td>
                                                                 <td className="py-2 pr-2">{row.package || '—'}</td>
@@ -5285,7 +5387,10 @@ export default function RequestsManager({
                 }
             }
 
-            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch && createdByMatch;
+            const segmentFilter = String(params?.segment || '').toLowerCase().trim();
+            const segmentMatch = !segmentFilter || String(req?.segment || '').toLowerCase() === segmentFilter;
+
+            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch && createdByMatch && segmentMatch;
         });
     };
 
@@ -6327,6 +6432,22 @@ export default function RequestsManager({
                                             {assignableUsersForProperty.map((u) => (
                                                 <option key={u.id} value={u.id}>
                                                     {u.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="w-full sm:flex-1 sm:min-w-[11rem] sm:max-w-[16rem]">
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block text-center sm:text-left" style={{ color: colors.textMuted }}>Segment</label>
+                                        <select
+                                            value={searchParams?.segment || ''}
+                                            onChange={(e) => updateSearchParams({ segment: e.target.value })}
+                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            <option value="">All segments</option>
+                                            {effectiveSegmentOptions.map((segmentName: string) => (
+                                                <option key={segmentName} value={segmentName}>
+                                                    {segmentName}
                                                 </option>
                                             ))}
                                         </select>
