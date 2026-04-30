@@ -62,14 +62,31 @@ function leadMatchesSalesPeriod(
         const s = String(raw || '').trim();
         if (!s) return { year: 0, month: 0 };
         const ymdLike = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
-        if (ymdLike) return { year: Number(ymdLike[1]) || 0, month: Number(ymdLike[2]) || 0 };
-        const dmyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
-        if (dmyLike) return { year: Number(dmyLike[3]) || 0, month: Number(dmyLike[2]) || 0 };
+        if (ymdLike) {
+            const month = Number(ymdLike[2]) || 0;
+            return { year: Number(ymdLike[1]) || 0, month: month >= 1 && month <= 12 ? month : 0 };
+        }
+        const dmyOrMdyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyOrMdyLike) {
+            const a = Number(dmyOrMdyLike[1]) || 0;
+            const b = Number(dmyOrMdyLike[2]) || 0;
+            const year = Number(dmyOrMdyLike[3]) || 0;
+            let month = 0;
+            if (a > 12 && b >= 1 && b <= 12) month = b; // D/M/YYYY
+            else if (b > 12 && a >= 1 && a <= 12) month = a; // M/D/YYYY
+            else if (b >= 1 && b <= 12) month = b; // ambiguous => default to D/M/YYYY
+            return { year, month };
+        }
         const dt = new Date(s);
         if (!Number.isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
         return { year: 0, month: 0 };
     };
-    const { year: y, month: mo } = parseLeadYearMonth(lead?.lastContact || lead?.date);
+    const periodAnchor =
+        lead?.enteredFunnelAt ||
+        lead?.date ||
+        lead?.createdAt ||
+        lead?.lastContact;
+    const { year: y, month: mo } = parseLeadYearMonth(periodAnchor);
     if (!Number.isFinite(y) || !Number.isFinite(mo) || y <= 0 || mo <= 0) return false;
     if (period.mode === 'month') {
         return y === period.year && mo === period.month;
@@ -314,13 +331,27 @@ export default function CRM({
         if (!s) return '';
         return s.slice(0, 10);
     };
+    const leadPeriodYmd = (lead: any): string =>
+        toYmd(lead?.enteredFunnelAt || lead?.date || lead?.createdAt || lead?.lastContact);
     const parseYearMonth = (raw: any): { year: number; month: number } => {
         const s = String(raw || '').trim();
         if (!s) return { year: 0, month: 0 };
         const ymdLike = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
-        if (ymdLike) return { year: Number(ymdLike[1]) || 0, month: Number(ymdLike[2]) || 0 };
-        const dmyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
-        if (dmyLike) return { year: Number(dmyLike[3]) || 0, month: Number(dmyLike[2]) || 0 };
+        if (ymdLike) {
+            const month = Number(ymdLike[2]) || 0;
+            return { year: Number(ymdLike[1]) || 0, month: month >= 1 && month <= 12 ? month : 0 };
+        }
+        const dmyOrMdyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyOrMdyLike) {
+            const a = Number(dmyOrMdyLike[1]) || 0;
+            const b = Number(dmyOrMdyLike[2]) || 0;
+            const year = Number(dmyOrMdyLike[3]) || 0;
+            let month = 0;
+            if (a > 12 && b >= 1 && b <= 12) month = b; // D/M/YYYY
+            else if (b > 12 && a >= 1 && a <= 12) month = a; // M/D/YYYY
+            else if (b >= 1 && b <= 12) month = b; // ambiguous => default to D/M/YYYY
+            return { year, month };
+        }
         const dt = new Date(s);
         if (!Number.isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
         return { year: 0, month: 0 };
@@ -357,8 +388,30 @@ export default function CRM({
         return out;
     }, [crmLeadsForView, createdByUserFilterId, crmFilterUsers]);
 
-    const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
+    const crmLeadsForCreatorAllTime = useMemo(() => {
+        const fid = String(createdByUserFilterId || '').trim();
+        if (!fid) return crmLeads;
+        const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
+        if (!userRow) return crmLeads;
+        const filterUser = { id: userRow.id, name: userRow.name };
+        const out: Record<string, any[]> = { ...crmLeads };
+        (Object.keys(out) as string[]).forEach((k) => {
+            out[k] = (out[k] || []).filter((l: any) => crmLeadAttributedToUser(l, filterUser));
+        });
+        return out;
+    }, [crmLeads, createdByUserFilterId, crmFilterUsers]);
+
+    const periodCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
+    const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorAllTime), [crmLeadsForCreatorAllTime]);
     const funnelJourneyStageSet = useMemo(() => new Set(dashboardStageOrder), [dashboardStageOrder]);
+    const funnelJourneyLeadsForDashboard = useMemo(
+        () =>
+            periodCreatorScopedLeads.filter((lead: any) => {
+                const stageId = String(lead?.stage || '').trim();
+                return funnelJourneyStageSet.has(stageId);
+            }),
+        [periodCreatorScopedLeads, funnelJourneyStageSet]
+    );
     const funnelJourneyLeads = useMemo(
         () =>
             allCreatorScopedLeads.filter((lead: any) => {
@@ -369,8 +422,8 @@ export default function CRM({
     );
 
     const dashboardFilteredLeads = useMemo(
-        () => funnelJourneyLeads,
-        [funnelJourneyLeads]
+        () => funnelJourneyLeadsForDashboard,
+        [funnelJourneyLeadsForDashboard]
     );
 
     const dashboardRange = useMemo(() => {
@@ -496,9 +549,17 @@ export default function CRM({
         }
         return selectedPeriodMonths;
     }, [crmSalesPeriod.mode, crmSalesPeriod.month, crmSalesPeriod.quarter, selectedPeriodMonths]);
+    const financialYearRow = useMemo(() => {
+        const rows = (propertyFinancialKpis || []).filter((r: any) => Number(r?.year) === crmSalesPeriod.year);
+        if (!rows.length) return null;
+        const activePropertyId = String(activeProperty?.id || '').trim();
+        if (!activePropertyId) return rows[0];
+        const exactId = `${activePropertyId}_${crmSalesPeriod.year}`;
+        return rows.find((r: any) => String(r?.id || '') === exactId) || rows[0];
+    }, [propertyFinancialKpis, crmSalesPeriod.year, activeProperty?.id]);
 
     const monthlyTarget = useMemo(() => {
-        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
+        const row = financialYearRow;
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
         const monthSet = new Set(selectedPeriodMonths);
@@ -507,10 +568,10 @@ export default function CRM({
             if (!monthSet.has(mn)) return sum;
             return sum + (Number(m?.salesCalls || 0) || 0);
         }, 0);
-    }, [propertyFinancialKpis, crmSalesPeriod.year, selectedPeriodMonths]);
+    }, [financialYearRow, selectedPeriodMonths]);
 
     const ytdTarget = useMemo(() => {
-        const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
+        const row = financialYearRow;
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
         const monthSet = new Set(ytdPeriodMonths);
@@ -519,12 +580,12 @@ export default function CRM({
             if (!monthSet.has(mn)) return sum;
             return sum + (Number(m?.salesCalls || 0) || 0);
         }, 0);
-    }, [propertyFinancialKpis, crmSalesPeriod.year, ytdPeriodMonths]);
+    }, [financialYearRow, ytdPeriodMonths]);
 
     const monthlyActual = useMemo(
         () =>
             funnelJourneyLeads.filter((lead: any) => {
-                const d = toYmd(lead?.lastContact || lead?.date);
+                const d = leadPeriodYmd(lead);
                 if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
                 const mm = toMonthNum(d);
                 return selectedPeriodMonths.includes(mm);
@@ -534,12 +595,22 @@ export default function CRM({
     const ytdActual = useMemo(
         () =>
             funnelJourneyLeads.filter((lead: any) => {
-                const d = toYmd(lead?.lastContact || lead?.date);
+                const d = leadPeriodYmd(lead);
                 if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
                 return ytdPeriodMonths.includes(toMonthNum(d));
             }).length,
         [funnelJourneyLeads, crmSalesPeriod.year, ytdPeriodMonths]
     );
+    const monthlyGoalPct = useMemo(() => {
+        // Progress is always computed from totals for the selected period slice.
+        if (monthlyTarget <= 0) return 0;
+        return (monthlyActual / monthlyTarget) * 100;
+    }, [monthlyActual, monthlyTarget]);
+    const ytdGoalPct = useMemo(() => {
+        // YTD progress is cumulative actual leads divided by cumulative target (never average of monthly percentages).
+        if (ytdTarget <= 0) return 0;
+        return (ytdActual / ytdTarget) * 100;
+    }, [ytdActual, ytdTarget]);
     const [expandedDashboardAccounts, setExpandedDashboardAccounts] = useState<string[]>([]);
     const dashboardAccountRows = useMemo(() => {
         const stageRank = new Map<string, number>();
@@ -973,6 +1044,8 @@ export default function CRM({
             value: expected,
             probability: probabilityForStage(stageKey),
             tags: tagList,
+            enteredFunnelAt: newCallData.date,
+            date: newCallData.date,
             lastContact: newCallData.date,
             accountManager: currentUser?.name || currentUser?.email || 'Staff',
             totalRequests: 0,
@@ -1533,8 +1606,8 @@ export default function CRM({
                                 </div>
                                 <div className="xl:col-span-2 space-y-2">
                                     <CircularIndicator label="Conversion Rate" value={dashboardStats.conversionRate} tone={colors.green} />
-                                    <CircularIndicator label="Monthly Goal" value={monthlyTarget > 0 ? (monthlyActual / monthlyTarget) * 100 : 0} tone={colors.cyan} />
-                                    <CircularIndicator label="YTD Goal" value={ytdTarget > 0 ? (ytdActual / ytdTarget) * 100 : 0} tone={colors.primary} />
+                                    <CircularIndicator label="Monthly Goal" value={monthlyGoalPct} tone={colors.cyan} />
+                                    <CircularIndicator label="YTD Goal" value={ytdGoalPct} tone={colors.primary} />
                                     <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                         <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Customers</p>
                                         <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalClients}</p>

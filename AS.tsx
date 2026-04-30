@@ -4574,7 +4574,7 @@ export default function AdvancedSalesDashboard() {
             setPropertyFinancialKpis([]);
             return;
         }
-        fetch(apiUrl(`/api/financials?propertyId=${encodeURIComponent(String(pid))}`))
+        fetch(apiUrl(`/api/financials?propertyId=${encodeURIComponent(String(pid))}`), { cache: 'no-store' })
             .then((res) => (res.ok ? res.json() : []))
             .then((data) => {
                 if (cancelled) return;

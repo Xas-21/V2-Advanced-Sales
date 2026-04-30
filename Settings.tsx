@@ -856,7 +856,7 @@ export default function Settings({
                 }
             });
 
-        fetch(apiUrl(`/api/financials?propertyId=${propId}`))
+        fetch(apiUrl(`/api/financials?propertyId=${propId}`), { cache: 'no-store' })
             .then(res => res.json())
             .then(data => {
                 if (Array.isArray(data) && data.length > 0) {
