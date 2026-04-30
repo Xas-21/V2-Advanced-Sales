@@ -58,13 +58,21 @@ function leadMatchesSalesPeriod(
     period: CrmSalesPeriod,
     quarterBuckets: Record<string, number[]>
 ): boolean {
-    const d = String(lead?.lastContact || lead?.date || '').trim().slice(0, 10);
-    if (!d || d.length < 7) return false;
-    const y = Number(d.slice(0, 4));
-    const mo = Number(d.slice(5, 7));
-    if (!Number.isFinite(y) || !Number.isFinite(mo)) return false;
+    const parseLeadYearMonth = (raw: any): { year: number; month: number } => {
+        const s = String(raw || '').trim();
+        if (!s) return { year: 0, month: 0 };
+        const ymdLike = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdLike) return { year: Number(ymdLike[1]) || 0, month: Number(ymdLike[2]) || 0 };
+        const dmyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyLike) return { year: Number(dmyLike[3]) || 0, month: Number(dmyLike[2]) || 0 };
+        const dt = new Date(s);
+        if (!Number.isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
+        return { year: 0, month: 0 };
+    };
+    const { year: y, month: mo } = parseLeadYearMonth(lead?.lastContact || lead?.date);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || y <= 0 || mo <= 0) return false;
     if (period.mode === 'month') {
-        return d.slice(0, 7) === `${period.year}-${String(period.month).padStart(2, '0')}`;
+        return y === period.year && mo === period.month;
     }
     if (period.mode === 'year') {
         return y === period.year;
@@ -306,13 +314,22 @@ export default function CRM({
         if (!s) return '';
         return s.slice(0, 10);
     };
+    const parseYearMonth = (raw: any): { year: number; month: number } => {
+        const s = String(raw || '').trim();
+        if (!s) return { year: 0, month: 0 };
+        const ymdLike = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdLike) return { year: Number(ymdLike[1]) || 0, month: Number(ymdLike[2]) || 0 };
+        const dmyLike = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyLike) return { year: Number(dmyLike[3]) || 0, month: Number(dmyLike[2]) || 0 };
+        const dt = new Date(s);
+        if (!Number.isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
+        return { year: 0, month: 0 };
+    };
     const toMonthNum = (ymd: string) => {
-        if (!ymd || ymd.length < 7) return 0;
-        return Number(ymd.slice(5, 7)) || 0;
+        return parseYearMonth(ymd).month;
     };
     const toYearNum = (ymd: string) => {
-        if (!ymd || ymd.length < 4) return 0;
-        return Number(ymd.slice(0, 4)) || 0;
+        return parseYearMonth(ymd).year;
     };
     const monthNameToNumber = (raw: any): number => {
         const s = String(raw || '').trim().toLowerCase();
@@ -341,10 +358,19 @@ export default function CRM({
     }, [crmLeadsForView, createdByUserFilterId, crmFilterUsers]);
 
     const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
+    const funnelJourneyStageSet = useMemo(() => new Set(dashboardStageOrder), [dashboardStageOrder]);
+    const funnelJourneyLeads = useMemo(
+        () =>
+            allCreatorScopedLeads.filter((lead: any) => {
+                const stageId = String(lead?.stage || '').trim();
+                return funnelJourneyStageSet.has(stageId);
+            }),
+        [allCreatorScopedLeads, funnelJourneyStageSet]
+    );
 
     const dashboardFilteredLeads = useMemo(
-        () => flattenCrmLeads(crmLeadsForCreatorOnly),
-        [crmLeadsForCreatorOnly]
+        () => funnelJourneyLeads,
+        [funnelJourneyLeads]
     );
 
     const dashboardRange = useMemo(() => {
@@ -453,55 +479,66 @@ export default function CRM({
         };
     }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll]);
 
+    const selectedPeriodMonths = useMemo(() => {
+        if (crmSalesPeriod.mode === 'year') return Array.from({ length: 12 }, (_, i) => i + 1);
+        if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) return CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter];
+        return [crmSalesPeriod.month];
+    }, [crmSalesPeriod]);
+
+    const ytdPeriodMonths = useMemo(() => {
+        if (crmSalesPeriod.mode === 'month') {
+            return Array.from({ length: crmSalesPeriod.month }, (_, i) => i + 1);
+        }
+        if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
+            const quarterMonths = CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter];
+            const quarterEndMonth = quarterMonths[2] || 12;
+            return Array.from({ length: quarterEndMonth }, (_, i) => i + 1);
+        }
+        return selectedPeriodMonths;
+    }, [crmSalesPeriod.mode, crmSalesPeriod.month, crmSalesPeriod.quarter, selectedPeriodMonths]);
+
     const monthlyTarget = useMemo(() => {
         const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
-        if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
-            const quarterSet = new Set(CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter]);
-            return months.reduce((sum: number, m: any) => {
-                const mn = monthNameToNumber(m?.month);
-                if (!quarterSet.has(mn)) return sum;
-                return sum + (Number(m?.salesCalls || 0) || 0);
-            }, 0);
-        }
-        const monthRow = months.find((m: any) => monthNameToNumber(m?.month) === crmSalesPeriod.month);
-        return Number(monthRow?.salesCalls || 0) || 0;
-    }, [propertyFinancialKpis, crmSalesPeriod]);
+        const monthSet = new Set(selectedPeriodMonths);
+        return months.reduce((sum: number, m: any) => {
+            const mn = monthNameToNumber(m?.month);
+            if (!monthSet.has(mn)) return sum;
+            return sum + (Number(m?.salesCalls || 0) || 0);
+        }, 0);
+    }, [propertyFinancialKpis, crmSalesPeriod.year, selectedPeriodMonths]);
 
     const ytdTarget = useMemo(() => {
         const row = (propertyFinancialKpis || []).find((r: any) => Number(r?.year) === crmSalesPeriod.year);
         if (!row) return 0;
         const months = Array.isArray(row?.months) ? row.months : [];
-        let sum = 0;
-        for (let m = 1; m <= crmSalesPeriod.month; m += 1) {
-            const monthRow = months.find((x: any) => monthNameToNumber(x?.month) === m);
-            sum += Number(monthRow?.salesCalls || 0) || 0;
-        }
-        return sum;
-    }, [propertyFinancialKpis, crmSalesPeriod]);
+        const monthSet = new Set(ytdPeriodMonths);
+        return months.reduce((sum: number, m: any) => {
+            const mn = monthNameToNumber(m?.month);
+            if (!monthSet.has(mn)) return sum;
+            return sum + (Number(m?.salesCalls || 0) || 0);
+        }, 0);
+    }, [propertyFinancialKpis, crmSalesPeriod.year, ytdPeriodMonths]);
 
     const monthlyActual = useMemo(
         () =>
-            allCreatorScopedLeads.filter((lead: any) => {
+            funnelJourneyLeads.filter((lead: any) => {
                 const d = toYmd(lead?.lastContact || lead?.date);
                 if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
                 const mm = toMonthNum(d);
-                if (crmSalesPeriod.mode === 'quarter' && crmSalesPeriod.quarter) {
-                    return CRM_QUARTER_MONTH_BLOCKS[crmSalesPeriod.quarter].includes(mm);
-                }
-                return mm === crmSalesPeriod.month;
+                return selectedPeriodMonths.includes(mm);
             }).length,
-        [allCreatorScopedLeads, crmSalesPeriod]
+        [funnelJourneyLeads, crmSalesPeriod.year, selectedPeriodMonths]
     );
     const ytdActual = useMemo(
         () =>
-            allCreatorScopedLeads.filter((lead: any) => {
+            funnelJourneyLeads.filter((lead: any) => {
                 const d = toYmd(lead?.lastContact || lead?.date);
                 if (!d || toYearNum(d) !== crmSalesPeriod.year) return false;
-                return toMonthNum(d) <= crmSalesPeriod.month;
+                return ytdPeriodMonths.includes(toMonthNum(d));
             }).length,
-        [allCreatorScopedLeads, crmSalesPeriod]
+        [funnelJourneyLeads, crmSalesPeriod.year, ytdPeriodMonths]
     );
     const [expandedDashboardAccounts, setExpandedDashboardAccounts] = useState<string[]>([]);
     const dashboardAccountRows = useMemo(() => {
