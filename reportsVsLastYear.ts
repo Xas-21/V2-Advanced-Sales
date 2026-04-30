@@ -253,6 +253,21 @@ function requestTouchesYear(r: any, y: number, kind: VsLyKind): boolean {
     return false;
 }
 
+function requestTouchesAnyMonth(
+    r: any,
+    y: number,
+    months: Set<number>,
+    kind: VsLyKind
+): boolean {
+    for (let m = 1; m <= 12; m += 1) {
+        if (!months.has(m)) continue;
+        if (kind === 'rooms' ? requestHasRoomsActivityInMonth(r, y, m) : requestHasMiceActivityInMonth(r, y, m)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function isExcludedCancelled(r: any): boolean {
     const s = String(r?.status || '')
         .trim()
@@ -566,10 +581,11 @@ function miceMetrics(
     return { eventRev, roomsRev, comb, pax, adr, roomNights, count, avg, acc: buildSegMaps(reqs, accounts, 'account'), req: buildSegMaps(reqs, accounts, 'request') };
 }
 
-function roomsMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number) {
+function roomsMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number, months?: Set<number>) {
     let roomNights = 0;
     let roomsRev = 0;
     for (let mo = 1; mo <= 12; mo += 1) {
+        if (months && !months.has(mo)) continue;
         for (const r of pool) {
             const s = getRoomsRevAndNightsInMonth(r, y, mo);
             roomNights += s.roomNights;
@@ -582,12 +598,13 @@ function roomsMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, 
     return { rev: roomsRev, roomNights, adr, count, avg, acc: buildSegMaps(pool, accounts, 'account'), req: buildSegMaps(pool, accounts, 'request') };
 }
 
-function miceMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number) {
+function miceMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y: number, months?: Set<number>) {
     let eventRev = 0;
     let roomsRev = 0;
     let pax = 0;
     let roomNights = 0;
     for (let mo = 1; mo <= 12; mo += 1) {
+        if (months && !months.has(mo)) continue;
         for (const r of pool) {
             const s = getRoomsRevAndNightsInMonth(r, y, mo);
             roomsRev += s.rev;
@@ -935,6 +952,10 @@ export type VsLyMatrixBuildOptions = {
     propertyAccountTypes: string[];
     includeRequestSegments: boolean;
     includeAccountTypes: boolean;
+    /** Optional month window for CY scope (1..12). Defaults to full year. */
+    allowedMonthsCy?: number[];
+    /** Optional month window for LY scope (1..12). Defaults to full year. */
+    allowedMonthsLy?: number[];
 };
 
 const defaultVsLyBuildOptions: VsLyMatrixBuildOptions = {
@@ -942,6 +963,8 @@ const defaultVsLyBuildOptions: VsLyMatrixBuildOptions = {
     propertyAccountTypes: [],
     includeRequestSegments: true,
     includeAccountTypes: true,
+    allowedMonthsCy: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    allowedMonthsLy: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
 };
 
 export function buildVsLyMatrix(
@@ -959,53 +982,61 @@ export function buildVsLyMatrix(
     const requestSegmentsForMatrix = propertyRequestSegments;
     const includeRequestSegments = o.includeRequestSegments;
     const includeAccountTypes = o.includeAccountTypes;
+    const monthsCy = new Set((o.allowedMonthsCy || []).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12));
+    const monthsLy = new Set((o.allowedMonthsLy || []).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12));
     const yearLy = selectedYear - 1;
     const pool = allRequests.filter((r) => (kind === 'rooms' ? filterTypeRooms(r) : filterTypeMice(r)));
 
     const def = (m: number) => {
-        const dCy = collectRequestsTouchingMonth(
-            pool,
-            selectedYear,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            kind
-        );
-        const dLy = collectRequestsTouchingMonth(
-            pool,
-            yearLy,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            kind
-        );
-        const otb = collectRequestsTouchingMonth(
-            pool,
-            selectedYear,
-            m,
-            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
-            kind
-        );
+        const dCy = monthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  pool,
+                  selectedYear,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  kind
+              )
+            : [];
+        const dLy = monthsLy.has(m)
+            ? collectRequestsTouchingMonth(
+                  pool,
+                  yearLy,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  kind
+              )
+            : [];
+        const otb = monthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  pool,
+                  selectedYear,
+                  m,
+                  (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+                  kind
+              )
+            : [];
         return { dCy, dLy, otb };
     };
 
     const ytdDefActCy = (y: number) =>
         pool.filter(
-            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, y, kind)
+            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, y, monthsCy, kind)
         );
     const ytdDefActLy = (y: number) =>
         pool.filter(
-            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, y, kind)
+            (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, y, monthsLy, kind)
         );
     const ytdOtbY = (y: number) =>
         pool.filter(
-            (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, y, kind)
+            (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesAnyMonth(r, y, monthsCy, kind)
         );
 
-    const roomsYtdCy = roomsMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear);
-    const roomsYtdLy = roomsMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy);
-    const roomsYtdOtb = roomsMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear);
-    const miceYtdCy = miceMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear);
-    const miceYtdLy = miceMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy);
-    const miceYtdOtb = miceMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear);
+    const roomsYtdCy = roomsMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear, monthsCy);
+    const roomsYtdLy = roomsMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy, monthsLy);
+    const roomsYtdOtb = roomsMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear, monthsCy);
+    const miceYtdCy = miceMetricsYtd(ytdDefActCy(selectedYear), accounts, currency, selectedYear, monthsCy);
+    const miceYtdLy = miceMetricsYtd(ytdDefActLy(yearLy), accounts, currency, yearLy, monthsLy);
+    const miceYtdOtb = miceMetricsYtd(ytdOtbY(selectedYear), accounts, currency, selectedYear, monthsCy);
 
     const rows: VsLyMatrixRow[] = [];
 
@@ -1445,71 +1476,81 @@ function buildGrandHotelCombinedRevenueRow(
     accounts: any[],
     selectedYear: number,
     yearLy: number,
-    currency: CurrencyCode
+    currency: CurrencyCode,
+    allowedMonthsCy: Set<number>,
+    allowedMonthsLy: Set<number>
 ): VsLyMatrixRow {
     const poolRooms = allRequests.filter((r) => filterTypeRooms(r));
     const poolMice = allRequests.filter((r) => filterTypeMice(r));
     const defR = (m: number) => {
-        const dCy = collectRequestsTouchingMonth(
-            poolRooms,
-            selectedYear,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            'rooms'
-        );
-        const dLy = collectRequestsTouchingMonth(
-            poolRooms,
-            yearLy,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            'rooms'
-        );
+        const dCy = allowedMonthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolRooms,
+                  selectedYear,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  'rooms'
+              )
+            : [];
+        const dLy = allowedMonthsLy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolRooms,
+                  yearLy,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  'rooms'
+              )
+            : [];
         return { dCy, dLy };
     };
     const defM = (m: number) => {
-        const dCy = collectRequestsTouchingMonth(
-            poolMice,
-            selectedYear,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            'mice'
-        );
-        const dLy = collectRequestsTouchingMonth(
-            poolMice,
-            yearLy,
-            m,
-            (r) => isDefAct(r) && !isExcludedCancelled(r),
-            'mice'
-        );
+        const dCy = allowedMonthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolMice,
+                  selectedYear,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  'mice'
+              )
+            : [];
+        const dLy = allowedMonthsLy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolMice,
+                  yearLy,
+                  m,
+                  (r) => isDefAct(r) && !isExcludedCancelled(r),
+                  'mice'
+              )
+            : [];
         return { dCy, dLy };
     };
     const ytdRCy = poolRooms.filter(
-        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, selectedYear, 'rooms')
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, selectedYear, allowedMonthsCy, 'rooms')
     );
     const ytdRLy = poolRooms.filter(
-        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, yearLy, 'rooms')
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, yearLy, allowedMonthsLy, 'rooms')
     );
     const ytdMCy = poolMice.filter(
-        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, selectedYear, 'mice')
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, selectedYear, allowedMonthsCy, 'mice')
     );
     const ytdMLy = poolMice.filter(
-        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesYear(r, yearLy, 'mice')
+        (r) => !isExcludedCancelled(r) && isDefAct(r) && requestTouchesAnyMonth(r, yearLy, allowedMonthsLy, 'mice')
     );
-    const roomYtdCy = roomsMetricsYtd(ytdRCy, accounts, currency, selectedYear);
-    const roomYtdLy = roomsMetricsYtd(ytdRLy, accounts, currency, yearLy);
-    const evYtdCy = miceMetricsYtd(ytdMCy, accounts, currency, selectedYear);
-    const evYtdLy = miceMetricsYtd(ytdMLy, accounts, currency, yearLy);
+    const roomYtdCy = roomsMetricsYtd(ytdRCy, accounts, currency, selectedYear, allowedMonthsCy);
+    const roomYtdLy = roomsMetricsYtd(ytdRLy, accounts, currency, yearLy, allowedMonthsLy);
+    const evYtdCy = miceMetricsYtd(ytdMCy, accounts, currency, selectedYear, allowedMonthsCy);
+    const evYtdLy = miceMetricsYtd(ytdMLy, accounts, currency, yearLy, allowedMonthsLy);
     const ytdOtbR = poolRooms.filter(
-        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, selectedYear, 'rooms')
+        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesAnyMonth(r, selectedYear, allowedMonthsCy, 'rooms')
     );
     const ytdOtbM = poolMice.filter(
-        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesYear(r, selectedYear, 'mice')
+        (r) => !isExcludedCancelled(r) && isOtbPipeline(r) && requestTouchesAnyMonth(r, selectedYear, allowedMonthsCy, 'mice')
     );
-    const roomOtbYtd = roomsMetricsYtd(ytdOtbR, accounts, currency, selectedYear);
-    const evOtbYtd = miceMetricsYtd(ytdOtbM, accounts, currency, selectedYear);
-    const trYtdCy = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isDefAct(r));
-    const trYtdLy = transportRevenueYtdForRequests(allRequests, yearLy, (r) => isDefAct(r));
-    const trYtdOtb = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isOtbPipeline(r));
+    const roomOtbYtd = roomsMetricsYtd(ytdOtbR, accounts, currency, selectedYear, allowedMonthsCy);
+    const evOtbYtd = miceMetricsYtd(ytdOtbM, accounts, currency, selectedYear, allowedMonthsCy);
+    const trYtdCy = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isDefAct(r), allowedMonthsCy);
+    const trYtdLy = transportRevenueYtdForRequests(allRequests, yearLy, (r) => isDefAct(r), allowedMonthsLy);
+    const trYtdOtb = transportRevenueYtdForRequests(allRequests, selectedYear, (r) => isOtbPipeline(r), allowedMonthsCy);
     const tOtb = roomOtbYtd.rev + evOtbYtd.eventRev + trYtdOtb;
     const months: VsLyMonthCol[] = [];
     for (let m = 1; m <= 12; m += 1) {
@@ -1519,27 +1560,37 @@ function buildGrandHotelCombinedRevenueRow(
         const rvLy = roomsMetrics(dRLy, accounts, currency, yearLy, m).rev;
         const eventCy = miceMetrics(dMCy, accounts, currency, selectedYear, m).eventRev;
         const eventLy = miceMetrics(dMLy, accounts, currency, yearLy, m).eventRev;
-        const trCy = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r));
-        const trLy = transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r));
+        const trCy = allowedMonthsCy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r))
+            : 0;
+        const trLy = allowedMonthsLy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r))
+            : 0;
         const gCy = rvCy + eventCy + trCy;
         const gLy = rvLy + eventLy + trLy;
-        const otbR = collectRequestsTouchingMonth(
-            poolRooms,
-            selectedYear,
-            m,
-            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
-            'rooms'
-        );
-        const otbM = collectRequestsTouchingMonth(
-            poolMice,
-            selectedYear,
-            m,
-            (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
-            'mice'
-        );
+        const otbR = allowedMonthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolRooms,
+                  selectedYear,
+                  m,
+                  (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+                  'rooms'
+              )
+            : [];
+        const otbM = allowedMonthsCy.has(m)
+            ? collectRequestsTouchingMonth(
+                  poolMice,
+                  selectedYear,
+                  m,
+                  (r) => isOtbPipeline(r) && !isExcludedCancelled(r),
+                  'mice'
+              )
+            : [];
         const oRv = roomsMetrics(otbR, accounts, currency, selectedYear, m).rev;
         const oEv = miceMetrics(otbM, accounts, currency, selectedYear, m).eventRev;
-        const oTr = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r));
+        const oTr = allowedMonthsCy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r))
+            : 0;
         const oSum = oRv + oEv + oTr;
         months.push({
             month: m,
@@ -1592,7 +1643,8 @@ function transportRevenueInMonthForRequests(
 function transportRevenueYtdForRequests(
     allRequests: any[],
     year: number,
-    statusPick: (r: any) => boolean
+    statusPick: (r: any) => boolean,
+    months?: Set<number>
 ): number {
     let sum = 0;
     for (const r of allRequests) {
@@ -1600,7 +1652,9 @@ function transportRevenueYtdForRequests(
         const b = parseYmd(bucketYmdForRequest(r));
         if (!b) continue;
         const y = parseInt(b.slice(0, 4), 10);
+        const mo = parseInt(b.slice(5, 7), 10);
         if (y !== year) continue;
+        if (months && !months.has(mo)) continue;
         sum += computeRequestRevenueBreakdownNoTax(r).transportRevenue;
     }
     return sum;
@@ -1610,16 +1664,24 @@ function buildOtherRevenueRow(
     allRequests: any[],
     selectedYear: number,
     yearLy: number,
-    currency: CurrencyCode
+    currency: CurrencyCode,
+    allowedMonthsCy: Set<number>,
+    allowedMonthsLy: Set<number>
 ): VsLyMatrixRow {
     const months: VsLyMonthCol[] = [];
     let tCy = 0;
     let tLy = 0;
     let tOtb = 0;
     for (let m = 1; m <= 12; m += 1) {
-        const cy = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r));
-        const ly = transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r));
-        const otb = transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r));
+        const cy = allowedMonthsCy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isDefAct(r))
+            : 0;
+        const ly = allowedMonthsLy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, yearLy, m, (r) => isDefAct(r))
+            : 0;
+        const otb = allowedMonthsCy.has(m)
+            ? transportRevenueInMonthForRequests(allRequests, selectedYear, m, (r) => isOtbPipeline(r))
+            : 0;
         tCy += cy;
         tLy += ly;
         tOtb += otb;
@@ -1675,6 +1737,9 @@ export function buildFullVsLyMatrix(
     currency: CurrencyCode,
     opts: Partial<VsLyMatrixBuildOptions> = {}
 ): { rows: VsLyMatrixRow[]; yearLy: number } {
+    const o = { ...defaultVsLyBuildOptions, ...opts };
+    const monthsCy = new Set((o.allowedMonthsCy || []).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12));
+    const monthsLy = new Set((o.allowedMonthsLy || []).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12));
     const roomsR = buildVsLyMatrix('rooms', allRequests, accounts, selectedYear, currency, opts);
     const miceR = buildVsLyMatrix('mice', allRequests, accounts, selectedYear, currency, opts);
     const a = prefixVsLyMatrixPart('rooms', roomsR.rows);
@@ -1688,7 +1753,9 @@ export function buildFullVsLyMatrix(
         allRequests,
         selectedYear,
         yearLy,
-        currency
+        currency,
+        monthsCy,
+        monthsLy
     );
     const partD = makeSectionHeaderRow('full-part-grand', 'D. Total Hotel Revenue');
     const grand = buildGrandHotelCombinedRevenueRow(
@@ -1696,7 +1763,9 @@ export function buildFullVsLyMatrix(
         accounts,
         selectedYear,
         yearLy,
-        currency
+        currency,
+        monthsCy,
+        monthsLy
     );
     return {
         rows: [title, partA, ...a, partB, ...b, partC, other, partD, grand],

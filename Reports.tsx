@@ -162,6 +162,39 @@ function pctGrowth(current: number, previous: number): string {
     return `${sign}${pct.toFixed(1)}%`;
 }
 
+function parsePeriodCode(raw: any): number {
+    const s = String(raw || '').trim().slice(0, 10);
+    if (!s) return 0;
+    const ymd = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (ymd) {
+        const y = Number(ymd[1]) || 0;
+        const m = Number(ymd[2]) || 0;
+        return y > 0 && m >= 1 && m <= 12 ? y * 100 + m : 0;
+    }
+    const dt = new Date(s);
+    if (Number.isNaN(dt.getTime())) return 0;
+    return dt.getFullYear() * 100 + (dt.getMonth() + 1);
+}
+
+function requestPeriodCodeForReports(req: any): number {
+    const roomCode = parsePeriodCode(req?.checkIn);
+    if (roomCode > 0) return roomCode;
+    const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
+    let earliestAgendaCode = 0;
+    for (const row of agenda) {
+        const code = parsePeriodCode(row?.startDate);
+        if (!code) continue;
+        if (!earliestAgendaCode || code < earliestAgendaCode) earliestAgendaCode = code;
+    }
+    if (earliestAgendaCode > 0) return earliestAgendaCode;
+    return (
+        parsePeriodCode(req?.receivedDate) ||
+        parsePeriodCode(req?.requestDate) ||
+        parsePeriodCode(typeof req?.createdAt === 'string' ? req.createdAt.split('T')[0] : '') ||
+        0
+    );
+}
+
 function csvEscape(v: any): string {
     const s = String(v ?? '');
     return `"${s.replace(/"/g, '""')}"`;
@@ -199,7 +232,10 @@ export default function Reports({
         dateRange: { start: month.start, end: month.end },
         statuses: [] as string[],
         valueRange: { min: 0, max: 500_000_000 },
-        vsReportYear: new Date().getFullYear(),
+        vsFromYear: new Date().getFullYear(),
+        vsFromMonth: 1,
+        vsToYear: new Date().getFullYear(),
+        vsToMonth: 12,
         /** Rooms / MICE vs LY: show request-segment and/or account-type breakdown rows */
         vsLyByRequestSegment: true,
         vsLyByAccountType: true,
@@ -300,7 +336,7 @@ export default function Reports({
 
     useEffect(() => {
         setVsLyRowHidden(new Set());
-    }, [selectedEntity, filters.vsReportYear]);
+    }, [selectedEntity, filters.vsFromYear, filters.vsFromMonth, filters.vsToYear, filters.vsToMonth]);
     const canUseSelectedSource = canReportsUseDataSource(currentUser, selectedEntity);
     const canPreviewRows = canReportsPreviewSourceRows(currentUser);
 
@@ -396,11 +432,17 @@ export default function Reports({
     useEffect(() => {
         if (!isVsLySource) return;
         if (!yearOptionsForVs.length) return;
-        const y = Number(filters.vsReportYear);
-        if (!yearOptionsForVs.includes(y)) {
-            setFilters((f: any) => ({ ...f, vsReportYear: defaultVsReportYear(yearOptionsForVs) }));
+        const fromY = Number(filters.vsFromYear);
+        const toY = Number(filters.vsToYear);
+        const fallback = defaultVsReportYear(yearOptionsForVs);
+        if (!yearOptionsForVs.includes(fromY) || !yearOptionsForVs.includes(toY)) {
+            setFilters((f: any) => ({
+                ...f,
+                vsFromYear: yearOptionsForVs.includes(fromY) ? fromY : fallback,
+                vsToYear: yearOptionsForVs.includes(toY) ? toY : fallback,
+            }));
         }
-    }, [isVsLySource, yearOptionsForVs, filters.vsReportYear]);
+    }, [isVsLySource, yearOptionsForVs, filters.vsFromYear, filters.vsToYear]);
 
     const statusOptions = selectedEntity === 'Sales Calls'
         ? ['Upcoming Sales Calls', 'Waiting list', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'Not Interested']
@@ -702,16 +744,43 @@ export default function Reports({
         }
 
         if (selectedEntity === 'Rooms vs LY' || selectedEntity === 'MICE vs LY' || selectedEntity === 'Full Report') {
-            const y = Number(filters.vsReportYear) || new Date().getFullYear();
+            const fromYear = Number(filters.vsFromYear) || new Date().getFullYear();
+            const fromMonth = Math.min(12, Math.max(1, Number(filters.vsFromMonth) || 1));
+            const toYear = Number(filters.vsToYear) || fromYear;
+            const toMonth = Math.min(12, Math.max(1, Number(filters.vsToMonth) || 12));
+            const fromCodeRaw = fromYear * 100 + fromMonth;
+            const toCodeRaw = toYear * 100 + toMonth;
+            const startCode = Math.min(fromCodeRaw, toCodeRaw);
+            const endCode = Math.max(fromCodeRaw, toCodeRaw);
+            const y = toCodeRaw >= fromCodeRaw ? toYear : fromYear;
+            const reportYearLy = y - 1;
+            const lyStartCode = startCode - 100;
+            const lyEndCode = endCode - 100;
+            const inPeriod = (code: number, start: number, end: number) => code >= start && code <= end;
+            const scopedVsRequests = scopedRequests.filter((r: any) => {
+                const code = requestPeriodCodeForReports(r);
+                if (!code) return false;
+                return inPeriod(code, startCode, endCode) || inPeriod(code, lyStartCode, lyEndCode);
+            });
+            const allowedMonthsCy = Array.from({ length: 12 }, (_, i) => i + 1).filter((m) =>
+                inPeriod(y * 100 + m, startCode, endCode)
+            );
+            const allowedMonthsLy = Array.from({ length: 12 }, (_, i) => i + 1).filter((m) =>
+                inPeriod(reportYearLy * 100 + m, lyStartCode, lyEndCode)
+            );
             const vsOpts = {
                 propertyRequestSegments,
                 propertyAccountTypes,
                 includeRequestSegments: Boolean(filters.vsLyByRequestSegment),
                 includeAccountTypes: Boolean(filters.vsLyByAccountType),
+                allowedMonthsCy: allowedMonthsCy.length ? allowedMonthsCy : undefined,
+                allowedMonthsLy: allowedMonthsLy.length ? allowedMonthsLy : undefined,
             };
+            const summaryFrom = `${String(Math.floor(startCode / 100)).padStart(4, '0')}-${String(startCode % 100).padStart(2, '0')}`;
+            const summaryTo = `${String(Math.floor(endCode / 100)).padStart(4, '0')}-${String(endCode % 100).padStart(2, '0')}`;
             if (selectedEntity === 'Full Report') {
                 const { rows: vsRows, yearLy } = buildFullVsLyMatrix(
-                    scopedRequests,
+                    scopedVsRequests,
                     accounts || [],
                     y,
                     selectedCurrency,
@@ -720,6 +789,8 @@ export default function Reports({
                 return {
                     rows: [] as any[],
                     summary: {
+                        From: summaryFrom,
+                        To: summaryTo,
                         'Report year (CY)': y,
                         'Vs last year (LY)': yearLy,
                         'Revenue basis':
@@ -731,14 +802,21 @@ export default function Reports({
                     } as Record<string, string | number>,
                     exportColumns: [] as string[],
                     vsLyRows: vsRows,
-                    vsLyMeta: { kind: 'full' as const, year: y, yearLy },
+                    vsLyMeta: {
+                        kind: 'full' as const,
+                        year: y,
+                        yearLy,
+                        from: summaryFrom,
+                        to: summaryTo,
+                        allowedMonthsCy,
+                    },
                     isVsLyMatrix: true,
                 };
             }
             const kind = selectedEntity === 'Rooms vs LY' ? 'rooms' : 'mice';
             const { rows: vsRows, yearLy } = buildVsLyMatrix(
                 kind,
-                scopedRequests,
+                scopedVsRequests,
                 accounts || [],
                 y,
                 selectedCurrency,
@@ -747,6 +825,8 @@ export default function Reports({
             return {
                 rows: [] as any[],
                 summary: {
+                    From: summaryFrom,
+                    To: summaryTo,
                     'Report year (CY)': y,
                     'Vs last year (LY)': yearLy,
                     'Revenue basis': 'Line-based (excl. cancelled from all slices)',
@@ -755,7 +835,7 @@ export default function Reports({
                 } as Record<string, string | number>,
                 exportColumns: [] as string[],
                 vsLyRows: vsRows,
-                vsLyMeta: { kind, year: y, yearLy },
+                vsLyMeta: { kind, year: y, yearLy, from: summaryFrom, to: summaryTo, allowedMonthsCy },
                 isVsLyMatrix: true,
             };
         }
@@ -1125,7 +1205,10 @@ export default function Reports({
         filters.dateRange,
         filters.statuses,
         filters.valueRange,
-        filters.vsReportYear,
+        filters.vsFromYear,
+        filters.vsFromMonth,
+        filters.vsToYear,
+        filters.vsToMonth,
         filters.vsLyByRequestSegment,
         filters.vsLyByAccountType,
         filters.promotionsYear,
@@ -1146,11 +1229,15 @@ export default function Reports({
         if (!isVsMatrixPack) return [] as Array<[string, string | number]>;
         const y = reportPackAny.vsLyMeta?.year;
         const ly = reportPackAny.vsLyMeta?.yearLy;
+        const from = reportPackAny.vsLyMeta?.from;
+        const to = reportPackAny.vsLyMeta?.to;
         return [
+            ['From', from ?? '—'],
+            ['To', to ?? '—'],
             ['Report year (CY)', y ?? '—'],
             ['Vs last year (LY)', ly ?? '—'],
         ];
-    }, [isVsMatrixPack, reportPackAny.vsLyMeta?.year, reportPackAny.vsLyMeta?.yearLy]);
+    }, [isVsMatrixPack, reportPackAny.vsLyMeta?.from, reportPackAny.vsLyMeta?.to, reportPackAny.vsLyMeta?.year, reportPackAny.vsLyMeta?.yearLy]);
 
     const vsLyRowsAll: VsLyMatrixRow[] = reportPackAny.vsLyRows || [];
     const vsLyColumnToggleItems = useMemo(() => {
@@ -1177,6 +1264,35 @@ export default function Reports({
             return !vsLyRowHidden.has(k);
         });
     }, [reportPack, vsLyRowHidden]);
+    const vsLyVisibleMonths = useMemo(() => {
+        const arr = Array.isArray(reportPackAny.vsLyMeta?.allowedMonthsCy) ? reportPackAny.vsLyMeta.allowedMonthsCy : [];
+        if (arr.length > 0) {
+            return new Set(arr.map((m: any) => Number(m)).filter((m: number) => Number.isFinite(m) && m >= 1 && m <= 12));
+        }
+        const from = String(reportPackAny.vsLyMeta?.from || '').trim();
+        const to = String(reportPackAny.vsLyMeta?.to || '').trim();
+        const y = Number(reportPackAny.vsLyMeta?.year) || 0;
+        const ym = (raw: string) => {
+            const m = raw.match(/^(\d{4})-(\d{2})$/);
+            if (!m) return 0;
+            return (Number(m[1]) || 0) * 100 + (Number(m[2]) || 0);
+        };
+        const fromCode = ym(from);
+        const toCode = ym(to);
+        if (!fromCode || !toCode || !y) return new Set(Array.from({ length: 12 }, (_, i) => i + 1));
+        const startCode = Math.min(fromCode, toCode);
+        const endCode = Math.max(fromCode, toCode);
+        return new Set(Array.from({ length: 12 }, (_, i) => i + 1).filter((m) => {
+            const code = y * 100 + m;
+            return code >= startCode && code <= endCode;
+        }));
+    }, [reportPackAny.vsLyMeta?.allowedMonthsCy, reportPackAny.vsLyMeta?.from, reportPackAny.vsLyMeta?.to, reportPackAny.vsLyMeta?.year]);
+    const vsLyRowsForDisplay = useMemo(() => {
+        return vsLyRowsFiltered.map((row) => {
+            if (row.rowKind === 'sectionHeader') return row;
+            return { ...row, months: (row.months || []).filter((mo: any) => vsLyVisibleMonths.has(Number(mo?.month) || 0)) };
+        });
+    }, [vsLyRowsFiltered, vsLyVisibleMonths]);
 
     const toggleVsLyRowInReport = (rowId: string) => {
         setVsLyRowHidden((prev) => {
@@ -1280,7 +1396,7 @@ export default function Reports({
             return;
         }
         if (isVsMatrixPack && reportPackAny.vsLyRows?.length) {
-            const vsRows = vsLyRowsFiltered;
+            const vsRows = vsLyRowsForDisplay;
             if (!vsRows.length) return;
             const stamp = new Date().toISOString().slice(0, 10);
             const y = reportPackAny.vsLyMeta?.year || 'year';
@@ -1508,22 +1624,57 @@ export default function Reports({
                             <h3 className="text-sm font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>Filters</h3>
 
                             {isVsLySource && (
-                                <div className="mb-4">
-                                    <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Report year (CY)</label>
-                                    <select
-                                        value={Number(filters.vsReportYear) || new Date().getFullYear()}
-                                        onChange={(e) =>
-                                            setFilters({ ...filters, vsReportYear: Number(e.target.value) })
-                                        }
-                                        className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
-                                        style={{ borderColor: colors.border, color: colors.textMain }}
-                                    >
-                                        {yearOptionsForVs.map((y) => (
-                                            <option key={y} value={y}>
-                                                {y}
-                                            </option>
-                                        ))}
-                                    </select>
+                                <div className="mb-4 space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>From (Year / Month)</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <select
+                                                value={Number(filters.vsFromYear) || new Date().getFullYear()}
+                                                onChange={(e) => setFilters({ ...filters, vsFromYear: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {yearOptionsForVs.map((y) => (
+                                                    <option key={`vs-from-y-${y}`} value={y}>{y}</option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                value={Number(filters.vsFromMonth) || 1}
+                                                onChange={(e) => setFilters({ ...filters, vsFromMonth: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                                                    <option key={`vs-from-m-${m}`} value={m}>{String(m).padStart(2, '0')}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>To (Year / Month)</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <select
+                                                value={Number(filters.vsToYear) || new Date().getFullYear()}
+                                                onChange={(e) => setFilters({ ...filters, vsToYear: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {yearOptionsForVs.map((y) => (
+                                                    <option key={`vs-to-y-${y}`} value={y}>{y}</option>
+                                                ))}
+                                            </select>
+                                            <select
+                                                value={Number(filters.vsToMonth) || 12}
+                                                onChange={(e) => setFilters({ ...filters, vsToMonth: Number(e.target.value) })}
+                                                className="w-full px-3 py-2 rounded border bg-black/20 text-sm outline-none"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                                                    <option key={`vs-to-m-${m}`} value={m}>{String(m).padStart(2, '0')}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
                                     <div className="mt-3 space-y-2">
                                         <label className="flex items-center gap-2 cursor-pointer text-sm" style={{ color: colors.textMain }}>
                                             <input
@@ -1789,7 +1940,7 @@ export default function Reports({
                         </div>
 
                         {isVsMatrixPack && canUseSelectedSource && showPreview && vsLyRowsAll.length > 0 && (() => {
-                            const vHead = vsLyRowsAll[0];
+                            const vHead = vsLyRowsForDisplay.find((r) => r.rowKind !== 'sectionHeader' && Array.isArray(r.months)) || vsLyRowsForDisplay[0];
                             const dataColCount = 5 * (vHead?.months?.length || 12) + 5;
                             const itemAndDataColSpan = 1 + dataColCount;
                             return (
@@ -1845,7 +1996,7 @@ export default function Reports({
                                                         backgroundColor: colors.bg,
                                                     }}
                                                 >
-                                                    YTD (full year)
+                                                    YTD (selected period)
                                                 </th>
                                             </tr>
                                             <tr style={{ backgroundColor: colors.bg }}>
@@ -1895,7 +2046,7 @@ export default function Reports({
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {vsLyRowsFiltered.length === 0 ? null : vsLyRowsFiltered.map((r) => {
+                                            {vsLyRowsForDisplay.length === 0 ? null : vsLyRowsForDisplay.map((r) => {
                                                 if (r.rowKind === 'sectionHeader') {
                                                     return (
                                                         <tr key={r.id} style={{ backgroundColor: colors.bg }}>
