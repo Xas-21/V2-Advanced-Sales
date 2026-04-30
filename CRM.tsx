@@ -495,7 +495,7 @@ export default function CRM({
                 count: leads.length,
                 pct: includedLeadsTotal ? (leads.length / includedLeadsTotal) * 100 : 0,
                 requestsCount,
-                revenue
+                revenue,
             };
         });
         const won = (byStage.get('won') || []).length;
@@ -531,6 +531,19 @@ export default function CRM({
             preferredBusinessData,
         };
     }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll]);
+    const funnelAccountTypeTotals = useMemo(() => {
+        const typeCounts = new Map<string, number>();
+        dashboardFilteredLeads.forEach((lead: any) => {
+            const leadAccount = accounts.find((a: any) => String(a?.id || '') === String(lead?.accountId || ''));
+            const fallbackTag = Array.isArray(lead?.tags) && lead.tags.length ? String(lead.tags[0] || '').trim() : '';
+            const accountType =
+                String(leadAccount?.type || lead?.accountType || fallbackTag || 'Unspecified').trim() || 'Unspecified';
+            typeCounts.set(accountType, (typeCounts.get(accountType) || 0) + 1);
+        });
+        return [...typeCounts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, value]) => `${name} (${value})`);
+    }, [dashboardFilteredLeads, accounts]);
 
     const selectedPeriodMonths = useMemo(() => {
         if (crmSalesPeriod.mode === 'year') return Array.from({ length: 12 }, (_, i) => i + 1);
@@ -1602,6 +1615,28 @@ export default function CRM({
                                                 </div>
                                             );
                                         })}
+                                    </div>
+                                    <div className="mt-2 border-t pt-2" style={{ borderColor: colors.border }}>
+                                        <div className="text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color: colors.textMuted }}>
+                                            Account Types In Funnel
+                                        </div>
+                                        {funnelAccountTypeTotals.length > 0 ? (
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                {funnelAccountTypeTotals.map((badge) => (
+                                                    <span
+                                                        key={`funnel-total-${badge}`}
+                                                        className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+                                                        style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                                                    >
+                                                        {badge}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="text-[10px]" style={{ color: colors.textMuted }}>
+                                                No account types in this funnel period.
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="xl:col-span-2 space-y-2">
