@@ -79,6 +79,7 @@ import {
 } from 'recharts';
 import Login from './Login';
 import LandingPage from './LandingPage';
+import RequestFeedbackPublicPage from './RequestFeedbackPublicPage';
 import CRM, { CRM_QUARTER_MONTH_BLOCKS, type CrmSalesPeriod } from './CRM';
 import Contracts from './Contracts';
 import Reports from './Reports';
@@ -5753,6 +5754,15 @@ export default function AdvancedSalesDashboard() {
 
 
     // --- Render ---
+
+    const feedbackPublicToken = useMemo(
+        () => String(new URLSearchParams(window.location.search).get('feedbackToken') || '').trim(),
+        []
+    );
+
+    if (feedbackPublicToken) {
+        return <RequestFeedbackPublicPage token={feedbackPublicToken} />;
+    }
 
     // Show Login page if not authenticated
     if (!isAuthenticated) {

@@ -5,7 +5,7 @@ import {
     Box, Users, Clock, Coffee, Utensils, Music, Bus, Car, BedDouble,
     Trash2, Save, ChevronDown, ChevronRight, Calculator, Filter,
     MoreHorizontal, Moon, Bed, Tag, X, Settings, CreditCard, RefreshCw, Printer,
-    Bell, AlertTriangle
+    Bell, AlertTriangle, Star, Copy, RotateCcw, MessageSquare
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
 import ConfirmDialog from './ConfirmDialog';
@@ -65,6 +65,13 @@ import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 import { collectRequestFormViolations } from './formConfigurations';
+import {
+    buildInitialFeedbackAnswers,
+    getFeedbackTemplateForRequestType,
+    withPropertyName,
+    type FeedbackAnswerValue,
+    type FeedbackQuestion,
+} from './requestFeedbackConfig';
 
 interface RequestsManagerProps {
     theme: any;
@@ -504,6 +511,10 @@ export default function RequestsManager({
     );
     const [expandedLog, setExpandedLog] = useState<number | null>(null);
     const [selectedRequest, setSelectedRequest] = useState<any>(null);
+    const [feedbackExpanded, setFeedbackExpanded] = useState(false);
+    const [feedbackDraft, setFeedbackDraft] = useState<Record<string, FeedbackAnswerValue>>({});
+    const [feedbackSaving, setFeedbackSaving] = useState(false);
+    const [feedbackCopyState, setFeedbackCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
     const [activeOptionsMenu, setActiveOptionsMenu] = useState<number | null>(null);
     const [isEditing, setIsEditing] = useState(false);
 
@@ -899,6 +910,22 @@ export default function RequestsManager({
         }, 250);
         return () => clearTimeout(t);
     }, [selectedRequest]);
+
+    useEffect(() => {
+        if (!selectedRequest) {
+            setFeedbackExpanded(false);
+            setFeedbackDraft({});
+            setFeedbackCopyState('idle');
+            return;
+        }
+        const template = getFeedbackTemplateForRequestType(selectedRequest.requestType);
+        const base = buildInitialFeedbackAnswers(template);
+        const savedAnswers =
+            selectedRequest?.feedback && typeof selectedRequest.feedback === 'object' ? selectedRequest.feedback.answers : {};
+        setFeedbackDraft({ ...base, ...(typeof savedAnswers === 'object' && savedAnswers ? savedAnswers : {}) });
+        setFeedbackExpanded(false);
+        setFeedbackCopyState('idle');
+    }, [selectedRequest?.id]);
 
     useEffect(() => {
         if (readOnlyOperational) return;
@@ -1352,6 +1379,21 @@ export default function RequestsManager({
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const generateFeedbackToken = () => {
+        try {
+            const raw = crypto.randomUUID().replace(/-/g, '');
+            return `${Date.now().toString(36)}${raw}`;
+        } catch {
+            return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 18)}`;
+        }
+    };
+
+    const buildFeedbackShareLink = (token: string) => {
+        const origin = window.location.origin;
+        const path = window.location.pathname || '/';
+        return `${origin}${path}?feedbackToken=${encodeURIComponent(token)}`;
     };
 
     const persistRequestAlerts = async (requestId: string, alerts: RequestAlert[]) => {
@@ -3358,6 +3400,193 @@ export default function RequestsManager({
             </div>
         );
 
+        const feedbackTemplate = getFeedbackTemplateForRequestType(request.requestType);
+        const feedbackSaved =
+            request?.feedback && typeof request.feedback === 'object' ? request.feedback : {};
+        const feedbackSubmittedAt = String(feedbackSaved?.submittedAt || '').trim();
+        const feedbackPublicToken = String(feedbackSaved?.publicToken || '').trim();
+        const answerValue = (q: FeedbackQuestion) => feedbackDraft[q.id];
+
+        const renderStarsInput = (qid: string, value: any) => {
+            const score = typeof value === 'number' ? value : 0;
+            return (
+                <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                        <button
+                            key={n}
+                            type="button"
+                            onClick={() => setFeedbackDraft((prev) => ({ ...prev, [qid]: n }))}
+                            className="p-1 rounded transition-all hover:scale-110"
+                        >
+                            <Star
+                                size={18}
+                                className={n <= score ? 'text-amber-400' : 'text-slate-500'}
+                                fill={n <= score ? 'currentColor' : 'none'}
+                            />
+                        </button>
+                    ))}
+                </div>
+            );
+        };
+
+        const renderFeedbackQuestionInput = (q: FeedbackQuestion) => {
+            const value = answerValue(q);
+            if (q.type === 'stars') return renderStarsInput(q.id, value);
+            if (q.type === 'stars_na') {
+                const isNa = String(value || '').toUpperCase() === 'N/A';
+                return (
+                    <div className="flex items-center gap-3 flex-wrap">
+                        {renderStarsInput(q.id, isNa ? null : value)}
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setFeedbackDraft((prev) => ({ ...prev, [q.id]: isNa ? null : 'N/A' }))
+                            }
+                            className={`px-3 py-1 rounded-lg border text-xs font-bold ${isNa ? 'bg-amber-400 text-black border-amber-400' : 'border-white/20'}`}
+                            style={{ color: isNa ? '#000' : colors.textMain }}
+                        >
+                            N/A
+                        </button>
+                    </div>
+                );
+            }
+            if (q.type === 'yesno' || q.type === 'yesno_na') {
+                const opts = q.type === 'yesno' ? ['Yes', 'No'] : ['Yes', 'No', 'N/A'];
+                return (
+                    <div className="flex gap-2 flex-wrap">
+                        {opts.map((opt) => {
+                            const active = String(value || '') === opt;
+                            return (
+                                <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={() => setFeedbackDraft((prev) => ({ ...prev, [q.id]: opt }))}
+                                    className={`px-3 py-1 rounded-lg border text-xs font-bold transition-all ${active ? 'bg-cyan-400 text-black border-cyan-400' : 'border-white/20'}`}
+                                    style={{ color: active ? '#000' : colors.textMain }}
+                                >
+                                    {opt}
+                                </button>
+                            );
+                        })}
+                    </div>
+                );
+            }
+            if (q.type === 'score10') {
+                return (
+                    <div className="flex gap-1.5 flex-wrap">
+                        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => {
+                            const active = Number(value || 0) === n;
+                            return (
+                                <button
+                                    key={n}
+                                    type="button"
+                                    onClick={() => setFeedbackDraft((prev) => ({ ...prev, [q.id]: n }))}
+                                    className={`w-8 h-8 rounded-md border text-xs font-black transition-all ${active ? 'bg-violet-400 text-black border-violet-400' : 'border-white/20'}`}
+                                    style={{ color: active ? '#000' : colors.textMain }}
+                                >
+                                    {n}
+                                </button>
+                            );
+                        })}
+                    </div>
+                );
+            }
+            return (
+                <textarea
+                    value={String(value || '')}
+                    onChange={(e) => setFeedbackDraft((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                    placeholder="Your Insights"
+                    className="w-full rounded-xl border px-3 py-2 text-sm min-h-[110px]"
+                    style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                />
+            );
+        };
+
+        const handleCopyFeedbackLink = async () => {
+            if (readOnlyOperational) return;
+            const token = feedbackPublicToken || generateFeedbackToken();
+            if (!feedbackPublicToken) {
+                await updateRequest(request.id, {
+                    feedback: {
+                        ...(feedbackSaved || {}),
+                        publicToken: token,
+                        template: feedbackTemplate.type,
+                        answers: feedbackDraft,
+                        updatedAt: new Date().toISOString(),
+                    },
+                });
+                if (selectedRequest?.id === request.id) {
+                    setSelectedRequest((prev: any) =>
+                        prev
+                            ? {
+                                  ...prev,
+                                  feedback: {
+                                      ...(prev.feedback || {}),
+                                      publicToken: token,
+                                      template: feedbackTemplate.type,
+                                      answers: feedbackDraft,
+                                      updatedAt: new Date().toISOString(),
+                                  },
+                              }
+                            : prev
+                    );
+                }
+            }
+            const link = buildFeedbackShareLink(token);
+            try {
+                await navigator.clipboard.writeText(link);
+                setFeedbackCopyState('copied');
+                setTimeout(() => setFeedbackCopyState('idle'), 2000);
+            } catch {
+                setFeedbackCopyState('error');
+            }
+        };
+
+        const handleSaveFeedback = async () => {
+            if (readOnlyOperational) return;
+            setFeedbackSaving(true);
+            try {
+                const token = feedbackPublicToken || generateFeedbackToken();
+                const now = new Date().toISOString();
+                const feedbackPayload = {
+                    ...(feedbackSaved || {}),
+                    publicToken: token,
+                    template: feedbackTemplate.type,
+                    answers: feedbackDraft,
+                    updatedAt: now,
+                    submittedAt: feedbackSubmittedAt || now,
+                    source: 'internal',
+                };
+                await updateRequest(request.id, { feedback: feedbackPayload });
+                if (selectedRequest?.id === request.id) {
+                    setSelectedRequest((prev: any) => (prev ? { ...prev, feedback: feedbackPayload } : prev));
+                }
+                showSystemNotice('Feedback', 'Feedback saved successfully.');
+            } finally {
+                setFeedbackSaving(false);
+            }
+        };
+
+        const handleResetFeedback = async () => {
+            if (readOnlyOperational) return;
+            const token = generateFeedbackToken();
+            const nextAnswers = buildInitialFeedbackAnswers(feedbackTemplate);
+            const payload = {
+                publicToken: token,
+                template: feedbackTemplate.type,
+                answers: nextAnswers,
+                updatedAt: new Date().toISOString(),
+                submittedAt: '',
+                source: 'internal',
+            };
+            await updateRequest(request.id, { feedback: payload });
+            setFeedbackDraft(nextAnswers);
+            if (selectedRequest?.id === request.id) {
+                setSelectedRequest((prev: any) => (prev ? { ...prev, feedback: payload } : prev));
+            }
+            showSystemNotice('Feedback', 'Feedback form reset. Share the new link with the client.');
+        };
+
         return (
             <div className="h-full flex flex-col relative animate-in fade-in slide-in-from-right-8 duration-500" style={{ backgroundColor: colors.bg }}>
                 <div className="shrink-0 p-6 border-b flex justify-between items-center" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -3642,6 +3871,91 @@ export default function RequestsManager({
                                 </div>
                             </div>
                         )}
+
+                        <div className="rounded-2xl border overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                            <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                                <button
+                                    type="button"
+                                    onClick={() => setFeedbackExpanded((v) => !v)}
+                                    className="flex items-center gap-2 text-left"
+                                    style={{ color: colors.textMain }}
+                                >
+                                    <MessageSquare size={16} className="text-primary" />
+                                    <div>
+                                        <h3 className="text-xs font-black uppercase tracking-widest opacity-70">Feedback Form</h3>
+                                        <p className="text-[10px] opacity-50">
+                                            {feedbackSubmittedAt ? `Submitted ${new Date(feedbackSubmittedAt).toLocaleString()}` : 'Not submitted yet'}
+                                        </p>
+                                    </div>
+                                </button>
+                                <div className="flex items-center gap-2">
+                                    {!readOnlyOperational && (
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyFeedbackLink}
+                                            className="px-3 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1.5 hover:bg-white/5"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                        >
+                                            <Copy size={13} /> Copy link
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setFeedbackExpanded((v) => !v)}
+                                        className="p-2 rounded-lg border"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        aria-label={feedbackExpanded ? 'Collapse feedback form' : 'Expand feedback form'}
+                                    >
+                                        <ChevronDown size={14} className={feedbackExpanded ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                                    </button>
+                                </div>
+                            </div>
+                            {feedbackExpanded && (
+                                <div className="p-5 space-y-5">
+                                    <p className="text-sm leading-relaxed opacity-90">
+                                        {withPropertyName(feedbackTemplate.intro, String(activeProperty?.name || 'our property'))}
+                                    </p>
+                                    {feedbackTemplate.sections.map((section) => (
+                                        <div key={section.title} className="space-y-3">
+                                            <h4 className="text-[11px] font-black uppercase tracking-wider text-primary">{section.title}</h4>
+                                            <div className="space-y-3">
+                                                {section.questions.map((q) => (
+                                                    <div key={q.id} className="rounded-xl border p-3 space-y-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                        <p className="text-sm">{q.prompt}</p>
+                                                        {renderFeedbackQuestionInput(q)}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {!readOnlyOperational && (
+                                        <div className="flex flex-wrap items-center gap-2 pt-2">
+                                            <button
+                                                type="button"
+                                                onClick={handleSaveFeedback}
+                                                disabled={feedbackSaving}
+                                                className="px-4 py-2 rounded-xl bg-primary text-black font-black text-xs uppercase tracking-wider disabled:opacity-60"
+                                            >
+                                                {feedbackSaving ? 'Saving...' : feedbackSubmittedAt ? 'Save edits' : 'Save feedback'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleResetFeedback}
+                                                className="px-4 py-2 rounded-xl border text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                <RotateCcw size={13} /> Reset Form
+                                            </button>
+                                            {feedbackCopyState === 'copied' ? (
+                                                <span className="text-xs text-emerald-400 font-bold">Link copied.</span>
+                                            ) : feedbackCopyState === 'error' ? (
+                                                <span className="text-xs text-red-400 font-bold">Copy failed. Try again.</span>
+                                            ) : null}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
 
                         {showLogs && (
                             <div className="mt-8">
