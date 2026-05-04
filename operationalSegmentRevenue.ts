@@ -350,13 +350,25 @@ function isSeriesRequestDash(r: any): boolean {
     return String(r?.requestType || '').toLowerCase().includes('series');
 }
 
+function normalizeRequestTypeDash(raw: any): string {
+    const t = String(raw || '').toLowerCase().trim();
+    if (t === 'event' || t === 'events' || t === 'event only' || t === 'mice' || t === 'mice event') return 'event';
+    if (t === 'event_rooms' || t === 'event with rooms' || t === 'event with room' || t.includes('event with room')) return 'event_rooms';
+    if (t === 'series' || t === 'series group' || t.includes('series')) return 'series';
+    if (t === 'accommodation' || t === 'accommodation only') return 'accommodation';
+    return t || 'accommodation';
+}
+
 function isMiceChartEligibleDash(r: any): boolean {
     if (isSeriesRequestDash(r)) return false;
-    const t = String(r?.requestType || '').toLowerCase();
+    const t = normalizeRequestTypeDash(r?.requestType);
     if (t === 'event') return true;
     if (t === 'event_rooms') return true;
-    if (t.includes('event with')) return true;
     return false;
+}
+
+function isEventWithRoomsRequestDash(r: any): boolean {
+    return normalizeRequestTypeDash(r?.requestType) === 'event_rooms';
 }
 
 export type DashboardFinancialBucket = {
@@ -366,6 +378,7 @@ export type DashboardFinancialBucket = {
     roomsRevenue: number;
     miceRequests: number;
     miceRevenue: number;
+    miceRoomsRevenue: number;
 };
 
 /** Room count on a given calendar night from room lines (staggered series) or request totalRooms / 1. */
@@ -589,6 +602,7 @@ export function addProratedRequestFinancialsToDashboardBuckets(
     const transport = br.transportRevenue;
     const allocDates: string[] = [];
     const roomBucketsAreDaily = opts.roomsChartBucketGranularity === 'day';
+    const includeMiceRoomsRevenue = opts.includeMiceChart && isEventWithRoomsRequestDash(r);
 
     const touch = (ymd: string, fn: (b: DashboardFinancialBucket) => void) => {
         const k = keyFor(ymd);
@@ -619,6 +633,7 @@ export function addProratedRequestFinancialsToDashboardBuckets(
                 const periodKey = keyFor(ny);
                 touch(ny, (b) => {
                     b.revenue += perNight;
+                    if (includeMiceRoomsRevenue) b.miceRoomsRevenue += perNight;
                     if (alsoRoomsChart) {
                         b.roomsRevenue += perNight;
                         b.roomNights += count;
@@ -648,6 +663,7 @@ export function addProratedRequestFinancialsToDashboardBuckets(
                     const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNightRoomRev;
+                        if (includeMiceRoomsRevenue) b.miceRoomsRevenue += perNightRoomRev;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNightRoomRev;
                             b.roomNights += nightlyR;
@@ -686,6 +702,7 @@ export function addProratedRequestFinancialsToDashboardBuckets(
                     const nightlyR = nightlyRoomInventoryForNightYmd(r, ny);
                     touch(ny, (b) => {
                         b.revenue += perNight;
+                        if (includeMiceRoomsRevenue) b.miceRoomsRevenue += perNight;
                         if (opts.includeRoomsChart) {
                             b.roomsRevenue += perNight;
                             b.roomNights += nightlyR;

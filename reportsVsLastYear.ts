@@ -7,6 +7,7 @@ import {
     REQUEST_SEGMENT_LABEL_SYNONYMS,
     UNMAPPED_TAXONOMY_LABEL,
 } from './propertyTaxonomy';
+import { addProratedRequestFinancialsToDashboardBuckets } from './operationalSegmentRevenue';
 
 export type VsLyKind = 'rooms' | 'mice' | 'full';
 
@@ -23,6 +24,77 @@ function parseYmd(v: any): string {
     const m = String(dt.getMonth() + 1).padStart(2, '0');
     const d = String(dt.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
+}
+
+function ymdBoundsForCalendarMonth(year: number, month1to12: number): { start: string; end: string } {
+    const start = `${year}-${String(month1to12).padStart(2, '0')}-01`;
+    const last = new Date(year, month1to12, 0);
+    const end = `${year}-${String(month1to12).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+    return { start, end };
+}
+
+function computeMiceChartRevenueInMonth(r: any, year: number, month1to12: number): { eventRev: number; roomsRev: number; comb: number } {
+    const { start, end } = ymdBoundsForCalendarMonth(year, month1to12);
+    const bucket = {
+        revenue: 0,
+        rooms: 0,
+        roomNights: 0,
+        roomsRevenue: 0,
+        miceRequests: 0,
+        miceRevenue: 0,
+        miceRoomsRevenue: 0,
+    };
+    addProratedRequestFinancialsToDashboardBuckets(
+        r,
+        start,
+        end,
+        () => 'month',
+        (key) => (key === 'month' ? bucket : undefined),
+        {
+            skipPerf: false,
+            includeRoomsChart: false,
+            includeMiceChart: filterTypeMice(r),
+            roomsChartBucketGranularity: 'month',
+        }
+    );
+    const eventRev = Number(bucket.miceRevenue || 0);
+    const roomsRev = Number(bucket.miceRoomsRevenue || 0);
+    return { eventRev, roomsRev, comb: eventRev + roomsRev };
+}
+
+function computeRoomsChartMetricsInMonth(
+    r: any,
+    year: number,
+    month1to12: number
+): { rev: number; roomNights: number; rooms: number } {
+    const { start, end } = ymdBoundsForCalendarMonth(year, month1to12);
+    const bucket = {
+        revenue: 0,
+        rooms: 0,
+        roomNights: 0,
+        roomsRevenue: 0,
+        miceRequests: 0,
+        miceRevenue: 0,
+        miceRoomsRevenue: 0,
+    };
+    addProratedRequestFinancialsToDashboardBuckets(
+        r,
+        start,
+        end,
+        () => 'month',
+        (key) => (key === 'month' ? bucket : undefined),
+        {
+            skipPerf: false,
+            includeRoomsChart: true,
+            includeMiceChart: false,
+            roomsChartBucketGranularity: 'month',
+        }
+    );
+    return {
+        rev: Number(bucket.roomsRevenue || 0),
+        roomNights: Number(bucket.roomNights || 0),
+        rooms: Number(bucket.rooms || 0),
+    };
 }
 
 function requestPrimaryDate(r: any): string {
@@ -235,13 +307,12 @@ function getEventPaxInMonth(r: any, year: number, month1to12: number): number {
 }
 
 function requestHasRoomsActivityInMonth(r: any, year: number, month1to12: number): boolean {
-    return getRoomsRevAndNightsInMonth(r, year, month1to12).roomNights > 0;
+    const m = computeRoomsChartMetricsInMonth(r, year, month1to12);
+    return m.rev > 0 || m.roomNights > 0 || m.rooms > 0;
 }
 
 function requestHasMiceActivityInMonth(r: any, year: number, month1to12: number): boolean {
-    if (getRoomsRevAndNightsInMonth(r, year, month1to12).rev > 0) return true;
-    if (getEventRevInMonth(r, year, month1to12) > 0) return true;
-    return false;
+    return computeMiceChartRevenueInMonth(r, year, month1to12).comb > 0;
 }
 
 function requestTouchesYear(r: any, y: number, kind: VsLyKind): boolean {
@@ -546,7 +617,7 @@ function roomsMetrics(
     let roomNights = 0;
     let roomsRev = 0;
     for (const r of reqs) {
-        const s = getRoomsRevAndNightsInMonth(r, year, month1to12);
+        const s = computeRoomsChartMetricsInMonth(r, year, month1to12);
         roomNights += s.roomNights;
         roomsRev += s.rev;
     }
@@ -568,9 +639,10 @@ function miceMetrics(
     let pax = 0;
     let roomNights = 0;
     for (const r of reqs) {
+        const mice = computeMiceChartRevenueInMonth(r, year, month1to12);
         const s = getRoomsRevAndNightsInMonth(r, year, month1to12);
-        roomsRev += s.rev;
-        eventRev += getEventRevInMonth(r, year, month1to12);
+        roomsRev += mice.roomsRev;
+        eventRev += mice.eventRev;
         pax += getEventPaxInMonth(r, year, month1to12);
         roomNights += s.roomNights;
     }
@@ -587,7 +659,7 @@ function roomsMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, 
     for (let mo = 1; mo <= 12; mo += 1) {
         if (months && !months.has(mo)) continue;
         for (const r of pool) {
-            const s = getRoomsRevAndNightsInMonth(r, y, mo);
+            const s = computeRoomsChartMetricsInMonth(r, y, mo);
             roomNights += s.roomNights;
             roomsRev += s.rev;
         }
@@ -606,9 +678,10 @@ function miceMetricsYtd(pool: any[], accounts: any[], _currency: CurrencyCode, y
     for (let mo = 1; mo <= 12; mo += 1) {
         if (months && !months.has(mo)) continue;
         for (const r of pool) {
+            const mice = computeMiceChartRevenueInMonth(r, y, mo);
             const s = getRoomsRevAndNightsInMonth(r, y, mo);
-            roomsRev += s.rev;
-            eventRev += getEventRevInMonth(r, y, mo);
+            roomsRev += mice.roomsRev;
+            eventRev += mice.eventRev;
             pax += getEventPaxInMonth(r, y, mo);
             roomNights += s.roomNights;
         }
@@ -684,11 +757,11 @@ function sumSegmentRevenue(
         ) {
             continue;
         }
-        const rooms = getRoomsRevAndNightsInMonth(r, year, month1to12).rev;
+        const rooms = computeRoomsChartMetricsInMonth(r, year, month1to12).rev;
         if (revBasis === 'rooms') {
             sum += rooms;
         } else {
-            sum += rooms + getEventRevInMonth(r, year, month1to12);
+            sum += computeMiceChartRevenueInMonth(r, year, month1to12).comb;
         }
     }
     return sum;

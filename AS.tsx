@@ -3052,6 +3052,12 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
     const miceLegendPayload = [
         { value: `MICE Requests (${formatLegendCount(sumChartKey('miceRequests'))})`, type: 'circle' as const, color: colors.purple, id: 'miceRequests' },
         {
+            value: `Rooms Revenue (${formatLegendMoneyTotal(sumChartKey('miceRoomsRevenue'))})`,
+            type: 'circle' as const,
+            color: colors.cyan,
+            id: 'miceRoomsRevenue',
+        },
+        {
             value: `Event Revenue (${formatLegendMoneyTotal(sumChartKey('miceRevenue'))})`,
             type: 'circle' as const,
             color: colors.green,
@@ -3310,6 +3316,7 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                     <Tooltip {...rechartsTooltipThemeProps(colors)} formatter={moneyTooltipFormatter} />
                     <Legend payload={miceLegendPayload} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px', color: colors.textMuted }} />
                     <Bar yAxisId="left" dataKey="miceRequests" name="MICE Requests" fill={colors.purple} radius={[4, 4, 0, 0]} barSize={20} />
+                    <Line yAxisId="right" type="monotone" dataKey="miceRoomsRevenue" name="Rooms Revenue" stroke={colors.cyan} strokeWidth={2} dot={{ r: 3 }} />
                     <Line yAxisId="right" type="monotone" dataKey="miceRevenue" name="Event Revenue" stroke={colors.green} strokeWidth={2} dot={{ r: 3 }} />
                 </ComposedChart>
             ) : (
@@ -5110,6 +5117,7 @@ export default function AdvancedSalesDashboard() {
                 roomsRevenue: 0,
                 miceRequests: 0,
                 miceRevenue: 0,
+                miceRoomsRevenue: 0,
                 inquiry: 0,
                 accepted: 0,
                 tentative: 0,
@@ -5194,6 +5202,7 @@ export default function AdvancedSalesDashboard() {
             roomsRevenue: 0,
             miceRequests: 0,
             miceRevenue: 0,
+            miceRoomsRevenue: 0,
             inquiry: 0,
             accepted: 0,
             tentative: 0,

@@ -164,6 +164,7 @@ export type AccountProfileChartRow = {
     roomsRevenue: number;
     miceRequests: number;
     miceRevenue: number;
+    miceRoomsRevenue: number;
     inquiry: number;
     accepted: number;
     tentative: number;
@@ -200,6 +201,7 @@ export function buildAccountProfileChartData(
                 roomsRevenue: 0,
                 miceRequests: 0,
                 miceRevenue: 0,
+                miceRoomsRevenue: 0,
                 inquiry: 0,
                 accepted: 0,
                 tentative: 0,
@@ -286,6 +288,7 @@ export function buildAccountProfileChartData(
                 roomsRevenue: 0,
                 miceRequests: 0,
                 miceRevenue: 0,
+                miceRoomsRevenue: 0,
                 inquiry: 0,
                 accepted: 0,
                 tentative: 0,
