@@ -428,10 +428,14 @@ export function computeAllRequestAlerts(
     const out: RequestAlert[] = [];
     for (const { request, contactName, creatorName } of inputs) {
         if (!request?.id) continue;
-        pushDeadlineAlerts(out, request, contactName, creatorName, today, resolved);
+        const resolvedContactName =
+            String(request?.bookerName || request?.booker || '').trim() ||
+            String(contactName || '').trim() ||
+            'the contact person';
+        pushDeadlineAlerts(out, request, resolvedContactName, creatorName, today, resolved);
         const { name: reqName, account } = requestNameAccount(request);
         pushGisBeoAlerts(out, request, creatorName, account, reqName, today, resolved);
-        pushClientFeedbackAlerts(out, request, contactName, creatorName, today, resolved);
+        pushClientFeedbackAlerts(out, request, resolvedContactName, creatorName, today, resolved);
     }
     return out;
 }

@@ -29,6 +29,28 @@ def _property_name_for_request(req: dict) -> str:
     return ""
 
 
+def _property_logo_for_request(req: dict) -> str:
+    pid = str(req.get("propertyId") or "").strip()
+    if not pid:
+        return ""
+    props = list_collection_rows("properties", pid)
+    if props:
+        return str(props[0].get("logoUrl") or "").strip()
+    return ""
+
+
+def _request_dates_for_feedback(req: dict) -> str:
+    start = str(req.get("checkIn") or req.get("eventStart") or req.get("requestDate") or "").strip()[:10]
+    end = str(req.get("checkOut") or req.get("eventEnd") or "").strip()[:10]
+    if start and end and start != end:
+        return f"{start} to {end}"
+    if start:
+        return start
+    if end:
+        return end
+    return ""
+
+
 def _find_request_by_feedback_token(token: str) -> dict | None:
     t = str(token or "").strip()
     if not t:
@@ -57,6 +79,11 @@ def get_public_feedback_form(token: str):
         "requestId": str(req.get("id") or ""),
         "requestType": str(req.get("requestType") or ""),
         "propertyName": _property_name_for_request(req),
+        "propertyLogoUrl": _property_logo_for_request(req),
+        "requestName": str(req.get("requestName") or "").strip(),
+        "accountName": str(req.get("accountName") or req.get("account") or "").strip(),
+        "dates": _request_dates_for_feedback(req),
+        "confirmationNo": str(req.get("confirmationNo") or "").strip(),
         "feedback": {
             "answers": fb.get("answers") if isinstance(fb.get("answers"), dict) else {},
             "submittedAt": fb.get("submittedAt"),

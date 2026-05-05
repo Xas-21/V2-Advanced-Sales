@@ -17,6 +17,11 @@ type FeedbackLookup = {
     requestId: string;
     requestType: string;
     propertyName: string;
+    propertyLogoUrl?: string;
+    requestName?: string;
+    accountName?: string;
+    dates?: string;
+    confirmationNo?: string;
     feedback?: any;
 };
 
@@ -108,7 +113,7 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                     <button
                         type="button"
                         onClick={() => updateAnswer(q.id, isNa ? null : 'N/A')}
-                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold ${isNa ? 'bg-amber-400 text-black border-amber-400' : 'border-slate-600 text-slate-300'}`}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold ${isNa ? 'bg-amber-400 text-black border-amber-400' : 'border-slate-300 text-slate-600 bg-white'}`}
                     >
                         N/A
                     </button>
@@ -126,7 +131,7 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                                 key={opt}
                                 type="button"
                                 onClick={() => updateAnswer(q.id, opt)}
-                                className={`px-3 py-1.5 rounded-lg border text-xs font-bold ${active ? 'bg-cyan-400 text-black border-cyan-400' : 'border-slate-600 text-slate-300'}`}
+                                className={`px-3 py-1.5 rounded-lg border text-xs font-bold ${active ? 'bg-cyan-500 text-white border-cyan-500' : 'border-slate-300 text-slate-600 bg-white'}`}
                             >
                                 {opt}
                             </button>
@@ -145,7 +150,7 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                                 key={n}
                                 type="button"
                                 onClick={() => updateAnswer(q.id, n)}
-                                className={`w-8 h-8 rounded-md border text-xs font-black ${active ? 'bg-violet-400 text-black border-violet-400' : 'border-slate-600 text-slate-300'}`}
+                                className={`w-8 h-8 rounded-md border text-xs font-black ${active ? 'bg-violet-500 text-white border-violet-500' : 'border-slate-300 text-slate-600 bg-white'}`}
                             >
                                 {n}
                             </button>
@@ -159,7 +164,7 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                 value={String(val || '')}
                 onChange={(e) => updateAnswer(q.id, e.target.value)}
                 placeholder="Your Insights"
-                className="w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 min-h-[110px]"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 min-h-[110px]"
             />
         );
     };
@@ -186,33 +191,84 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
     };
 
     if (loading) {
-        return <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">Loading feedback form...</div>;
+        return <div className="min-h-screen bg-slate-50 text-slate-700 flex items-center justify-center">Loading feedback form...</div>;
     }
     if (error && !saved) {
-        return <div className="min-h-screen bg-slate-950 text-red-300 flex items-center justify-center px-4 text-center">{error}</div>;
+        return <div className="min-h-screen bg-slate-50 text-red-600 flex items-center justify-center px-4 text-center">{error}</div>;
     }
     if (!saved || !template) {
-        return <div className="min-h-screen bg-slate-950 text-slate-200 flex items-center justify-center">Feedback form unavailable.</div>;
+        return <div className="min-h-screen bg-slate-50 text-slate-700 flex items-center justify-center">Feedback form unavailable.</div>;
     }
 
     const propertyName = saved.propertyName || 'our property';
     const showThankYou = submittedNow || Boolean(submittedAt);
+    const detailItems = [
+        { label: 'Request Name', value: saved.requestName || '—' },
+        { label: 'Account Name', value: saved.accountName || '—' },
+        { label: 'Dates', value: saved.dates || '—' },
+        { label: 'Confirmation Number', value: saved.confirmationNo || '—' },
+    ];
+
+    if (showThankYou) {
+        return (
+            <div className="min-h-screen bg-slate-50 text-slate-900 py-10 px-4">
+                <div className="max-w-2xl mx-auto rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
+                    <div className="flex items-center justify-between gap-4 mb-5">
+                        <div>
+                            <h1 className="text-xl sm:text-2xl font-black text-slate-900">Thank You</h1>
+                            <p className="text-sm text-slate-600 mt-1">Your feedback was submitted successfully.</p>
+                        </div>
+                        {saved.propertyLogoUrl ? (
+                            <img
+                                src={saved.propertyLogoUrl}
+                                alt={`${propertyName} logo`}
+                                className="h-14 max-w-[170px] object-contain"
+                            />
+                        ) : null}
+                    </div>
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                        <p className="text-sm text-emerald-900 leading-relaxed">{withPropertyName(template.submitMessage, propertyName)}</p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 py-10 px-4">
-            <div className="max-w-3xl mx-auto rounded-2xl border border-slate-700 bg-slate-900/80 p-6 sm:p-8">
-                <h1 className="text-xl sm:text-2xl font-black mb-3">Guest Feedback</h1>
-                <p className="text-sm sm:text-base text-slate-300 leading-relaxed mb-6">
+        <div className="min-h-screen bg-slate-50 text-slate-900 py-10 px-4">
+            <div className="max-w-3xl mx-auto rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
+                <div className="flex items-center justify-between gap-4 mb-5">
+                    <div>
+                        <h1 className="text-xl sm:text-2xl font-black">Guest Feedback</h1>
+                        <p className="text-sm text-slate-500 mt-1">{propertyName}</p>
+                    </div>
+                    {saved.propertyLogoUrl ? (
+                        <img
+                            src={saved.propertyLogoUrl}
+                            alt={`${propertyName} logo`}
+                            className="h-14 max-w-[170px] object-contain"
+                        />
+                    ) : null}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+                    {detailItems.map((item) => (
+                        <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{item.label}</p>
+                            <p className="text-sm font-semibold text-slate-800 mt-0.5 break-words">{item.value}</p>
+                        </div>
+                    ))}
+                </div>
+                <p className="text-sm sm:text-base text-slate-600 leading-relaxed mb-6">
                     {withPropertyName(template.intro, propertyName)}
                 </p>
 
                 {template.sections.map((section) => (
                     <div key={section.title} className="mb-7">
-                        <h2 className="text-sm font-black uppercase tracking-wider text-cyan-300 mb-3">{section.title}</h2>
+                        <h2 className="text-sm font-black uppercase tracking-wider text-cyan-700 mb-3">{section.title}</h2>
                         <div className="space-y-4">
                             {section.questions.map((q) => (
-                                <div key={q.id} className="rounded-xl border border-slate-700 bg-slate-900 p-4">
-                                    <p className="text-sm text-slate-200 mb-3">{q.prompt}</p>
+                                <div key={q.id} className="rounded-xl border border-slate-200 bg-white p-4">
+                                    <p className="text-sm text-slate-700 mb-3">{q.prompt}</p>
                                     {renderQuestion(q)}
                                 </div>
                             ))}
@@ -220,23 +276,16 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                     </div>
                 ))}
 
-                {!showThankYou ? (
-                    <button
-                        type="button"
-                        onClick={handleSubmit}
-                        disabled={submitLoading}
-                        className="w-full py-3 rounded-xl font-black text-sm bg-cyan-400 text-black disabled:opacity-60"
-                    >
-                        {submitLoading ? 'Submitting...' : 'Submit'}
-                    </button>
-                ) : (
-                    <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4">
-                        <p className="font-bold text-emerald-300 mb-1">Thank you for your feedback.</p>
-                        <p className="text-sm text-emerald-100">{template.submitMessage}</p>
-                    </div>
-                )}
+                <button
+                    type="button"
+                    onClick={handleSubmit}
+                    disabled={submitLoading}
+                    className="w-full py-3 rounded-xl font-black text-sm bg-cyan-600 text-white disabled:opacity-60"
+                >
+                    {submitLoading ? 'Submitting...' : 'Submit'}
+                </button>
 
-                {error ? <p className="text-xs text-red-300 mt-3">{error}</p> : null}
+                {error ? <p className="text-xs text-red-600 mt-3">{error}</p> : null}
             </div>
         </div>
     );

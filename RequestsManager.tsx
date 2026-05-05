@@ -151,6 +151,8 @@ const initialAccommodation = {
     requestName: '',
     accountName: '',
     accountId: '',
+    bookerName: '',
+    bookerContactId: '',
     receivedDate: new Date().toISOString().split('T')[0],
     confirmationNo: '',
     checkIn: '',
@@ -192,6 +194,7 @@ function sanitizeRequestRoomsForSave(rooms: unknown): any[] {
 
 const initialEvent = {
     requestName: '', leadId: '', accountId: '', confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000), requestDate: new Date().toISOString().split('T')[0],
+    bookerName: '', bookerContactId: '',
     status: 'Inquiry', offerDate: '', depositDate: '', paymentDate: '',
     agenda: [{
         id: 1,
@@ -619,6 +622,64 @@ export default function RequestsManager({
     }, []);
 
     const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+    const [showAddContactModal, setShowAddContactModal] = useState(false);
+    const [newContactDraft, setNewContactDraft] = useState({
+        firstName: '',
+        lastName: '',
+        position: '',
+        email: '',
+        phone: '',
+        city: '',
+        country: '',
+    });
+
+    const getAccountContacts = useCallback((account: any) => {
+        const contacts = Array.isArray(account?.contacts) ? account.contacts : [];
+        return contacts
+            .map((c: any, idx: number) => {
+                const label = contactDisplayName(c) || String(c?.email || c?.phone || c?.position || `Contact ${idx + 1}`);
+                return {
+                    ...c,
+                    _id: String(c?.id || c?.contactId || `contact-${idx + 1}`),
+                    _label: label,
+                };
+            })
+            .filter((c: any) => String(c._label || '').trim());
+    }, []);
+
+    const applyAccountSelectionToDraft = useCallback((account: any) => {
+        const accountName = String(account?.name || '').trim();
+        const accountId = String(account?.id || '').trim();
+        const contacts = getAccountContacts(account);
+        const first = contacts[0];
+        setAccForm((prev: any) => ({
+            ...prev,
+            accountName,
+            accountId,
+            bookerContactId: String(first?._id || ''),
+            bookerName: String(first?._label || ''),
+        }));
+    }, [getAccountContacts]);
+
+    const selectedDraftAccount = useMemo(
+        () => accountsSameProperty.find((a: any) => String(a?.id || '') === String(accForm.accountId || '')) || null,
+        [accountsSameProperty, accForm.accountId]
+    );
+    const selectedDraftAccountContacts = useMemo(
+        () => getAccountContacts(selectedDraftAccount),
+        [getAccountContacts, selectedDraftAccount]
+    );
+    useEffect(() => {
+        if (!accForm.accountId) return;
+        if (accForm.bookerContactId || accForm.bookerName) return;
+        const first = selectedDraftAccountContacts[0];
+        if (!first) return;
+        setAccForm((prev: any) => ({
+            ...prev,
+            bookerContactId: String(first._id || ''),
+            bookerName: String(first._label || ''),
+        }));
+    }, [accForm.accountId, accForm.bookerContactId, accForm.bookerName, selectedDraftAccountContacts]);
 
     const handleSaveAccountFromModal = (accountData: any) => {
         if (readOnlyOperational) return;
@@ -642,8 +703,71 @@ export default function RequestsManager({
         setAccounts((prev: any[]) => [newAccount, ...prev]);
         setShowAddAccountModal(false);
         setAccountSearch(newAccount.name);
-        setAccForm(prev => ({ ...prev, accountName: newAccount.name, accountId: newAccount.id }));
-        setEvtForm(prev => ({ ...prev, leadId: newAccount.name, accountId: newAccount.id }));
+        applyAccountSelectionToDraft(newAccount);
+        const first = getAccountContacts(newAccount)[0];
+        setEvtForm(prev => ({
+            ...prev,
+            leadId: newAccount.name,
+            accountId: newAccount.id,
+            bookerContactId: String(first?._id || ''),
+            bookerName: String(first?._label || ''),
+        }));
+    };
+
+    const openAddContactModal = () => {
+        if (!accForm.accountId) {
+            showSystemNotice('Select account first', 'Please select an account before adding a contact person.');
+            return;
+        }
+        setNewContactDraft({ firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: '' });
+        setShowAddContactModal(true);
+    };
+
+    const handleCreateContactForSelectedAccount = () => {
+        if (readOnlyOperational) return;
+        const selectedAccountId = String(accForm.accountId || '').trim();
+        const account = accountsSameProperty.find((a: any) => String(a?.id || '') === selectedAccountId);
+        if (!account) {
+            showSystemNotice('Account not found', 'The selected account could not be found. Please reselect the account and try again.');
+            return;
+        }
+        const firstName = String(newContactDraft.firstName || '').trim();
+        const lastName = String(newContactDraft.lastName || '').trim();
+        const email = String(newContactDraft.email || '').trim();
+        const phone = String(newContactDraft.phone || '').trim();
+        const position = String(newContactDraft.position || '').trim();
+        const city = String(newContactDraft.city || '').trim();
+        const country = String(newContactDraft.country || '').trim();
+        if (!firstName && !lastName && !email && !phone) {
+            showSystemNotice('Missing contact details', 'Please add at least a name, email, or phone number for the contact.');
+            return;
+        }
+        const newContact = {
+            id: `C${Date.now()}`,
+            firstName,
+            lastName,
+            name: [firstName, lastName].filter(Boolean).join(' ').trim(),
+            email,
+            phone,
+            position,
+            city,
+            country,
+        };
+        const contactName = contactDisplayName(newContact) || email || phone || 'New Contact';
+        setAccounts((prev: any[]) =>
+            prev.map((a: any) =>
+                String(a?.id || '') === selectedAccountId
+                    ? { ...a, contacts: [...(Array.isArray(a?.contacts) ? a.contacts : []), newContact] }
+                    : a
+            )
+        );
+        setAccForm((prev: any) => ({ ...prev, bookerContactId: String(newContact.id), bookerName: contactName }));
+        setEvtForm((prev: any) => (
+            String(prev?.accountId || '') === selectedAccountId
+                ? { ...prev, bookerContactId: String(newContact.id), bookerName: contactName }
+                : prev
+        ));
+        setShowAddContactModal(false);
     };
 
     // Reset workflow when entering new_request mode (only for fresh new requests)
@@ -676,6 +800,8 @@ export default function RequestsManager({
                 requestName: '',
                 accountName: '',
                 accountId: '',
+                bookerName: '',
+                bookerContactId: '',
                 confirmationNo: '',
                 segment: '',
                 promotionId: ''
@@ -687,6 +813,8 @@ export default function RequestsManager({
                 requestName: '',
                 leadId: '',
                 accountId: '',
+                bookerName: '',
+                bookerContactId: '',
                 segment: '',
                 promotionId: '',
                 agenda: [{
@@ -964,6 +1092,8 @@ export default function RequestsManager({
                 ...req,
                 accountName,
                 accountId: req.accountId || '',
+                bookerName: req.bookerName || req.booker || '',
+                bookerContactId: req.bookerContactId || '',
                 receivedDate: req.receivedDate || req.requestDate || initialAccommodation.receivedDate,
                 requestName: req.requestName || '',
                 confirmationNo: req.confirmationNo || initialAccommodation.confirmationNo,
@@ -993,6 +1123,8 @@ export default function RequestsManager({
                     ...req,
                     leadId: req.account || req.accountName || accountName,
                     accountId: req.accountId || '',
+                    bookerName: req.bookerName || req.booker || '',
+                    bookerContactId: req.bookerContactId || '',
                     requestName: req.requestName || '',
                     requestDate: req.requestDate || req.receivedDate || new Date().toISOString().split('T')[0],
                     confirmationNo: req.confirmationNo || initialEvent.confirmationNo,
@@ -1014,6 +1146,8 @@ export default function RequestsManager({
                 ...req,
                 accountName,
                 accountId: req.accountId || '',
+                bookerName: req.bookerName || req.booker || '',
+                bookerContactId: req.bookerContactId || '',
                 nights: nightsAcc,
                 rooms: (Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms).map((r: any) => ({
                     ...r,
@@ -1281,6 +1415,8 @@ export default function RequestsManager({
                 requestName: formData.requestName || 'Unnamed Request',
                 account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
                 accountId: resolvedAccountId,
+                bookerName: String(formData.bookerName || '').trim(),
+                bookerContactId: String(formData.bookerContactId || '').trim(),
                 confirmationNo: formData.confirmationNo || 'N/A',
                 requestType: normalizedType === 'event_rooms'
                     ? 'Event with Rooms'
@@ -2118,7 +2254,7 @@ export default function RequestsManager({
                                                     type="button"
                                                     className="w-full px-4 py-2 text-left hover:bg-white/5 text-sm transition-colors"
                                                     onClick={() => {
-                                                        setAccForm({ ...accForm, accountName: acc.name, accountId: acc.id });
+                                                        applyAccountSelectionToDraft(acc);
                                                         setAccountSearch(acc.name);
                                                         setShowAccountDropdown(false);
                                                     }}
@@ -2140,6 +2276,41 @@ export default function RequestsManager({
                                 </button>
                             </div>
                         </div>
+                        {accForm.accountId ? (
+                            <div>
+                                <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Contact Name</label>
+                                <div className="flex gap-2">
+                                    <select
+                                        value={String(accForm.bookerContactId || '')}
+                                        onChange={(e) => {
+                                            const nextId = String(e.target.value || '');
+                                            const selected = selectedDraftAccountContacts.find((c: any) => String(c._id || '') === nextId);
+                                            setAccForm((prev: any) => ({
+                                                ...prev,
+                                                bookerContactId: nextId,
+                                                bookerName: selected ? String(selected._label || '') : '',
+                                            }));
+                                        }}
+                                        className="w-full px-3 py-2 rounded border bg-black/20 outline-none focus:border-primary transition-all text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        <option value="">Select contact...</option>
+                                        {selectedDraftAccountContacts.map((contact: any) => (
+                                            <option key={contact._id} value={contact._id}>{contact._label}</option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        type="button"
+                                        onClick={openAddContactModal}
+                                        className={REQUEST_SECTION_ICON_ADD_BTN_CLASS}
+                                        style={requestSectionAddButtonStyle(colors)}
+                                        title="Add Contact to Account"
+                                    >
+                                        <Plus size={20} />
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
                         <div>
                             <label className="text-xs font-bold uppercase opacity-70 mb-1 block" style={{ color: colors.textMuted }}>Received Date</label>
                             <input type="date" value={accForm.receivedDate} onChange={e => setAccForm({ ...accForm, receivedDate: e.target.value })}
@@ -3150,7 +3321,15 @@ export default function RequestsManager({
                                                     type="button"
                                                     className="w-full px-4 py-2 text-left hover:bg-white/5 text-sm transition-colors"
                                                     onClick={() => {
-                                                        setEvtForm({ ...evtForm, leadId: acc.name, accountId: acc.id });
+                                                        const contacts = getAccountContacts(acc);
+                                                        const first = contacts[0];
+                                                        setEvtForm({
+                                                            ...evtForm,
+                                                            leadId: acc.name,
+                                                            accountId: acc.id,
+                                                            bookerContactId: String(first?._id || ''),
+                                                            bookerName: String(first?._label || ''),
+                                                        });
                                                         setAccountSearch(acc.name);
                                                         setShowAccountDropdown(false);
                                                     }}
@@ -3329,6 +3508,18 @@ export default function RequestsManager({
         const evWindow = getEventDateWindow(request);
         const agenda = request.agenda || [];
         const packageSummary = formatAgendaPackageSummary(agenda) || request.mealPlan || '—';
+        const resolvedBookerName = (() => {
+            const direct = String(request.bookerName || request.booker || '').trim();
+            if (direct) return direct;
+            const accountId = String(request.accountId || '').trim();
+            if (!accountId) return '';
+            const account = accountsSameProperty.find((a: any) => String(a?.id || '') === accountId);
+            if (!account) return '';
+            const contactId = String(request.bookerContactId || '').trim();
+            if (!contactId) return '';
+            const contact = getAccountContacts(account).find((c: any) => String(c?._id || '') === contactId);
+            return String(contact?._label || '').trim();
+        })();
         const displayEventDays = fin.totalEventDays > 0
             ? fin.totalEventDays
             : (evWindow.start && evWindow.end ? inclusiveCalendarDays(evWindow.start, evWindow.end) : 0);
@@ -3655,9 +3846,15 @@ export default function RequestsManager({
                             <div className="p-6 rounded-2xl border bg-current/5 space-y-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                 <h3 className="text-xs font-black uppercase opacity-30 tracking-widest">Section 1: Basic</h3>
                                 <div className="space-y-4">
-                                    <div>
-                                        <p className="text-[10px] font-bold uppercase opacity-40">Account Name</p>
-                                        <p className="font-bold text-sm">{request.account}</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <p className="text-[10px] font-bold uppercase opacity-40">Account Name</p>
+                                            <p className="font-bold text-sm">{request.account}</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-[10px] font-bold uppercase opacity-40">Booker Name</p>
+                                            <p className="font-bold text-sm">{resolvedBookerName || '—'}</p>
+                                        </div>
                                     </div>
                                     <div>
                                         <p className="text-[10px] font-bold uppercase opacity-40">Received Date</p>
@@ -4649,6 +4846,119 @@ export default function RequestsManager({
                     configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 />
+                {showAddContactModal && (
+                    <div className="fixed inset-0 z-[225] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                        <div
+                            className="w-full max-w-md p-6 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 border"
+                            style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}
+                        >
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>Add Contact Person</h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAddContactModal(false)}
+                                    className="hover:opacity-80 transition-opacity"
+                                    style={{ color: colors.textMuted }}
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="space-y-4 text-left">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>First Name</label>
+                                        <input
+                                            type="text"
+                                            value={newContactDraft.firstName}
+                                            onChange={(e) => setNewContactDraft((prev) => ({ ...prev, firstName: e.target.value }))}
+                                            className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            placeholder="First Name"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Last Name</label>
+                                        <input
+                                            type="text"
+                                            value={newContactDraft.lastName}
+                                            onChange={(e) => setNewContactDraft((prev) => ({ ...prev, lastName: e.target.value }))}
+                                            className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            placeholder="Last Name"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Position</label>
+                                    <input
+                                        type="text"
+                                        value={newContactDraft.position}
+                                        onChange={(e) => setNewContactDraft((prev) => ({ ...prev, position: e.target.value }))}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="Job Title"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Email</label>
+                                    <input
+                                        type="email"
+                                        value={newContactDraft.email}
+                                        onChange={(e) => setNewContactDraft((prev) => ({ ...prev, email: e.target.value }))}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="email@example.com"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Phone</label>
+                                    <input
+                                        type="text"
+                                        value={newContactDraft.phone}
+                                        onChange={(e) => setNewContactDraft((prev) => ({ ...prev, phone: e.target.value }))}
+                                        className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                        placeholder="+966 ..."
+                                    />
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>City</label>
+                                        <input
+                                            type="text"
+                                            value={newContactDraft.city}
+                                            onChange={(e) => setNewContactDraft((prev) => ({ ...prev, city: e.target.value }))}
+                                            className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            placeholder="City"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Country</label>
+                                        <input
+                                            type="text"
+                                            value={newContactDraft.country}
+                                            onChange={(e) => setNewContactDraft((prev) => ({ ...prev, country: e.target.value }))}
+                                            className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            placeholder="Country"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="pt-4">
+                                <button
+                                    type="button"
+                                    onClick={handleCreateContactForSelectedAccount}
+                                    className="w-full py-3 rounded-lg font-bold text-black hover:opacity-90 transition-opacity"
+                                    style={{ backgroundColor: colors.primary }}
+                                >
+                                    Save Contact
+                                </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
                 <ConfirmDialog
                     isOpen={showDeleteRequestConfirm}
                     title="Confirm Request Deletion"
