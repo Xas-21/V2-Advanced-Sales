@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from typing import Optional
-from utils import delete_request_row, list_collection_rows, list_requests_rows, upsert_request_row
+from utils import PROPERTIES_FILE, delete_request_row, list_requests_rows, read_json_file, upsert_request_row
 
 router = APIRouter(prefix="/api", tags=["Requests"])
 
@@ -19,24 +19,31 @@ def remove_request(req_id: str):
     return {"message": "Deleted successfully"}
 
 
-def _property_name_for_request(req: dict) -> str:
+def _property_for_request(req: dict) -> dict:
     pid = str(req.get("propertyId") or "").strip()
     if not pid:
-        return ""
-    props = list_collection_rows("properties", pid)
-    if props:
-        return str(props[0].get("name") or "").strip()
-    return ""
+        return {}
+    rows = read_json_file(PROPERTIES_FILE, default=[])
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == pid:
+            return row
+    return {}
+
+
+def _property_name_for_request(req: dict) -> str:
+    p = _property_for_request(req)
+    name = str(p.get("name") or "").strip()
+    if name:
+        return name
+    return str(req.get("propertyName") or req.get("property") or "").strip()
 
 
 def _property_logo_for_request(req: dict) -> str:
-    pid = str(req.get("propertyId") or "").strip()
-    if not pid:
-        return ""
-    props = list_collection_rows("properties", pid)
-    if props:
-        return str(props[0].get("logoUrl") or "").strip()
-    return ""
+    p = _property_for_request(req)
+    logo = str(p.get("logoUrl") or "").strip()
+    if logo:
+        return logo
+    return str(req.get("propertyLogoUrl") or "").strip()
 
 
 def _request_dates_for_feedback(req: dict) -> str:
@@ -80,6 +87,7 @@ def get_public_feedback_form(token: str):
         "requestType": str(req.get("requestType") or ""),
         "propertyName": _property_name_for_request(req),
         "propertyLogoUrl": _property_logo_for_request(req),
+        "propertyFeedbackTemplates": (_property_for_request(req).get("feedbackTemplates") or {}),
         "requestName": str(req.get("requestName") or "").strip(),
         "accountName": str(req.get("accountName") or req.get("account") or "").strip(),
         "dates": _request_dates_for_feedback(req),

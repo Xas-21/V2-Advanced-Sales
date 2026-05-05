@@ -4,6 +4,7 @@ import { apiUrl } from './backendApi';
 import {
     buildInitialFeedbackAnswers,
     getFeedbackTemplateForRequestType,
+    resolveFeedbackTemplatesForProperty,
     withPropertyName,
     type FeedbackAnswerValue,
     type FeedbackQuestion,
@@ -22,6 +23,7 @@ type FeedbackLookup = {
     accountName?: string;
     dates?: string;
     confirmationNo?: string;
+    propertyFeedbackTemplates?: any;
     feedback?: any;
 };
 
@@ -74,7 +76,10 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
                 if (cancelled) return;
                 const lookup = data as FeedbackLookup;
                 setSaved(lookup);
-                const template = getFeedbackTemplateForRequestType(lookup.requestType);
+                const template = getFeedbackTemplateForRequestType(
+                    lookup.requestType,
+                    resolveFeedbackTemplatesForProperty({ feedbackTemplates: lookup.propertyFeedbackTemplates })
+                );
                 const base = buildInitialFeedbackAnswers(template);
                 const fromSaved = lookup?.feedback?.answers && typeof lookup.feedback.answers === 'object' ? lookup.feedback.answers : {};
                 setAnswers({ ...base, ...fromSaved });
@@ -92,7 +97,13 @@ export default function RequestFeedbackPublicPage({ token }: Props) {
     }, [token]);
 
     const template = useMemo(
-        () => (saved ? getFeedbackTemplateForRequestType(saved.requestType) : null),
+        () =>
+            saved
+                ? getFeedbackTemplateForRequestType(
+                      saved.requestType,
+                      resolveFeedbackTemplatesForProperty({ feedbackTemplates: saved.propertyFeedbackTemplates })
+                  )
+                : null,
         [saved]
     );
 

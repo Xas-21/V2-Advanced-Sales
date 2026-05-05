@@ -68,6 +68,7 @@ import { collectRequestFormViolations } from './formConfigurations';
 import {
     buildInitialFeedbackAnswers,
     getFeedbackTemplateForRequestType,
+    resolveFeedbackTemplatesForProperty,
     withPropertyName,
     type FeedbackAnswerValue,
     type FeedbackQuestion,
@@ -1046,7 +1047,10 @@ export default function RequestsManager({
             setFeedbackCopyState('idle');
             return;
         }
-        const template = getFeedbackTemplateForRequestType(selectedRequest.requestType);
+        const template = getFeedbackTemplateForRequestType(
+            selectedRequest.requestType,
+            resolveFeedbackTemplatesForProperty(activeProperty)
+        );
         const base = buildInitialFeedbackAnswers(template);
         const savedAnswers =
             selectedRequest?.feedback && typeof selectedRequest.feedback === 'object' ? selectedRequest.feedback.answers : {};
@@ -3591,7 +3595,10 @@ export default function RequestsManager({
             </div>
         );
 
-        const feedbackTemplate = getFeedbackTemplateForRequestType(request.requestType);
+        const feedbackTemplate = getFeedbackTemplateForRequestType(
+            request.requestType,
+            resolveFeedbackTemplatesForProperty(activeProperty)
+        );
         const feedbackSaved =
             request?.feedback && typeof request.feedback === 'object' ? request.feedback : {};
         const feedbackSubmittedAt = String(feedbackSaved?.submittedAt || '').trim();

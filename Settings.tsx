@@ -91,6 +91,13 @@ import {
     collectNewUserFormViolations,
     collectNewPropertyFormViolations,
 } from './formConfigurations';
+import {
+    FEEDBACK_QUESTION_TYPE_OPTIONS,
+    buildDefaultFeedbackTemplateStore,
+    resolveFeedbackTemplatesForProperty,
+    type FeedbackTemplate,
+    type FeedbackTemplateType,
+} from './requestFeedbackConfig';
 
 interface SettingsProps {
     theme: any;
@@ -715,9 +722,15 @@ export default function Settings({
     const [alertSettingsDraft, setAlertSettingsDraft] = useState<PropertyAlertSettingsMap>(() =>
         mergePropertyAlertSettings(null)
     );
+    const [feedbackTemplateType, setFeedbackTemplateType] = useState<FeedbackTemplateType>('accommodation');
+    const [feedbackTemplatesDraft, setFeedbackTemplatesDraft] = useState<Record<FeedbackTemplateType, FeedbackTemplate>>(
+        () => buildDefaultFeedbackTemplateStore()
+    );
+    const [feedbackFormsSaveStatus, setFeedbackFormsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
     useEffect(() => {
         if (activePropTab !== 'alert_notifications') setAlertSettingsSaveStatus('idle');
+        if (activePropTab !== 'feedback_forms') setFeedbackFormsSaveStatus('idle');
     }, [activePropTab]);
     const [cxlReasons, setCxlReasons] = useState<any[]>([]);
     const [newCxlReason, setNewCxlReason] = useState('');
@@ -798,6 +811,7 @@ export default function Settings({
             setEventPackagesList([]);
             setOccupancyTypesList([]);
             setAlertSettingsDraft(mergePropertyAlertSettings(null));
+            setFeedbackTemplatesDraft(buildDefaultFeedbackTemplateStore());
             return;
         }
         setAlertSettingsDraft(resolveAlertSettingsForProperty(managingProperty.id, managingProperty));
@@ -823,6 +837,13 @@ export default function Settings({
         setEditCxlId(null);
         setEditCxlLabel('');
         setNewCxlReason('');
+        const defaults = buildDefaultFeedbackTemplateStore();
+        const overrides = resolveFeedbackTemplatesForProperty(managingProperty);
+        setFeedbackTemplatesDraft({
+            event: overrides.event || defaults.event,
+            accommodation: overrides.accommodation || defaults.accommodation,
+            event_rooms: overrides.event_rooms || defaults.event_rooms,
+        });
     }, [
         managingProperty?.id,
         managingProperty?.segments,
@@ -831,6 +852,7 @@ export default function Settings({
         managingProperty?.eventPackages,
         managingProperty?.occupancyTypes,
         managingProperty?.alertSettings,
+        managingProperty?.feedbackTemplates,
     ]);
 
     useEffect(() => {
@@ -964,6 +986,7 @@ export default function Settings({
         { id: 'taxes', label: 'Tax Config', icon: DollarSign },
         { id: 'segments_types', label: 'Segments & Account Types', icon: Tags },
         { id: 'cxl', label: 'CXL', icon: List },
+        { id: 'feedback_forms', label: 'Feedback Forms', icon: FileText },
         { id: 'alert_notifications', label: 'Alerts & Notifications', icon: Bell },
         ...(appIsAdmin ? [{ id: 'users', label: 'User Mgmt', icon: Users }] : []),
     ];
@@ -1011,6 +1034,7 @@ export default function Settings({
                         {activePropTab === 'taxes' && renderTaxesTab()}
                         {activePropTab === 'segments_types' && renderSegmentsTypesTab()}
                         {activePropTab === 'cxl' && renderCxlTab()}
+                        {activePropTab === 'feedback_forms' && renderFeedbackFormsTab()}
                         {activePropTab === 'alert_notifications' && renderAlertsNotificationsTab()}
                         {activePropTab === 'users' && renderUsersTab()}
                     </div>
@@ -2278,6 +2302,281 @@ export default function Settings({
                         </p>
                     </div>
                 </details>
+            </div>
+        );
+    };
+
+    const renderFeedbackFormsTab = () => {
+        const propId = managingProperty?.id;
+        if (!propId) return null;
+
+        const template = feedbackTemplatesDraft[feedbackTemplateType];
+
+        const setTemplate = (nextTemplate: FeedbackTemplate) => {
+            setFeedbackTemplatesDraft((prev) => ({ ...prev, [feedbackTemplateType]: nextTemplate }));
+        };
+
+        const updateSection = (sectionIndex: number, patch: Record<string, unknown>) => {
+            const sections = (template.sections || []).map((s: any, idx: number) =>
+                idx === sectionIndex ? { ...s, ...patch } : s
+            );
+            setTemplate({ ...template, sections });
+        };
+
+        const updateQuestion = (sectionIndex: number, questionIndex: number, patch: Record<string, unknown>) => {
+            const sections = (template.sections || []).map((s: any, sIdx: number) => {
+                if (sIdx !== sectionIndex) return s;
+                const questions = (Array.isArray(s.questions) ? s.questions : []).map((q: any, qIdx: number) =>
+                    qIdx === questionIndex ? { ...q, ...patch } : q
+                );
+                return { ...s, questions };
+            });
+            setTemplate({ ...template, sections });
+        };
+
+        const addSection = () => {
+            const sections = [...(template.sections || [])];
+            const sectionNumber = sections.length + 1;
+            sections.push({
+                title: `Section ${sectionNumber}`,
+                questions: [
+                    {
+                        id: `q_${feedbackTemplateType}_${sectionNumber}_1`,
+                        prompt: 'New question',
+                        type: 'text',
+                    },
+                ],
+            });
+            setTemplate({ ...template, sections });
+        };
+
+        const removeSection = (sectionIndex: number) => {
+            const sections = (template.sections || []).filter((_: any, idx: number) => idx !== sectionIndex);
+            setTemplate({ ...template, sections: sections.length ? sections : template.sections });
+        };
+
+        const addQuestion = (sectionIndex: number) => {
+            const sections = (template.sections || []).map((s: any, idx: number) => {
+                if (idx !== sectionIndex) return s;
+                const questions = Array.isArray(s.questions) ? s.questions : [];
+                const questionNumber = questions.length + 1;
+                return {
+                    ...s,
+                    questions: [
+                        ...questions,
+                        {
+                            id: `q_${feedbackTemplateType}_${sectionIndex + 1}_${questionNumber}`,
+                            prompt: 'New question',
+                            type: 'text',
+                        },
+                    ],
+                };
+            });
+            setTemplate({ ...template, sections });
+        };
+
+        const removeQuestion = (sectionIndex: number, questionIndex: number) => {
+            const sections = (template.sections || []).map((s: any, idx: number) => {
+                if (idx !== sectionIndex) return s;
+                const questions = (Array.isArray(s.questions) ? s.questions : []).filter((_: any, qIdx: number) => qIdx !== questionIndex);
+                return { ...s, questions: questions.length ? questions : s.questions };
+            });
+            setTemplate({ ...template, sections });
+        };
+
+        const resetCurrentTemplateToDefault = () => {
+            const defaults = buildDefaultFeedbackTemplateStore();
+            setFeedbackTemplatesDraft((prev) => ({ ...prev, [feedbackTemplateType]: defaults[feedbackTemplateType] }));
+        };
+
+        const saveFeedbackForms = async () => {
+            setFeedbackFormsSaveStatus('saving');
+            try {
+                const payload = {
+                    ...managingProperty,
+                    feedbackTemplates: feedbackTemplatesDraft,
+                };
+                const res = await fetch(apiUrl('/api/properties'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!res.ok) throw new Error('Failed to save feedback forms');
+                const nextProp = { ...managingProperty, feedbackTemplates: feedbackTemplatesDraft };
+                setManagingProperty(nextProp);
+                setProperties((prev: any[]) =>
+                    prev.map((p: any) =>
+                        String(p.id) === String(propId) ? { ...p, feedbackTemplates: feedbackTemplatesDraft } : p
+                    )
+                );
+                setFeedbackFormsSaveStatus('saved');
+                setTimeout(() => setFeedbackFormsSaveStatus('idle'), 3000);
+            } catch (err) {
+                console.error('Error saving feedback forms:', err);
+                setFeedbackFormsSaveStatus('error');
+            }
+        };
+
+        const typeOptions: Array<{ id: FeedbackTemplateType; label: string }> = [
+            { id: 'accommodation', label: 'Accommodation' },
+            { id: 'event', label: 'Event' },
+            { id: 'event_rooms', label: 'Event + Rooms' },
+        ];
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-start">
+                    <div className="min-w-0 flex-1">
+                        <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Client feedback forms</h2>
+                        <p className="text-sm mt-1 max-w-3xl" style={{ color: colors.textMuted }}>
+                            Customize the public feedback forms for this property by request type. You can edit the introduction, question content, response type, and post-submission message.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        {feedbackFormsSaveStatus === 'saved' && (
+                            <span className="text-[10px] font-bold text-emerald-500 animate-pulse">SAVED SUCCESSFULLY!</span>
+                        )}
+                        {feedbackFormsSaveStatus === 'error' && (
+                            <span className="text-[10px] font-bold text-red-500">ERROR SAVING!</span>
+                        )}
+                        <button
+                            type="button"
+                            onClick={resetCurrentTemplateToDefault}
+                            className="px-4 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                        >
+                            Reset current type
+                        </button>
+                        <button
+                            type="button"
+                            onClick={saveFeedbackForms}
+                            disabled={feedbackFormsSaveStatus === 'saving'}
+                            className="px-6 py-2 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center gap-2 hover:brightness-110 active:scale-95 transition-all disabled:opacity-50"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            {feedbackFormsSaveStatus === 'saving' ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+                            {feedbackFormsSaveStatus === 'saving' ? 'Saving...' : 'Save forms'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                    {typeOptions.map((opt) => (
+                        <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setFeedbackTemplateType(opt.id)}
+                            className="px-4 py-2 rounded-lg border text-xs font-bold transition-all"
+                            style={{
+                                borderColor: feedbackTemplateType === opt.id ? colors.primary : colors.border,
+                                color: feedbackTemplateType === opt.id ? colors.primary : colors.textMain,
+                                backgroundColor: feedbackTemplateType === opt.id ? `${colors.primary}12` : 'transparent',
+                            }}
+                        >
+                            {opt.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="rounded-xl border p-4 space-y-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <div>
+                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Introduction message</label>
+                        <textarea
+                            value={template.intro}
+                            onChange={(e) => setTemplate({ ...template, intro: e.target.value })}
+                            className="w-full min-h-[110px] p-3 rounded-lg border text-sm"
+                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Post-submission message</label>
+                        <textarea
+                            value={template.submitMessage}
+                            onChange={(e) => setTemplate({ ...template, submitMessage: e.target.value })}
+                            className="w-full min-h-[110px] p-3 rounded-lg border text-sm"
+                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                        />
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    {(template.sections || []).map((section: any, sectionIndex: number) => (
+                        <div key={`section-${sectionIndex}`} className="rounded-xl border p-4 space-y-4" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={section.title}
+                                    onChange={(e) => updateSection(sectionIndex, { title: e.target.value })}
+                                    className="flex-1 p-2 rounded-lg border text-sm"
+                                    style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}
+                                />
+                                {(template.sections || []).length > 1 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => removeSection(sectionIndex)}
+                                        className="px-3 py-2 rounded-lg border text-xs font-bold text-red-500"
+                                        style={{ borderColor: 'rgba(239,68,68,.35)' }}
+                                    >
+                                        Remove section
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="space-y-3">
+                                {(Array.isArray(section.questions) ? section.questions : []).map((q: any, questionIndex: number) => (
+                                    <div key={q.id || `q-${questionIndex}`} className="rounded-lg border p-3 space-y-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                        <div className="grid grid-cols-1 lg:grid-cols-4 gap-2">
+                                            <textarea
+                                                value={q.prompt}
+                                                onChange={(e) => updateQuestion(sectionIndex, questionIndex, { prompt: e.target.value })}
+                                                className="lg:col-span-3 min-h-[68px] p-2 rounded-lg border text-sm"
+                                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                                            />
+                                            <select
+                                                value={q.type}
+                                                onChange={(e) => updateQuestion(sectionIndex, questionIndex, { type: e.target.value })}
+                                                className="p-2 rounded-lg border text-sm"
+                                                style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                                            >
+                                                {FEEDBACK_QUESTION_TYPE_OPTIONS.map((opt) => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        {(Array.isArray(section.questions) ? section.questions : []).length > 1 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => removeQuestion(sectionIndex, questionIndex)}
+                                                className="px-2 py-1 rounded border text-[10px] font-bold text-red-500"
+                                                style={{ borderColor: 'rgba(239,68,68,.35)' }}
+                                            >
+                                                Remove question
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => addQuestion(sectionIndex)}
+                                className="px-3 py-2 rounded-lg border text-xs font-bold"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                + Add question
+                            </button>
+                        </div>
+                    ))}
+                </div>
+
+                <button
+                    type="button"
+                    onClick={addSection}
+                    className="px-4 py-2 rounded-xl border text-xs font-black uppercase tracking-widest"
+                    style={{ borderColor: colors.border, color: colors.textMain }}
+                >
+                    + Add section
+                </button>
             </div>
         );
     };
