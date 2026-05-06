@@ -36,6 +36,9 @@ interface AddAccountModalProps {
     configurationPropertyId?: string;
     /** Active property row (`formConfigurations` from API) so rules match all users, not only localStorage. */
     configurationProperty?: FormConfigurationPropertySource;
+    /** Optional prefilled values from business-card scan. */
+    prefillAccount?: any | null;
+    scanMeta?: { confidence?: number; rawText?: string; unmapped?: string[] } | null;
 }
 
 const defaultFormState = () => ({
@@ -103,6 +106,8 @@ export default function AddAccountModal({
     duplicateCheckPropertyId,
     configurationPropertyId,
     configurationProperty,
+    prefillAccount,
+    scanMeta,
 }: AddAccountModalProps) {
     const colors = theme.colors;
 
@@ -121,12 +126,16 @@ export default function AddAccountModal({
             const next = accountToFormState(editingAccount);
             if (!typeOptions.includes(next.type)) next.type = typeOptions[0] || next.type;
             setNewAccountData(next);
+        } else if (prefillAccount) {
+            const next = accountToFormState(prefillAccount);
+            if (!typeOptions.includes(next.type)) next.type = typeOptions[0] || next.type;
+            setNewAccountData(next);
         } else {
             setNewAccountData({ ...defaultFormState(), type: typeOptions[0] || 'Corporate' });
         }
         setDuplicatePrompt(null);
         setFormCfgError('');
-    }, [isOpen, editingAccount, typeOptionsKey]);
+    }, [isOpen, editingAccount, prefillAccount, typeOptionsKey]);
 
     if (!isOpen) return null;
 
@@ -209,6 +218,19 @@ export default function AddAccountModal({
                     </button>
                 </div>
                 <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto custom-scrollbar text-left">
+                    {!editingAccount && scanMeta ? (
+                        <div className="rounded-xl border px-4 py-3 text-xs" style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.bg }}>
+                            <p className="font-semibold">
+                                Scanned card draft loaded{typeof scanMeta.confidence === 'number' ? ` (confidence ${scanMeta.confidence}%)` : ''}.
+                                Please review all fields before saving.
+                            </p>
+                            {Array.isArray(scanMeta.unmapped) && scanMeta.unmapped.length > 0 ? (
+                                <p className="opacity-80 mt-1">
+                                    Unmapped text lines: {scanMeta.unmapped.slice(0, 4).join(' | ')}
+                                </p>
+                            ) : null}
+                        </div>
+                    ) : null}
                     {formCfgError ? (
                         <div
                             className="rounded-xl border px-4 py-3 text-xs font-semibold whitespace-pre-line"

@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Search, Plus, Building2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Search, Plus, Building2, Camera, GitMerge } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
@@ -40,6 +40,13 @@ import ConfirmDialog from './ConfirmDialog';
 import { resolveUserAttributionId } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { repointContractRecordsForAccountMerge } from './contractsStore';
+import { findPotentialDuplicateAccounts, normalizeAccountNameKey } from './accountDuplicateUtils';
+import {
+    deleteAccountDuplicateQueueItem,
+    extractBusinessCard,
+    listAccountDuplicateQueue,
+    upsertAccountDuplicateQueueItem,
+} from './accountScanApi';
 
 const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v2';
 const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email', 'totalRev', 'totalReq'];
@@ -121,6 +128,12 @@ export default function AccountsPage({
     const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
     const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null);
     const [deleteImpactMessage, setDeleteImpactMessage] = useState('');
+    const [scanBusy, setScanBusy] = useState(false);
+    const [scanMeta, setScanMeta] = useState<any | null>(null);
+    const [scanPrefillAccount, setScanPrefillAccount] = useState<any | null>(null);
+    const [duplicateQueue, setDuplicateQueue] = useState<any[]>([]);
+    const [showDuplicateQueue, setShowDuplicateQueue] = useState(false);
+    const scanAccountInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         try {
@@ -141,6 +154,33 @@ export default function AccountsPage({
         window.addEventListener(CONTRACTS_CHANGED_EVENT, refresh);
         return () => window.removeEventListener(CONTRACTS_CHANGED_EVENT, refresh);
     }, []);
+
+    useEffect(() => {
+        const propertyId = activeProperty?.id ? String(activeProperty.id) : '';
+        listAccountDuplicateQueue(propertyId)
+            .then((rows) => setDuplicateQueue(rows))
+            .catch(() => setDuplicateQueue([]));
+    }, [activeProperty?.id]);
+
+    const normalizeContactKey = (contact: any) => {
+        const email = String(contact?.email || '').trim().toLowerCase();
+        const phone = String(contact?.phone || '').replace(/\D+/g, '');
+        const name = normalizeAccountNameKey(contactDisplayName(contact));
+        return email || phone || name;
+    };
+
+    const appendContactToAccount = (accountId: string, contact: any) => {
+        const key = normalizeContactKey(contact);
+        setAccounts((prev: any[]) =>
+            prev.map((a: any) => {
+                if (String(a.id) !== String(accountId)) return a;
+                const existing = Array.isArray(a.contacts) ? a.contacts : [];
+                const hasDup = existing.some((row: any) => normalizeContactKey(row) === key);
+                if (hasDup) return a;
+                return { ...a, contacts: [...existing, contact] };
+            })
+        );
+    };
 
     const columnLabels: Record<string, string> = {
         name: 'Account Name',
@@ -279,6 +319,68 @@ export default function AccountsPage({
             ...prev,
         ]);
         setShowAddModal(false);
+        setScanPrefillAccount(null);
+        setScanMeta(null);
+    };
+
+    const openAccountScanPicker = () => {
+        if (scanBusy) return;
+        scanAccountInputRef.current?.click();
+    };
+
+    const handleAccountCardScan = async (file: File) => {
+        const propertyId = activeProperty?.id ? String(activeProperty.id) : '';
+        const parsed = await extractBusinessCard(file, propertyId);
+        if (!parsed.ok) {
+            throw new Error(parsed.error || 'Could not extract business card details.');
+        }
+        const prefill = {
+            ...(parsed.account || {}),
+            contacts: Array.isArray(parsed.contacts) && parsed.contacts.length ? parsed.contacts : [],
+        };
+        const matches = findPotentialDuplicateAccounts(
+            String(prefill?.name || ''),
+            accountsSameProperty,
+            { propertyId }
+        );
+        if (matches.length && prefill.contacts?.[0]) {
+            for (const acc of matches) {
+                const queueItem = {
+                    propertyId,
+                    createdAt: new Date().toISOString(),
+                    status: 'open',
+                    source: 'business-card-scan',
+                    scannedAccountName: prefill.name || '',
+                    candidateAccountId: String(acc.id),
+                    candidateAccountName: String(acc.name || ''),
+                    scannedContact: prefill.contacts[0],
+                    rawText: parsed.rawText || '',
+                };
+                try {
+                    const saved = await upsertAccountDuplicateQueueItem(queueItem);
+                    setDuplicateQueue((prev) => [saved, ...prev]);
+                } catch {
+                    // Keep UI flow responsive even if queue save fails.
+                }
+            }
+        }
+        setScanMeta({ confidence: parsed.confidence, rawText: parsed.rawText, unmapped: parsed.unmapped });
+        setScanPrefillAccount(prefill);
+        setShowAddModal(true);
+    };
+
+    const handleAccountScanInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        setScanBusy(true);
+        try {
+            await handleAccountCardScan(file);
+        } catch (err: any) {
+            window.alert(err?.message || 'Could not scan this business card.');
+        } finally {
+            setScanBusy(false);
+        }
     };
 
     const syncAccountFromLead = (lead: any) => {
@@ -384,6 +486,39 @@ export default function AccountsPage({
         setProfileLead((prev: any) =>
             prev ? { ...prev, profileAuditLog: [...(prev.profileAuditLog || []), entry] } : prev
         );
+    };
+
+    const handleScanContactForCurrentProfile = async (file: File) => {
+        if (!profileLead) return;
+        const propertyId = activeProperty?.id ? String(activeProperty.id) : '';
+        const parsed = await extractBusinessCard(file, propertyId);
+        if (!parsed.ok) throw new Error(parsed.error || 'Could not read business card.');
+        const scanned = Array.isArray(parsed.contacts) ? parsed.contacts[0] : null;
+        if (!scanned) throw new Error('No contact details were extracted from this image.');
+        const aid = String(profileLead.accountId || profileLead.id || '');
+        appendContactToAccount(aid, scanned);
+        setProfileLead((prev: any) => {
+            if (!prev) return prev;
+            const curContacts = Array.isArray(prev.contacts) ? prev.contacts : [];
+            const already = curContacts.some((c: any) => normalizeContactKey(c) === normalizeContactKey(scanned));
+            const nextContacts = already ? curContacts : [...curContacts, scanned];
+            return { ...prev, contacts: nextContacts };
+        });
+        appendProfileAudit('Contact scanned', contactDisplayName(scanned) || 'Scanned business card contact');
+    };
+
+    const removeDuplicateQueueItem = async (item: any) => {
+        const pid = activeProperty?.id ? String(activeProperty.id) : '';
+        await deleteAccountDuplicateQueueItem(String(item.id), pid);
+        setDuplicateQueue((prev) => prev.filter((x) => String(x.id) !== String(item.id)));
+    };
+
+    const attachQueueContactToExistingAccount = async (item: any) => {
+        const targetId = String(item?.candidateAccountId || '').trim();
+        const contact = item?.scannedContact;
+        if (!targetId || !contact) return;
+        appendContactToAccount(targetId, contact);
+        await removeDuplicateQueueItem(item);
     };
 
     const openAccountDeleteConfirm = async (accountId: string) => {
@@ -556,6 +691,7 @@ export default function AccountsPage({
                         allowAccountMergeAndOwner ? handleMergeAccountIntoCurrent : undefined
                     }
                     onAssignAccountOwner={allowAccountMergeAndOwner ? handleAssignAccountOwner : undefined}
+                    onScanContactCard={profileReadOnly ? undefined : handleScanContactForCurrentProfile}
                 />
                 <AddAccountModal
                     isOpen={showEditAccountModal}
@@ -607,7 +743,7 @@ export default function AccountsPage({
                                 : `${sortedFiltered.length} of ${accounts.length} accounts`}
                         </p>
                     </div>
-                    <div className="flex flex-col items-center gap-2.5 w-full min-w-0 max-w-3xl justify-self-center lg:px-2">
+                    <div className="flex flex-col items-center gap-2.5 w-full min-w-0 max-w-3xl justify-self-center mx-auto lg:px-2">
                     <h2
                         className="w-full text-center text-sm font-bold uppercase tracking-widest"
                         style={{ color: colors.primary }}
@@ -686,16 +822,44 @@ export default function AccountsPage({
                         </label>
                     </div>
                     </div>
-                    <div className="shrink-0 flex justify-start lg:justify-end pt-0.5 w-full lg:w-auto">
+                    <div className="shrink-0 flex justify-center lg:justify-end pt-0.5 w-full lg:w-[12.5rem]">
                     {!profileReadOnly && (
-                        <button
-                            type="button"
-                            onClick={() => setShowAddModal(true)}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm whitespace-nowrap w-full sm:w-auto justify-center"
-                            style={{ backgroundColor: colors.primary, color: '#000' }}
-                        >
-                            <Plus size={18} /> New account
-                        </button>
+                        <div className="flex flex-col items-stretch gap-2 w-full max-w-[12.5rem]">
+                            <button
+                                type="button"
+                                onClick={() => setShowAddModal(true)}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm whitespace-nowrap w-full justify-center"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                            >
+                                <Plus size={18} /> New Account
+                            </button>
+                            <button
+                                type="button"
+                                onClick={openAccountScanPicker}
+                                disabled={scanBusy}
+                                className="flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold uppercase tracking-wider disabled:opacity-60 w-full justify-center"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                <Camera size={14} /> {scanBusy ? 'Scanning...' : 'Scan/Upload'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowDuplicateQueue(true)}
+                                className="flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold uppercase tracking-wider w-full justify-center"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                title="Review possible duplicate accounts for manual merge"
+                            >
+                                <GitMerge size={14} /> Duplicate
+                            </button>
+                            <input
+                                ref={scanAccountInputRef}
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                className="hidden"
+                                onChange={handleAccountScanInput}
+                            />
+                        </div>
                     )}
                     </div>
                 </div>
@@ -761,7 +925,11 @@ export default function AccountsPage({
 
             <AddAccountModal
                 isOpen={showAddModal}
-                onClose={() => setShowAddModal(false)}
+                onClose={() => {
+                    setShowAddModal(false);
+                    setScanPrefillAccount(null);
+                    setScanMeta(null);
+                }}
                 onSave={handleSaveNew}
                 theme={theme}
                 accountTypeOptions={accountTypeOptions}
@@ -769,7 +937,77 @@ export default function AccountsPage({
                 duplicateCheckPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
+                prefillAccount={scanPrefillAccount}
+                scanMeta={scanMeta}
             />
+            {showDuplicateQueue && (
+                <div className="fixed inset-0 z-[180] bg-black/70 p-4 flex items-center justify-center">
+                    <div className="w-full max-w-3xl rounded-2xl border max-h-[80vh] overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                            <div>
+                                <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>Possible Duplicates Queue</h3>
+                                <p className="text-xs" style={{ color: colors.textMuted }}>
+                                    Manually review and merge/attach scanned contacts to avoid duplicate accounts.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowDuplicateQueue(false)}
+                                className="px-3 py-2 rounded border text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                Close
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-auto space-y-3 max-h-[65vh]">
+                            {duplicateQueue.length === 0 ? (
+                                <p className="text-sm" style={{ color: colors.textMuted }}>No duplicate candidates in the queue.</p>
+                            ) : duplicateQueue.map((item: any) => (
+                                <div key={item.id} className="rounded-xl border p-3 space-y-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                    <p className="text-xs font-semibold" style={{ color: colors.textMain }}>
+                                        Scanned account: {item.scannedAccountName || 'Unknown'} | Candidate: {item.candidateAccountName || item.candidateAccountId || 'Unknown'}
+                                    </p>
+                                    <p className="text-xs" style={{ color: colors.textMuted }}>
+                                        Scanned contact: {contactDisplayName(item.scannedContact || {}) || 'N/A'} · {String(item.scannedContact?.email || '—')} · {String(item.scannedContact?.phone || '—')}
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1.5 rounded border text-xs font-bold"
+                                            style={{ borderColor: colors.border, color: colors.textMain }}
+                                            onClick={() => {
+                                                const row = accounts.find((a: any) => String(a.id) === String(item.candidateAccountId));
+                                                if (row) {
+                                                    setProfileLead(accountToLead(row));
+                                                    setShowDuplicateQueue(false);
+                                                }
+                                            }}
+                                        >
+                                            Open candidate profile
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1.5 rounded text-xs font-bold"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                            onClick={() => attachQueueContactToExistingAccount(item)}
+                                        >
+                                            Attach contact to existing account
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1.5 rounded border text-xs font-bold"
+                                            style={{ borderColor: colors.border, color: colors.textMuted }}
+                                            onClick={() => removeDuplicateQueueItem(item)}
+                                        >
+                                            Dismiss
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

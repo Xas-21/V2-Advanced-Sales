@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Phone, Mail, MapPin, X, Plus, Edit, Trash2, ChevronDown,
-    PhoneCall, Send, FileText, MessageSquare, History, CalendarDays, GitMerge, Search,
+    PhoneCall, Send, FileText, MessageSquare, History, CalendarDays, GitMerge, Search, Camera,
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, ResponsiveContainer, Tooltip
@@ -66,6 +66,7 @@ export interface CRMProfileViewProps {
     allAccountsForMergeSearch?: any[];
     onMergeAccountIntoCurrent?: (sourceAccountId: string) => void;
     onAssignAccountOwner?: (userId: string, ownerDisplayName: string) => void;
+    onScanContactCard?: (file: File) => Promise<any> | void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -130,6 +131,7 @@ export default function CRMProfileView({
     allAccountsForMergeSearch = [],
     onMergeAccountIntoCurrent,
     onAssignAccountOwner,
+    onScanContactCard,
 }: CRMProfileViewProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -209,6 +211,8 @@ export default function CRMProfileView({
     const [mergeSearch, setMergeSearch] = useState('');
     const [mergePickId, setMergePickId] = useState<string | null>(null);
     const [mergeBusy, setMergeBusy] = useState(false);
+    const [scanBusy, setScanBusy] = useState(false);
+    const contactScanInputRef = useRef<HTMLInputElement | null>(null);
 
     const destAccountId = String(lead.accountId || lead.id || '');
     const mergeCandidates = useMemo(() => {
@@ -393,6 +397,25 @@ export default function CRMProfileView({
         appendAuditLog?.('Contact removed', deleteConfirm.name);
         setDeleteConfirm({ isOpen: false, idx: null, name: '' });
         setExpandedContact(null);
+    };
+
+    const handlePickContactScanFile = () => {
+        if (scanBusy) return;
+        contactScanInputRef.current?.click();
+    };
+
+    const handleContactScanFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file || !onScanContactCard) return;
+        setScanBusy(true);
+        try {
+            await onScanContactCard(file);
+        } catch (err: any) {
+            window.alert(err?.message || 'Could not scan this business card right now.');
+        } finally {
+            setScanBusy(false);
+        }
     };
 
     const contactList = lead.contacts || [{
@@ -752,19 +775,44 @@ export default function CRMProfileView({
                             <div className="flex justify-between items-center mb-4">
                                 <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Contact Information</h3>
                                 {!readOnly && (
-                                    <button
-                                        type="button"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setEditingContactIdx(null);
-                                            setNewContactData({ firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: '' });
-                                            setIsContactModalOpen(true);
-                                        }}
-                                        className="p-1 rounded hover:bg-white/10 transition-colors"
-                                        title="Add Contact Person"
-                                        style={{ color: colors.primary }}>
-                                        <Plus size={16} />
-                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        {onScanContactCard && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    onClick={handlePickContactScanFile}
+                                                    className="px-2 py-1 rounded border text-[11px] font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors disabled:opacity-60"
+                                                    style={{ borderColor: colors.border, color: colors.textMain }}
+                                                    title="Scan or upload business card"
+                                                    disabled={scanBusy}
+                                                >
+                                                    <Camera size={13} />
+                                                    {scanBusy ? 'Scanning...' : 'Scan / Upload'}
+                                                </button>
+                                                <input
+                                                    ref={contactScanInputRef}
+                                                    type="file"
+                                                    accept="image/*"
+                                                    capture="environment"
+                                                    className="hidden"
+                                                    onChange={handleContactScanFileChange}
+                                                />
+                                            </>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setEditingContactIdx(null);
+                                                setNewContactData({ firstName: '', lastName: '', position: '', email: '', phone: '', city: '', country: '' });
+                                                setIsContactModalOpen(true);
+                                            }}
+                                            className="p-1 rounded hover:bg-white/10 transition-colors"
+                                            title="Add Contact Person"
+                                            style={{ color: colors.primary }}>
+                                            <Plus size={16} />
+                                        </button>
+                                    </div>
                                 )}
                             </div>
 

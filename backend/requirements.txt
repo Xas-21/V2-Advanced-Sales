@@ -6,3 +6,6 @@ pytest
 psycopg[binary]
 psycopg-pool
 python-dotenv
+python-multipart
+pillow
+pytesseract

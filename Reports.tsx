@@ -245,6 +245,7 @@ export default function Reports({
         promotionsFromMonth: 1,
         promotionsToYear: new Date().getFullYear(),
         promotionsToMonth: 12,
+        accountTypes: [] as string[],
     });
     const [selectedColumns, setSelectedColumns] = useState<string[]>([
         'Request ID', 'Line', 'Client', 'Request Type', 'Date', 'Status', 'Payment Status', 'Paid Amount', 'Unpaid Amount', 'Amount',
@@ -266,6 +267,12 @@ export default function Reports({
         () => resolveAccountTypesForProperty(String(pid || ''), activeProperty),
         [pid, activeProperty]
     );
+    const accountTypeFilterOptions = useMemo(() => {
+        const fromAccounts = (accounts || [])
+            .map((a: any) => String(a?.type || '').trim())
+            .filter(Boolean);
+        return [...new Set([...(propertyAccountTypes || []), ...fromAccounts])].sort((a, b) => a.localeCompare(b));
+    }, [accounts, propertyAccountTypes]);
     const propertyTaxes = useMemo(() => {
         const fromApi = Array.isArray(propertyTaxesFromApi) ? propertyTaxesFromApi : [];
         if (fromApi.length) {
@@ -363,7 +370,17 @@ export default function Reports({
             'Total (incl. tax)',
             'Amount',
         ],
-        Accounts: ['ID', 'Name', 'Segment', 'Total Bookings', 'Total Revenue'],
+        Accounts: [
+            'ID',
+            'Name',
+            'Account Type',
+            'Contact Person',
+            'Contact Position',
+            'Contact Email',
+            'Contact Phone',
+            'Total Bookings',
+            'Total Revenue',
+        ],
         MICE: [
             'Request ID',
             'Line',
@@ -467,6 +484,15 @@ export default function Reports({
             setFilters({ ...filters, statuses: filters.statuses.filter((s: string) => s !== status) });
         } else {
             setFilters({ ...filters, statuses: [...filters.statuses, status] });
+        }
+    };
+
+    const toggleArrayFilter = (key: 'accountTypes', value: string) => {
+        const curr = Array.isArray(filters[key]) ? filters[key] : [];
+        if (curr.includes(value)) {
+            setFilters({ ...filters, [key]: curr.filter((x: string) => x !== value) });
+        } else {
+            setFilters({ ...filters, [key]: [...curr, value] });
         }
     };
 
@@ -1145,21 +1171,66 @@ export default function Reports({
         }
 
         if (selectedEntity === 'Accounts') {
-            const rows = (accounts || []).map((acc: any) => {
-                const reqs = filterRequestsForAccount(scopedRequests, acc.id, acc.name);
-                const m = computeAccountMetrics(reqs);
-                return {
-                    ID: acc.id,
-                    Name: acc.name,
-                    Segment: acc.type || '—',
-                    'Total Bookings': String(m.totalRequests),
-                    'Total Revenue': formatCompactCurrency(m.totalSpend, selectedCurrency),
-                };
-            });
+            const selectedTypes = new Set((filters.accountTypes || []).map((x: string) => String(x).trim()).filter(Boolean));
+            const rows = (accounts || [])
+                .filter((acc: any) => {
+                    const t = String(acc?.type || '').trim();
+                    if (selectedTypes.size && !selectedTypes.has(t)) return false;
+                    return true;
+                })
+                .map((acc: any) => {
+                    const reqs = filterRequestsForAccount(scopedRequests, acc.id, acc.name);
+                    const m = computeAccountMetrics(reqs);
+                    const contactsFromArray = Array.isArray(acc?.contacts)
+                        ? acc.contacts.filter((c: any) => c && typeof c === 'object')
+                        : [];
+                    const fallbackPrimary =
+                        acc?.contact || acc?.email || acc?.phone
+                            ? [
+                                  {
+                                      name: String(acc?.contact || '').trim(),
+                                      email: String(acc?.email || '').trim(),
+                                      phone: String(acc?.phone || '').trim(),
+                                      position: String(acc?.position || '').trim(),
+                                  },
+                              ]
+                            : [];
+                    const allContacts = contactsFromArray.length ? contactsFromArray : fallbackPrimary;
+                    const uniq = (values: string[]) =>
+                        [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
+                    const names = uniq(
+                        allContacts.map((contact: any) =>
+                            String(
+                                contact?.name ||
+                                    `${String(contact?.firstName || '').trim()} ${String(contact?.lastName || '').trim()}`
+                            ).trim()
+                        )
+                    );
+                    const positions = uniq(allContacts.map((contact: any) => String(contact?.position || '').trim()));
+                    const emails = uniq(allContacts.map((contact: any) => String(contact?.email || '').trim()));
+                    const phones = uniq(allContacts.map((contact: any) => String(contact?.phone || '').trim()));
+
+                    return {
+                        ID: acc.id,
+                        Name: acc.name,
+                        'Account Type': acc.type || '—',
+                        'Contact Person': names.length ? names.join('\n') : '—',
+                        'Contact Position': positions.length ? positions.join('\n') : '—',
+                        'Contact Email': emails.length ? emails.join('\n') : '—',
+                        'Contact Phone': phones.length ? phones.join('\n') : '—',
+                        'Total Bookings': String(m.totalRequests),
+                        'Total Revenue': formatCompactCurrency(m.totalSpend, selectedCurrency),
+                    };
+                });
             return {
                 rows,
                 summary: {
                     'Total accounts': rows.length,
+                    'Total contacts': rows.reduce((sum: number, r: any) => {
+                        const n = String(r['Contact Person'] || '').trim();
+                        if (!n || n === '—') return sum;
+                        return sum + n.split('\n').filter((x: string) => String(x).trim()).length;
+                    }, 0),
                     'Total bookings': rows.reduce((s, r) => s + (Number(r['Total Bookings']) || 0), 0).toLocaleString(),
                 },
                 exportColumns: availableColumns.Accounts,
@@ -1217,6 +1288,7 @@ export default function Reports({
         filters.promotionsFromMonth,
         filters.promotionsToYear,
         filters.promotionsToMonth,
+        filters.accountTypes,
         selectedCurrency,
         propertyTaxes,
         promotionsData,
@@ -1309,6 +1381,7 @@ export default function Reports({
     const showStatusFilters =
         (selectedEntity === 'Requests' || selectedEntity === 'MICE' || selectedEntity === 'Sales Calls') && !isVsLySource && selectedEntity !== 'Promotions';
     const showValueFilters = (selectedEntity === 'Requests' || selectedEntity === 'MICE') && !isVsLySource;
+    const showAccountFilters = selectedEntity === 'Accounts' && !isVsLySource;
 
     const pctClass = (pct: string) => {
         const p = String(pct || '').trim();
@@ -1431,6 +1504,21 @@ export default function Reports({
         const cols = (selectedColumns && selectedColumns.length ? selectedColumns : reportPack.exportColumns)
             .filter((c) => reportPack.exportColumns.includes(c));
         const rows = exportRows;
+        const stackedCellHtml = (raw: any, lineBorderColor = '#ddd') => {
+            const text = String(raw ?? '—');
+            const lines = text
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean);
+            if (lines.length <= 1) return text || '—';
+            const innerRows = lines
+                .map(
+                    (line, idx) =>
+                        `<tr><td style="padding:2px 0;${idx ? `border-top:1px solid ${lineBorderColor};` : ''}">${line}</td></tr>`
+                )
+                .join('');
+            return `<table style="width:100%;border-collapse:collapse;"><tbody>${innerRows}</tbody></table>`;
+        };
 
         if (exportFormat === 'csv') {
             const csv = [
@@ -1444,7 +1532,11 @@ export default function Reports({
         if (exportFormat === 'excel') {
             const tableHead = cols.map((c) => `<th style="padding:8px;border:1px solid #ddd;background:#f7f7f7;text-align:left;">${c}</th>`).join('');
             const tableRows = rows
-                .map((row) => `<tr>${cols.map((c) => `<td style="padding:8px;border:1px solid #ddd;">${String(row[c] ?? '—')}</td>`).join('')}</tr>`)
+                .map((row) =>
+                    `<tr>${cols
+                        .map((c) => `<td style="padding:8px;border:1px solid #ddd;vertical-align:top;">${stackedCellHtml(row[c], '#ddd')}</td>`)
+                        .join('')}</tr>`
+                )
                 .join('');
             const summaryHtml = Object.entries(reportPack.summary)
                 .map(([k, v]) => `<tr><td style="padding:6px 8px;border:1px solid #eee;">${k}</td><td style="padding:6px 8px;border:1px solid #eee;">${String(v)}</td></tr>`)
@@ -1470,7 +1562,7 @@ export default function Reports({
             .join('');
         const head = cols.map((c) => `<th>${c}</th>`).join('');
         const body = rows
-            .map((row) => `<tr>${cols.map((c) => `<td>${String(row[c] ?? '—')}</td>`).join('')}</tr>`)
+            .map((row) => `<tr>${cols.map((c) => `<td style="vertical-align:top;">${stackedCellHtml(row[c], '#ddd')}</td>`).join('')}</tr>`)
             .join('');
         w.document.write(`
             <html>
@@ -1860,6 +1952,31 @@ export default function Reports({
                                     </div>
                                 </div>
                             )}
+
+                            {showAccountFilters && (
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-medium mb-2" style={{ color: colors.textMuted }}>Account Type</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {accountTypeFilterOptions.map((typeName) => (
+                                                <button
+                                                    key={typeName}
+                                                    type="button"
+                                                    onClick={() => toggleArrayFilter('accountTypes', typeName)}
+                                                    className={`px-3 py-1 rounded-full text-xs border transition-all ${filters.accountTypes.includes(typeName) ? 'border-2' : ''}`}
+                                                    style={{
+                                                        borderColor: filters.accountTypes.includes(typeName) ? colors.primary : colors.border,
+                                                        backgroundColor: filters.accountTypes.includes(typeName) ? colors.primary + '20' : colors.bg,
+                                                        color: filters.accountTypes.includes(typeName) ? colors.primary : colors.textMuted,
+                                                    }}
+                                                >
+                                                    {typeName}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         <div className="p-4 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
@@ -2223,7 +2340,30 @@ export default function Reports({
                                                         }
                                                         return (
                                                             <td key={col} className="p-3 text-sm" style={{ color: colors.textMain }}>
-                                                                <span style={{ color: textColor }}>{rawVal}</span>
+                                                                {(() => {
+                                                                    const lines = rawVal
+                                                                        .split('\n')
+                                                                        .map((x) => x.trim())
+                                                                        .filter(Boolean);
+                                                                    if (lines.length <= 1) {
+                                                                        return <span style={{ color: textColor }}>{rawVal}</span>;
+                                                                    }
+                                                                    return (
+                                                                        <div style={{ color: textColor }}>
+                                                                            {lines.map((line, lineIdx) => (
+                                                                                <div
+                                                                                    key={`${col}-${lineIdx}`}
+                                                                                    style={{
+                                                                                        padding: '2px 0',
+                                                                                        borderTop: lineIdx ? `1px solid ${colors.border}` : 'none',
+                                                                                    }}
+                                                                                >
+                                                                                    {line}
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    );
+                                                                })()}
                                                             </td>
                                                         );
                                                     })}
