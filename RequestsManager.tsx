@@ -464,6 +464,13 @@ export default function RequestsManager({
     });
     const [listColumnSettingsOpen, setListColumnSettingsOpen] = useState(false);
     const listColumnSettingsRef = useRef<HTMLDivElement | null>(null);
+    /** All Requests list: sort + status/type (header Filter control). */
+    const [listFilterOpen, setListFilterOpen] = useState(false);
+    const listFilterRef = useRef<HTMLDivElement | null>(null);
+    type AllRequestsListSort = 'activity' | 'start_newest' | 'start_oldest';
+    const [listSortOrder, setListSortOrder] = useState<AllRequestsListSort>('activity');
+    const [listFilterStatus, setListFilterStatus] = useState<string>('all');
+    const [listFilterType, setListFilterType] = useState<string>('all');
 
     useEffect(() => {
         setColumnOrder((prev) => {
@@ -485,6 +492,16 @@ export default function RequestsManager({
         document.addEventListener('pointerdown', onDown, true);
         return () => document.removeEventListener('pointerdown', onDown, true);
     }, [listColumnSettingsOpen]);
+
+    useEffect(() => {
+        if (!listFilterOpen) return;
+        const onDown = (e: PointerEvent) => {
+            const el = listFilterRef.current;
+            if (el && !el.contains(e.target as Node)) setListFilterOpen(false);
+        };
+        document.addEventListener('pointerdown', onDown, true);
+        return () => document.removeEventListener('pointerdown', onDown, true);
+    }, [listFilterOpen]);
 
     const listColumnVisibilityKeys = useMemo(
         () =>
@@ -580,23 +597,89 @@ export default function RequestsManager({
         setSearchParams({ ...getSearchOnlyParams(searchParams), ...patch });
     };
 
+    const matchesAllRequestsListFilter = (req: any, typeFilter: string, statusFilter: string) => {
+        const typeFilterNorm = String(typeFilter || 'all').toLowerCase();
+        const requestType = String(req.requestType || '').toLowerCase();
+        const typeMatch =
+            typeFilterNorm === 'all' ||
+            (typeFilterNorm === 'event_rooms'
+                ? requestType === 'event with rooms'
+                : typeFilterNorm === 'series group'
+                  ? requestType === 'series' || requestType === 'series group'
+                  : requestType === typeFilterNorm);
+        const statusFilterNorm = String(statusFilter || 'all').toLowerCase();
+        const statusMatch = statusFilterNorm === 'all' || String(req.status || '').toLowerCase() === statusFilterNorm;
+        return typeMatch && statusMatch;
+    };
+
+    /** Default list order: most recently touched first (`updatedAt`, then `createdAt`, then request date). */
+    const getRequestActivitySortMs = (req: any): number => {
+        const tryParse = (v: unknown) => {
+            if (v == null || v === '') return NaN;
+            const t = Date.parse(String(v));
+            return Number.isNaN(t) ? NaN : t;
+        };
+        let ms = tryParse(req?.updatedAt);
+        if (!Number.isNaN(ms)) return ms;
+        ms = tryParse(req?.createdAt);
+        if (!Number.isNaN(ms)) return ms;
+        const ymd = String(req?.receivedDate || req?.requestDate || '').slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+            ms = Date.parse(`${ymd}T12:00:00`);
+            if (!Number.isNaN(ms)) return ms;
+        }
+        return 0;
+    };
+
+    /** Sort by operational start: agenda / event start / check-in, or earliest room arrival. */
+    const getRequestOperationalStartMs = (req: any): number | null => {
+        const ev = getEventDateWindow(req);
+        let start = String(ev?.start || req?.checkIn || req?.eventStart || '').trim().slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(start) && Array.isArray(req?.rooms)) {
+            const fromRooms = req.rooms
+                .map((r: any) => String(r?.arrival || r?.checkIn || '').trim().slice(0, 10))
+                .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+                .sort();
+            if (fromRooms.length) start = fromRooms[0];
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+            const ms = Date.parse(`${start}T12:00:00`);
+            return Number.isNaN(ms) ? null : ms;
+        }
+        return null;
+    };
+
     const listPageRequests = useMemo(() => {
         const quick = (searchTerm || '').toLowerCase().trim();
-        if (!quick) return requests;
-        return requests.filter((req: any) =>
-            String(req.id || '').toLowerCase().includes(quick) ||
-            String(req.account || req.accountName || '').toLowerCase().includes(quick) ||
-            String(req.confirmationNo || '').toLowerCase().includes(quick) ||
-            String(req.requestName || '').toLowerCase().includes(quick)
-        );
-    }, [requests, searchTerm]);
+        let list: any[] = requests;
+        if (quick) {
+            list = list.filter((req: any) =>
+                String(req.id || '').toLowerCase().includes(quick) ||
+                String(req.account || req.accountName || '').toLowerCase().includes(quick) ||
+                String(req.confirmationNo || '').toLowerCase().includes(quick) ||
+                String(req.requestName || '').toLowerCase().includes(quick)
+            );
+        }
+        list = list.filter((req: any) => matchesAllRequestsListFilter(req, listFilterType, listFilterStatus));
+        return [...list].sort((a, b) => {
+            if (listSortOrder === 'activity') {
+                return getRequestActivitySortMs(b) - getRequestActivitySortMs(a);
+            }
+            const ta = getRequestOperationalStartMs(a);
+            const tb = getRequestOperationalStartMs(b);
+            if (ta == null && tb == null) return 0;
+            if (ta == null) return 1;
+            if (tb == null) return -1;
+            return listSortOrder === 'start_newest' ? tb - ta : ta - tb;
+        });
+    }, [requests, searchTerm, listFilterType, listFilterStatus, listSortOrder]);
 
     const [listPageSize, setListPageSize] = useState<20 | 50 | 100>(20);
     const [listCurrentPage, setListCurrentPage] = useState(1);
 
     useEffect(() => {
         setListCurrentPage(1);
-    }, [searchTerm]);
+    }, [searchTerm, listFilterType, listFilterStatus, listSortOrder]);
 
     const listTotalPages = Math.max(1, Math.ceil(listPageRequests.length / listPageSize));
 
@@ -6373,7 +6456,10 @@ export default function RequestsManager({
                     className="p-2.5 rounded-xl border hover:bg-white/5 transition-colors flex items-center justify-center"
                     style={{ borderColor: colors.border, color: colors.textMain }}
                     title="List column settings"
-                    onClick={() => setListColumnSettingsOpen((o) => !o)}
+                    onClick={() => {
+                        setListColumnSettingsOpen((o) => !o);
+                        setListFilterOpen(false);
+                    }}
                 >
                     <Settings size={18} />
                 </button>
@@ -6459,10 +6545,99 @@ export default function RequestsManager({
                                 </div>
                             )}
                             {listColumnSettingsControl}
-                            <button type="button" className="px-4 py-2 rounded-xl border hover:bg-white/5 transition-colors flex items-center gap-2 text-sm font-bold shrink-0"
-                                style={{ borderColor: colors.border, color: colors.textMain }}>
-                                <Filter size={16} /> Filter
-                            </button>
+                            <div className="relative shrink-0" ref={listFilterRef}>
+                                <button
+                                    type="button"
+                                    className="px-4 py-2 rounded-xl border hover:bg-white/5 transition-colors flex items-center gap-2 text-sm font-bold shrink-0"
+                                    style={{
+                                        borderColor: colors.border,
+                                        color: colors.textMain,
+                                        boxShadow:
+                                            listFilterOpen || listFilterType !== 'all' || listFilterStatus !== 'all' || listSortOrder !== 'activity'
+                                                ? `0 0 0 1px ${colors.primary}66`
+                                                : undefined,
+                                    }}
+                                    onClick={() => {
+                                        setListFilterOpen((o) => !o);
+                                        setListColumnSettingsOpen(false);
+                                    }}
+                                >
+                                    <Filter size={16} /> Filter
+                                </button>
+                                {listFilterOpen ? (
+                                    <div
+                                        className="absolute right-0 top-full mt-2 z-50 w-[min(100vw-1.5rem,300px)] p-3 rounded-xl border shadow-xl space-y-3"
+                                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                                    >
+                                        <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>
+                                            Sort and filter
+                                        </p>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block opacity-70" style={{ color: colors.textMuted }}>
+                                                Sort
+                                            </label>
+                                            <select
+                                                value={listSortOrder}
+                                                onChange={(e) => setListSortOrder(e.target.value as AllRequestsListSort)}
+                                                className="w-full pl-3 pr-8 py-2 rounded-xl border bg-black/20 text-xs font-bold outline-none cursor-pointer"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                <option value="activity">Most recent (updated / created first)</option>
+                                                <option value="start_newest">Latest check-in / start first</option>
+                                                <option value="start_oldest">Earliest check-in / start first</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block opacity-70" style={{ color: colors.textMuted }}>
+                                                Request type
+                                            </label>
+                                            <select
+                                                value={listFilterType}
+                                                onChange={(e) => setListFilterType(e.target.value)}
+                                                className="w-full pl-3 pr-8 py-2 rounded-xl border bg-black/20 text-xs font-bold outline-none cursor-pointer"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                <option value="all">All request types</option>
+                                                <option value="accommodation">Accommodation</option>
+                                                <option value="event">Event</option>
+                                                <option value="event_rooms">Event with Rooms</option>
+                                                <option value="series group">Series Group</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block opacity-70" style={{ color: colors.textMuted }}>
+                                                Status
+                                            </label>
+                                            <select
+                                                value={listFilterStatus}
+                                                onChange={(e) => setListFilterStatus(e.target.value)}
+                                                className="w-full pl-3 pr-8 py-2 rounded-xl border bg-black/20 text-xs font-bold outline-none cursor-pointer"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                <option value="all">All statuses</option>
+                                                <option value="Inquiry">Inquiry</option>
+                                                <option value="Accepted">Accepted</option>
+                                                <option value="Tentative">Tentative</option>
+                                                <option value="Definite">Definite</option>
+                                                <option value="Actual">Actual</option>
+                                                <option value="Cancelled">Cancelled</option>
+                                            </select>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="w-full py-2 rounded-lg text-xs font-bold border hover:bg-white/5 transition-colors"
+                                            style={{ borderColor: colors.border, color: colors.textMuted }}
+                                            onClick={() => {
+                                                setListSortOrder('activity');
+                                                setListFilterType('all');
+                                                setListFilterStatus('all');
+                                            }}
+                                        >
+                                            Reset to defaults
+                                        </button>
+                                    </div>
+                                ) : null}
+                            </div>
                         </div>
                     )}
                     {!allRequestsHeaderWidgets && listColumnSettingsControl && (
