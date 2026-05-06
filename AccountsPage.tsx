@@ -285,6 +285,80 @@ export default function AccountsPage({
         return rows;
     }, [filtered, listSort, requestStatsByAccountId]);
 
+    const systemDuplicateItems = useMemo(() => {
+        const byName = new Map<string, any[]>();
+        for (const a of accountsSameProperty) {
+            const key = normalizeAccountNameKey(String(a?.name || ''));
+            if (!key) continue;
+            if (!byName.has(key)) byName.set(key, []);
+            byName.get(key)!.push(a);
+        }
+        const out: any[] = [];
+        const pushPair = (left: any, right: any, reason: string, key: string) => {
+            const id = `sys-${reason}-${key}-${String(left?.id || '')}-${String(right?.id || '')}`;
+            out.push({
+                id,
+                source: 'system-detection',
+                reason,
+                scannedAccountName: String(left?.name || ''),
+                candidateAccountId: String(right?.id || ''),
+                candidateAccountName: String(right?.name || ''),
+                baseAccountId: String(left?.id || ''),
+                baseAccountName: String(left?.name || ''),
+                scannedContact: (left?.contacts && left.contacts[0]) || null,
+                status: 'open',
+            });
+        };
+        for (const [k, list] of byName.entries()) {
+            if (list.length < 2) continue;
+            for (let i = 0; i < list.length; i += 1) {
+                for (let j = i + 1; j < list.length; j += 1) {
+                    pushPair(list[i], list[j], 'same-name', k);
+                }
+            }
+        }
+        const seenContactKey = new Set<string>();
+        for (let i = 0; i < accountsSameProperty.length; i += 1) {
+            const a = accountsSameProperty[i];
+            const contactsA = Array.isArray(a?.contacts) ? a.contacts : [];
+            for (let j = i + 1; j < accountsSameProperty.length; j += 1) {
+                const b = accountsSameProperty[j];
+                const contactsB = Array.isArray(b?.contacts) ? b.contacts : [];
+                let reason = '';
+                outer: for (const ca of contactsA) {
+                    const ea = String(ca?.email || '').trim().toLowerCase();
+                    const pa = String(ca?.phone || '').replace(/\D+/g, '');
+                    for (const cb of contactsB) {
+                        const eb = String(cb?.email || '').trim().toLowerCase();
+                        const pb = String(cb?.phone || '').replace(/\D+/g, '');
+                        if (ea && eb && ea === eb) {
+                            reason = `same-contact-email:${ea}`;
+                            break outer;
+                        }
+                        if (pa && pb && pa === pb) {
+                            reason = `same-contact-phone:${pa}`;
+                            break outer;
+                        }
+                    }
+                }
+                if (!reason || seenContactKey.has(reason + `:${a.id}:${b.id}`)) continue;
+                seenContactKey.add(reason + `:${a.id}:${b.id}`);
+                pushPair(a, b, reason, `${a.id}-${b.id}`);
+            }
+        }
+        const seen = new Set<string>();
+        return out.filter((item) => {
+            const key = `${item.baseAccountId}|${item.candidateAccountId}|${item.reason}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }, [accountsSameProperty]);
+
+    const allDuplicateItems = useMemo(() => {
+        return [...systemDuplicateItems, ...duplicateQueue];
+    }, [systemDuplicateItems, duplicateQueue]);
+
     const handleColumnDragStart = (column: string) => setDraggedColumn(column);
     const handleColumnDrop = (targetColumn: string) => {
         if (!draggedColumn || draggedColumn === targetColumn) return;
@@ -849,7 +923,7 @@ export default function AccountsPage({
                                 style={{ borderColor: colors.border, color: colors.textMain }}
                                 title="Review possible duplicate accounts for manual merge"
                             >
-                                <GitMerge size={14} /> Duplicate
+                                <GitMerge size={14} /> Duplicate ({allDuplicateItems.length})
                             </button>
                             <input
                                 ref={scanAccountInputRef}
@@ -960,15 +1034,17 @@ export default function AccountsPage({
                             </button>
                         </div>
                         <div className="p-4 overflow-auto space-y-3 max-h-[65vh]">
-                            {duplicateQueue.length === 0 ? (
+                            {allDuplicateItems.length === 0 ? (
                                 <p className="text-sm" style={{ color: colors.textMuted }}>No duplicate candidates in the queue.</p>
-                            ) : duplicateQueue.map((item: any) => (
+                            ) : allDuplicateItems.map((item: any) => (
                                 <div key={item.id} className="rounded-xl border p-3 space-y-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                     <p className="text-xs font-semibold" style={{ color: colors.textMain }}>
-                                        Scanned account: {item.scannedAccountName || 'Unknown'} | Candidate: {item.candidateAccountName || item.candidateAccountId || 'Unknown'}
+                                        {item.source === 'system-detection' ? 'Detected duplicate' : 'Scanned account'}: {item.scannedAccountName || item.baseAccountName || 'Unknown'} | Candidate: {item.candidateAccountName || item.candidateAccountId || 'Unknown'}
                                     </p>
                                     <p className="text-xs" style={{ color: colors.textMuted }}>
-                                        Scanned contact: {contactDisplayName(item.scannedContact || {}) || 'N/A'} · {String(item.scannedContact?.email || '—')} · {String(item.scannedContact?.phone || '—')}
+                                        {item.source === 'system-detection'
+                                            ? `Reason: ${String(item.reason || 'possible duplicate')}`
+                                            : `Scanned contact: ${contactDisplayName(item.scannedContact || {}) || 'N/A'} · ${String(item.scannedContact?.email || '—')} · ${String(item.scannedContact?.phone || '—')}`}
                                     </p>
                                     <div className="flex flex-wrap gap-2">
                                         <button
@@ -985,22 +1061,26 @@ export default function AccountsPage({
                                         >
                                             Open candidate profile
                                         </button>
-                                        <button
-                                            type="button"
-                                            className="px-3 py-1.5 rounded text-xs font-bold"
-                                            style={{ backgroundColor: colors.primary, color: '#000' }}
-                                            onClick={() => attachQueueContactToExistingAccount(item)}
-                                        >
-                                            Attach contact to existing account
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="px-3 py-1.5 rounded border text-xs font-bold"
-                                            style={{ borderColor: colors.border, color: colors.textMuted }}
-                                            onClick={() => removeDuplicateQueueItem(item)}
-                                        >
-                                            Dismiss
-                                        </button>
+                                        {item.source !== 'system-detection' && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-1.5 rounded text-xs font-bold"
+                                                    style={{ backgroundColor: colors.primary, color: '#000' }}
+                                                    onClick={() => attachQueueContactToExistingAccount(item)}
+                                                >
+                                                    Attach contact to existing account
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-1.5 rounded border text-xs font-bold"
+                                                    style={{ borderColor: colors.border, color: colors.textMuted }}
+                                                    onClick={() => removeDuplicateQueueItem(item)}
+                                                >
+                                                    Dismiss
+                                                </button>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             ))}
