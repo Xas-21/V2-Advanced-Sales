@@ -1237,6 +1237,7 @@ export default function RequestsManager({
             if (duplicateIdentity) {
                 accPayload.id = duplicateIdentity.id;
                 accPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                accPayload.status = 'Inquiry';
                 accPayload.payments = [];
                 accPayload.paidAmount = '0';
                 accPayload.paymentStatus = 'Unpaid';
@@ -1267,6 +1268,7 @@ export default function RequestsManager({
                 if (duplicateIdentity) {
                     evtPayload.id = duplicateIdentity.id;
                     evtPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                    evtPayload.status = 'Inquiry';
                     evtPayload.payments = [];
                     delete evtPayload.feedback;
                 }
@@ -1298,6 +1300,7 @@ export default function RequestsManager({
             if (duplicateIdentity) {
                 accPayload.id = duplicateIdentity.id;
                 accPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                accPayload.status = 'Inquiry';
                 accPayload.payments = [];
                 accPayload.paidAmount = '0';
                 accPayload.paymentStatus = 'Unpaid';
