@@ -25,6 +25,12 @@ import AccountProfilePerformanceChart, {
     ACCOUNT_PROFILE_CHART_TABS,
     type AccountProfileChartTab,
 } from './AccountProfilePerformanceChart';
+import ChartVsCompareControls, { defaultChartVsYear } from './ChartVsCompareControls';
+import {
+    chartTabSupportsVs,
+    mergeChartRowsWithLyComparison,
+    shiftRangeToComparisonYear,
+} from './chartVsYearCompare';
 
 export interface CRMProfileViewProps {
     lead: any;
@@ -144,6 +150,8 @@ export default function CRMProfileView({
     const [perfDraftFrom, setPerfDraftFrom] = useState(() => getDefaultAccountPerformanceRange().from);
     const [perfDraftTo, setPerfDraftTo] = useState(() => getDefaultAccountPerformanceRange().to);
     const [accountChartTab, setAccountChartTab] = useState<AccountProfileChartTab>('Revenue');
+    const [accountChartVsEnabled, setAccountChartVsEnabled] = useState(false);
+    const [accountChartVsYear, setAccountChartVsYear] = useState(defaultChartVsYear);
     const [showAccountPerfDatePicker, setShowAccountPerfDatePicker] = useState(false);
     const [timelineShowAll, setTimelineShowAll] = useState(false);
     const accountPerfPickerRef = useRef<HTMLDivElement>(null);
@@ -195,6 +203,22 @@ export default function CRMProfileView({
         () => buildAccountProfileChartData(linkedRequests || [], accountChartOperationalRange),
         [linkedRequests, accountChartOperationalRange]
     );
+
+    const accountChartVsRange = useMemo(() => {
+        if (!accountChartVsEnabled) return null;
+        return shiftRangeToComparisonYear(accountChartOperationalRange, accountChartVsYear);
+    }, [accountChartVsEnabled, accountChartVsYear, accountChartOperationalRange]);
+
+    const accountChartDataLy = useMemo(() => {
+        if (!accountChartVsRange) return [];
+        return buildAccountProfileChartData(linkedRequests || [], accountChartVsRange);
+    }, [linkedRequests, accountChartVsRange]);
+
+    const accountChartDataDisplay = useMemo(() => {
+        if (!accountChartVsEnabled) return accountChartData;
+        if (!chartTabSupportsVs(accountChartTab)) return accountChartData;
+        return mergeChartRowsWithLyComparison(accountChartData, accountChartDataLy, accountChartTab);
+    }, [accountChartData, accountChartDataLy, accountChartVsEnabled, accountChartTab]);
 
     const [expandedContact, setExpandedContact] = useState<number | null>(0);
     const [isContactModalOpen, setIsContactModalOpen] = useState(false);
@@ -906,6 +930,15 @@ export default function CRMProfileView({
                                 <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>
                                     Account performance
                                 </h3>
+                                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <ChartVsCompareControls
+                                    chartTab={accountChartTab}
+                                    enabled={accountChartVsEnabled}
+                                    onEnabledChange={setAccountChartVsEnabled}
+                                    year={accountChartVsYear}
+                                    onYearChange={setAccountChartVsYear}
+                                    colors={colors}
+                                />
                                 <div className="flex flex-wrap gap-1 p-1 rounded-lg border shrink-0" style={{ backgroundColor: 'rgba(0,0,0,0.12)', borderColor: colors.border }}>
                                     {ACCOUNT_PROFILE_CHART_TABS.map((tab) => (
                                         <button
@@ -924,14 +957,17 @@ export default function CRMProfileView({
                                         </button>
                                     ))}
                                 </div>
+                                </div>
                             </div>
                         </div>
                         <div className="flex-1 w-full min-h-[220px]">
                             <AccountProfilePerformanceChart
                                 chartTab={accountChartTab}
-                                chartData={accountChartData}
+                                chartData={accountChartDataDisplay}
                                 colors={colors}
                                 currency={currency}
+                                chartVsEnabled={accountChartVsEnabled}
+                                chartVsYear={accountChartVsYear}
                             />
                         </div>
                     </div>

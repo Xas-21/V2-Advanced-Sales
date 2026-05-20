@@ -27,6 +27,12 @@ import {
     computeProfileRequestPreTax,
 } from './userProfileMetrics';
 import { buildAccountProfileChartData } from './accountProfileChartData';
+import ChartVsCompareControls, { defaultChartVsYear } from './ChartVsCompareControls';
+import {
+    chartTabSupportsVs,
+    mergeChartRowsWithLyComparison,
+    shiftRangeToComparisonYear,
+} from './chartVsYearCompare';
 import AccountProfilePerformanceChart, { type AccountProfileChartTab } from './AccountProfilePerformanceChart';
 
 type UserPerformanceChartTabKey = 'revenue' | 'requests' | 'rooms' | 'mice' | 'status';
@@ -133,6 +139,8 @@ export function UserPerformanceDashboard({
         const [activityDayFilter, setActivityDayFilter] = useState('');
         const [viewMode, setViewMode] = useState<'month' | 'year' | 'full'>('year');
         const [performanceChartTab, setPerformanceChartTab] = useState<UserPerformanceChartTabKey>('revenue');
+        const [perfChartVsEnabled, setPerfChartVsEnabled] = useState(false);
+        const [perfChartVsYear, setPerfChartVsYear] = useState(defaultChartVsYear);
         const [recentReqFrom, setRecentReqFrom] = useState('');
         const [recentReqTo, setRecentReqTo] = useState('');
         const [perfHydrated, setPerfHydrated] = useState(false);
@@ -350,6 +358,23 @@ export function UserPerformanceDashboard({
             () => buildAccountProfileChartData(userAttributedRequests, profileOperationalChartRange),
             [userAttributedRequests, profileOperationalChartRange]
         );
+
+        const perfChartVsRange = useMemo(() => {
+            if (!perfChartVsEnabled) return null;
+            return shiftRangeToComparisonYear(profileOperationalChartRange, perfChartVsYear);
+        }, [perfChartVsEnabled, perfChartVsYear, profileOperationalChartRange]);
+
+        const accountChartDataLy = useMemo(() => {
+            if (!perfChartVsRange) return [];
+            return buildAccountProfileChartData(userAttributedRequests, perfChartVsRange);
+        }, [userAttributedRequests, perfChartVsRange]);
+
+        const accountChartDataDisplay = useMemo(() => {
+            if (!perfChartVsEnabled) return accountChartData;
+            const tab = PERF_TAB_TO_ACCOUNT[performanceChartTab];
+            if (!chartTabSupportsVs(tab)) return accountChartData;
+            return mergeChartRowsWithLyComparison(accountChartData, accountChartDataLy, tab);
+        }, [accountChartData, accountChartDataLy, perfChartVsEnabled, performanceChartTab]);
 
         const recentRequestsList = useMemo(
             () =>
@@ -660,6 +685,15 @@ export function UserPerformanceDashboard({
                                         </p>
                                     )}
                                 </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                <ChartVsCompareControls
+                                    chartTab={PERF_TAB_TO_ACCOUNT[performanceChartTab]}
+                                    enabled={perfChartVsEnabled}
+                                    onEnabledChange={setPerfChartVsEnabled}
+                                    year={perfChartVsYear}
+                                    onYearChange={setPerfChartVsYear}
+                                    colors={colors}
+                                />
                                 <div className="flex gap-1 flex-wrap p-1 rounded-xl bg-black/10 border border-white/5">
                                     {(
                                         [
@@ -680,6 +714,7 @@ export function UserPerformanceDashboard({
                                             {label}
                                         </button>
                                     ))}
+                                </div>
                                 </div>
                             </div>
 
@@ -746,8 +781,10 @@ export function UserPerformanceDashboard({
                         <div className="h-[155px] w-full">
                             <AccountProfilePerformanceChart
                                 chartTab={PERF_TAB_TO_ACCOUNT[performanceChartTab]}
-                                chartData={accountChartData}
+                                chartData={accountChartDataDisplay}
                                 colors={colors}
+                                chartVsEnabled={perfChartVsEnabled}
+                                chartVsYear={perfChartVsYear}
                             />
                         </div>
                     </div>

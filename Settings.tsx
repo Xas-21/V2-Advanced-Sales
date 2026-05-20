@@ -8,7 +8,7 @@ import {
     User, Upload, Save, Edit, Plus, Trash2, X, Check, Mail, Phone, Shield,
     MapPin, Layout, Box, FileText, List, ChevronDown, ChevronRight, ChevronUp, Monitor,
     TrendingUp, Calculator, CalendarDays, ChevronLeft, CheckSquare, Zap, CheckCircle2, Download, Clock,
-    UserMinus, RefreshCw, Tags, UtensilsCrossed, Bell
+    UserMinus, RefreshCw, Tags, UtensilsCrossed, Bell, CreditCard
 } from 'lucide-react';
 import { apiUrl } from './backendApi';
 import {
@@ -34,6 +34,11 @@ import {
     saveOccupancyTypesForProperty,
     OCCUPANCY_TYPES_CHANGED_EVENT,
 } from './propertyOccupancyTypes';
+import {
+    resolvePaymentMethodsForProperty,
+    savePaymentMethodsForProperty,
+    PAYMENT_METHODS_CHANGED_EVENT,
+} from './propertyPaymentMethods';
 import {
     USER_ROLE_OPTIONS,
     PERMISSION_LABELS,
@@ -803,6 +808,11 @@ export default function Settings({
     const [editOccIdx, setEditOccIdx] = useState<number | null>(null);
     const [editOccVal, setEditOccVal] = useState('');
 
+    const [paymentMethodsList, setPaymentMethodsList] = useState<string[]>([]);
+    const [newPaymentMethodLabel, setNewPaymentMethodLabel] = useState('');
+    const [editPaymentIdx, setEditPaymentIdx] = useState<number | null>(null);
+    const [editPaymentVal, setEditPaymentVal] = useState('');
+
     useEffect(() => {
         if (!managingProperty?.id) {
             setTaxonomySegments([]);
@@ -810,6 +820,7 @@ export default function Settings({
             setMealPlansList([]);
             setEventPackagesList([]);
             setOccupancyTypesList([]);
+            setPaymentMethodsList([]);
             setAlertSettingsDraft(mergePropertyAlertSettings(null));
             setFeedbackTemplatesDraft(buildDefaultFeedbackTemplateStore());
             return;
@@ -824,9 +835,13 @@ export default function Settings({
         setMealPlansList(resolveMealPlansForProperty(managingProperty.id, managingProperty));
         setEventPackagesList(resolveEventPackagesForProperty(managingProperty.id, managingProperty));
         setOccupancyTypesList(resolveOccupancyTypesForProperty(managingProperty.id, managingProperty));
+        setPaymentMethodsList(resolvePaymentMethodsForProperty(managingProperty.id, managingProperty));
         setNewOccupancyLabel('');
         setEditOccIdx(null);
         setEditOccVal('');
+        setNewPaymentMethodLabel('');
+        setEditPaymentIdx(null);
+        setEditPaymentVal('');
         setEditMealIdx(null);
         setEditPkgIdx(null);
         setNewMealName('');
@@ -851,6 +866,7 @@ export default function Settings({
         managingProperty?.mealPlans,
         managingProperty?.eventPackages,
         managingProperty?.occupancyTypes,
+        managingProperty?.paymentMethods,
         managingProperty?.alertSettings,
         managingProperty?.feedbackTemplates,
     ]);
@@ -959,13 +975,20 @@ export default function Settings({
             if (!d?.propertyId || !Array.isArray(d.occupancyTypes)) return;
             mergePatch(String(d.propertyId), { occupancyTypes: d.occupancyTypes });
         };
+        const onPaymentMethods = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; paymentMethods?: string[] }>).detail;
+            if (!d?.propertyId || !Array.isArray(d.paymentMethods)) return;
+            mergePatch(String(d.propertyId), { paymentMethods: d.paymentMethods });
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+        window.addEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
             window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOcc);
+            window.removeEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);
         };
     }, []);
 
@@ -984,6 +1007,7 @@ export default function Settings({
         { id: 'meals_packages', label: 'Meals & Packages', icon: UtensilsCrossed },
         { id: 'financial', label: "Financial & KPI's", icon: TrendingUp },
         { id: 'taxes', label: 'Tax Config', icon: DollarSign },
+        { id: 'payment_methods', label: 'Payment Methods', icon: CreditCard },
         { id: 'segments_types', label: 'Segments & Account Types', icon: Tags },
         { id: 'cxl', label: 'CXL', icon: List },
         { id: 'feedback_forms', label: 'Feedback Forms', icon: FileText },
@@ -1032,6 +1056,7 @@ export default function Settings({
                         {activePropTab === 'meals_packages' && renderMealsPackagesTab()}
                         {activePropTab === 'financial' && renderFinancialTab()}
                         {activePropTab === 'taxes' && renderTaxesTab()}
+                        {activePropTab === 'payment_methods' && renderPaymentMethodsTab()}
                         {activePropTab === 'segments_types' && renderSegmentsTypesTab()}
                         {activePropTab === 'cxl' && renderCxlTab()}
                         {activePropTab === 'feedback_forms' && renderFeedbackFormsTab()}
@@ -1142,6 +1167,126 @@ export default function Settings({
                 <span className="text-sm font-bold">Add New Property</span>
             </button>
         </div>
+        );
+    };
+
+    const renderPaymentMethodsTab = () => {
+        const pid = managingProperty?.id;
+        if (!pid) return null;
+
+        const persistPaymentMethods = (next: string[]) => {
+            savePaymentMethodsForProperty(pid, next);
+            setPaymentMethodsList(resolvePaymentMethodsForProperty(pid, { ...managingProperty, paymentMethods: next }));
+        };
+        const addPaymentMethod = () => {
+            const v = newPaymentMethodLabel.trim();
+            if (!v) return;
+            if (paymentMethodsList.some((x) => x.toLowerCase() === v.toLowerCase())) return;
+            persistPaymentMethods([...paymentMethodsList, v]);
+            setNewPaymentMethodLabel('');
+        };
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div>
+                    <h2 className="text-xl font-bold mb-1" style={{ color: colors.textMain }}>Payment methods</h2>
+                    <p className="text-sm opacity-70" style={{ color: colors.textMuted }}>
+                        Options shown when posting a deposit on requests for{' '}
+                        <span className="font-semibold" style={{ color: colors.textMain }}>{managingProperty.name}</span>.
+                        Each property can have its own list (e.g. wire transfer, Mada, corporate invoice).
+                    </p>
+                </div>
+
+                <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
+                    <div className="p-4 border-b" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                        <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: colors.textMain }}>Deposit payment options</h3>
+                    </div>
+                    <div className="p-4 space-y-3">
+                        <div className="flex gap-2">
+                            <input
+                                value={newPaymentMethodLabel}
+                                onChange={(e) => setNewPaymentMethodLabel(e.target.value)}
+                                placeholder="e.g. Wire Transfer, Mada"
+                                className="flex-1 px-3 py-2 rounded-lg border text-sm"
+                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                onKeyDown={(e) => e.key === 'Enter' && addPaymentMethod()}
+                            />
+                            <button
+                                type="button"
+                                onClick={addPaymentMethod}
+                                className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-1 shrink-0"
+                                style={{ backgroundColor: colors.primary, color: '#000' }}
+                            >
+                                <Plus size={16} /> Add
+                            </button>
+                        </div>
+                        <ul className="divide-y" style={{ borderColor: colors.border }}>
+                            {paymentMethodsList.map((name, i) => (
+                                <li key={`pay-${i}-${name}`} className="py-3 flex items-center gap-2 justify-between">
+                                    {editPaymentIdx === i ? (
+                                        <input
+                                            value={editPaymentVal}
+                                            onChange={(e) => setEditPaymentVal(e.target.value)}
+                                            className="flex-1 px-3 py-1.5 rounded-lg border text-sm"
+                                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                        />
+                                    ) : (
+                                        <span className="text-sm font-medium flex-1" style={{ color: colors.textMain }}>{name}</span>
+                                    )}
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        {editPaymentIdx === i ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const v = editPaymentVal.trim();
+                                                    if (!v) return;
+                                                    const next = [...paymentMethodsList];
+                                                    const dup = next.some((s, j) => j !== i && s.toLowerCase() === v.toLowerCase());
+                                                    if (dup) return;
+                                                    next[i] = v;
+                                                    persistPaymentMethods(next);
+                                                    setEditPaymentIdx(null);
+                                                }}
+                                                className="p-1.5 rounded hover:bg-white/10"
+                                                style={{ color: colors.primary }}
+                                            >
+                                                <Check size={14} />
+                                            </button>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setEditPaymentIdx(i);
+                                                    setEditPaymentVal(name);
+                                                }}
+                                                className="p-1.5 rounded hover:bg-white/10"
+                                                style={{ color: colors.textMuted }}
+                                            >
+                                                <Edit size={14} />
+                                            </button>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (editPaymentIdx === i) setEditPaymentIdx(null);
+                                                persistPaymentMethods(paymentMethodsList.filter((_, j) => j !== i));
+                                            }}
+                                            className="p-1.5 rounded hover:bg-red-500/10 text-red-500"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                        {paymentMethodsList.length === 0 && (
+                            <p className="text-xs italic opacity-50" style={{ color: colors.textMuted }}>
+                                No payment methods configured (system defaults will apply).
+                            </p>
+                        )}
+                    </div>
+                </div>
+            </div>
         );
     };
 

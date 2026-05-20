@@ -115,7 +115,14 @@ import {
     formatAgendaRowVenueDisplay,
 } from './beoShared';
 import { resolveUserAttributionId, taskAssignedToUser, getPrimaryOperationalDate } from './userProfileMetrics';
-import { getDefaultAccountPerformanceRange } from './accountProfileChartData';
+import { buildAccountProfileChartData, getDefaultAccountPerformanceRange } from './accountProfileChartData';
+import AccountProfilePerformanceChart from './AccountProfilePerformanceChart';
+import ChartVsCompareControls, { defaultChartVsYear } from './ChartVsCompareControls';
+import {
+    chartTabSupportsVs,
+    mergeChartRowsWithLyComparison,
+    shiftRangeToComparisonYear,
+} from './chartVsYearCompare';
 import { computeAllRequestAlerts, type RequestAlert } from './requestAlertEngine';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { localDateKey, loadDismissMap, saveDismissMap, isDismissedForDate } from './alertDismissals';
@@ -131,6 +138,7 @@ import {
 } from './propertyAlertSettings';
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { OCCUPANCY_TYPES_CHANGED_EVENT } from './propertyOccupancyTypes';
+import { PAYMENT_METHODS_CHANGED_EVENT } from './propertyPaymentMethods';
 import { bucketRequestDistribution, REQUEST_DISTRIBUTION_META } from './requestTypeUtils';
 import {
     addProratedRequestFinancialsToDashboardBuckets,
@@ -2965,7 +2973,15 @@ const MiniStatCard = ({ label, value, colorKey, colors }: any) => {
     );
 };
 
-const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'SAR' }: any) => {
+const MainChart = ({
+    chartTab,
+    chartData,
+    colors,
+    performanceData,
+    currency = 'SAR',
+    chartVsEnabled = false,
+    chartVsYear,
+}: any) => {
     const selectedCurrency = resolveCurrencyCode(currency);
     /** Integer counts for chart + legend (underlying buckets use prorated floats). */
     const chartDataForCurrentTab = useMemo(() => {
@@ -3223,6 +3239,20 @@ const MainChart = ({ chartTab, chartData, colors, performanceData, currency = 'S
                     </div>
                 </div>
             </div>
+        );
+    }
+
+    const profileChartTab = chartTab === 'Events' ? 'MICE' : chartTab;
+    if (profileChartTab !== 'Performance') {
+        return (
+            <AccountProfilePerformanceChart
+                chartTab={profileChartTab}
+                chartData={chartData}
+                colors={colors}
+                currency={currency}
+                chartVsEnabled={chartVsEnabled}
+                chartVsYear={chartVsYear}
+            />
         );
     }
 
@@ -4043,6 +4073,8 @@ export default function AdvancedSalesDashboard() {
     const [dashboardPeriodMode, setDashboardPeriodMode] = useState<DashboardPeriodMode>('autoCurrentYear');
     const [dashboardNowAnchor, setDashboardNowAnchor] = useState(() => Date.now());
     const [chartTab, setChartTab] = useState('Performance');
+    const [chartVsEnabled, setChartVsEnabled] = useState(false);
+    const [chartVsYear, setChartVsYear] = useState(defaultChartVsYear);
     const [distTab, setDistTab] = useState('Segments');
     const [feedTab, setFeedTab] = useState('Requests');
     const [dashboardFeedSearchOpen, setDashboardFeedSearchOpen] = useState(false);
@@ -4776,17 +4808,25 @@ export default function AdvancedSalesDashboard() {
             mergeIntoProperty(String(d.propertyId), { occupancyTypes: d.occupancyTypes });
             setTaxonomyRefresh((n) => n + 1);
         };
+        const onPaymentMethods = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; paymentMethods?: string[] }>).detail;
+            if (!d?.propertyId || !Array.isArray(d.paymentMethods)) return;
+            mergeIntoProperty(String(d.propertyId), { paymentMethods: d.paymentMethods });
+            setTaxonomyRefresh((n) => n + 1);
+        };
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         window.addEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
         window.addEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
         window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
+        window.addEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);
         return () => {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
             window.removeEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
             window.removeEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
             window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
+            window.removeEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);
         };
     }, []);
 
@@ -5212,6 +5252,23 @@ export default function AdvancedSalesDashboard() {
             cancelled: 0,
         });
     }, [scopedRequests, dashboardCurrentRange]);
+
+    const chartVsCompareRange = useMemo(() => {
+        if (!chartVsEnabled) return null;
+        return shiftRangeToComparisonYear(dashboardCurrentRange, chartVsYear);
+    }, [chartVsEnabled, chartVsYear, dashboardCurrentRange]);
+
+    const chartDataLy = useMemo(() => {
+        if (!chartVsCompareRange) return [];
+        return buildAccountProfileChartData(scopedRequests, chartVsCompareRange);
+    }, [scopedRequests, chartVsCompareRange]);
+
+    const chartDataForDisplay = useMemo(() => {
+        if (!chartVsEnabled) return chartData;
+        const tab = chartTab === 'Events' ? 'MICE' : chartTab;
+        if (!chartTabSupportsVs(tab)) return chartData;
+        return mergeChartRowsWithLyComparison(chartData, chartDataLy, tab);
+    }, [chartData, chartDataLy, chartVsEnabled, chartTab]);
 
     const performanceData = useMemo(() => {
         const range = dashboardCurrentRange;
@@ -7071,9 +7128,34 @@ export default function AdvancedSalesDashboard() {
 
                             {/* ROW 3: CHARTS */}
                             <div className="col-span-1 md:col-span-8 h-72 md:h-72">
-                                <Card className="h-full" tabs={['Performance', 'Revenue', 'Requests', 'Rooms', 'MICE', 'Status']} activeTab={chartTab} onTabChange={setChartTab} actionIcon={MoreHorizontal} colors={colors}>
+                                <Card
+                                    className="h-full"
+                                    tabs={['Performance', 'Revenue', 'Requests', 'Rooms', 'MICE', 'Status']}
+                                    activeTab={chartTab}
+                                    onTabChange={setChartTab}
+                                    actionIcon={MoreHorizontal}
+                                    colors={colors}
+                                    extraHeaderAction={
+                                        <ChartVsCompareControls
+                                            chartTab={chartTab === 'Events' ? 'MICE' : chartTab}
+                                            enabled={chartVsEnabled}
+                                            onEnabledChange={setChartVsEnabled}
+                                            year={chartVsYear}
+                                            onYearChange={setChartVsYear}
+                                            colors={colors}
+                                        />
+                                    }
+                                >
                                     <div className="w-full h-full p-2">
-                                        <MainChart chartTab={chartTab} chartData={chartData} colors={colors} performanceData={performanceData} currency={currentCurrency} />
+                                        <MainChart
+                                            chartTab={chartTab}
+                                            chartData={chartDataForDisplay}
+                                            colors={colors}
+                                            performanceData={performanceData}
+                                            currency={currentCurrency}
+                                            chartVsEnabled={chartVsEnabled}
+                                            chartVsYear={chartVsYear}
+                                        />
                                     </div>
                                 </Card>
                             </div>
@@ -7789,6 +7871,20 @@ export default function AdvancedSalesDashboard() {
                             ...(p || {}),
                             subView: 'new_request',
                             editRequestId: requestId,
+                            duplicateFromRequestId: undefined,
+                        }));
+                        setRequestsSubView('new_request');
+                        setRequestsNavNonce((n) => n + 1);
+                        setCurrentView('requests');
+                    }}
+                    onHeadlessDuplicateRequest={(requestId: string) => {
+                        setEventsOptsHostMounted(false);
+                        setEventsOptsBootstrapId(null);
+                        setRequestSearchParams((p: any) => ({
+                            ...(p || {}),
+                            subView: 'new_request',
+                            editRequestId: undefined,
+                            duplicateFromRequestId: requestId,
                         }));
                         setRequestsSubView('new_request');
                         setRequestsNavNonce((n) => n + 1);

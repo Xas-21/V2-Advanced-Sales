@@ -27,6 +27,11 @@ import {
     resolveOccupancyTypesForProperty,
     OCCUPANCY_TYPES_CHANGED_EVENT,
 } from './propertyOccupancyTypes';
+import {
+    resolvePaymentMethodsForProperty,
+    defaultPaymentMethodForProperty,
+    PAYMENT_METHODS_CHANGED_EVENT,
+} from './propertyPaymentMethods';
 import { canDeleteRequestPayments as userCanDeleteRequestPayments, canUseRequestAlerts } from './userPermissions';
 import RequestAlertsModal from './RequestAlertsModal';
 import { normalizeRequestAlerts, requestHasAlerts, type RequestAlert } from './requestAlerts';
@@ -99,6 +104,8 @@ interface RequestsManagerProps {
     onOptsHeadlessDismiss?: () => void;
     /** From headless OPTS: navigate main app to Requests edit wizard for this request id. */
     onHeadlessModifyDetails?: (requestId: string) => void;
+    /** From headless OPTS: open new-request wizard pre-filled from an existing request (duplicate). */
+    onHeadlessDuplicateRequest?: (requestId: string) => void;
     /** Request segment choices for the active property (Settings). */
     segmentOptions?: string[];
     accountTypeOptions?: string[];
@@ -232,6 +239,7 @@ export default function RequestsManager({
     optsHeadless = false,
     onOptsHeadlessDismiss,
     onHeadlessModifyDetails,
+    onHeadlessDuplicateRequest,
     segmentOptions,
     accountTypeOptions,
     canDeleteRequest = false,
@@ -327,6 +335,28 @@ export default function RequestsManager({
     }, [activeProperty, occupancyTypesRev]);
 
     const primaryOccupancyDefault = occupancySelectOptions[0] || 'Single';
+
+    const [paymentMethodsRev, setPaymentMethodsRev] = useState(0);
+    useEffect(() => {
+        const onPay = () => setPaymentMethodsRev((n) => n + 1);
+        window.addEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPay);
+        return () => window.removeEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPay);
+    }, []);
+
+    const paymentMethodOptions = useMemo(() => {
+        void paymentMethodsRev;
+        return resolvePaymentMethodsForProperty(String(activeProperty?.id || ''), activeProperty);
+    }, [activeProperty, paymentMethodsRev]);
+
+    const emptyNewPayment = useCallback(
+        () => ({
+            method: defaultPaymentMethodForProperty(String(activeProperty?.id || ''), activeProperty),
+            note: '',
+            amount: 0,
+            date: new Date().toISOString().split('T')[0],
+        }),
+        [activeProperty]
+    );
 
     const mealPlansForProperty = useMemo(() => {
         void mealsPackagesRev;
@@ -538,6 +568,7 @@ export default function RequestsManager({
     const [feedbackCopyState, setFeedbackCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
     const [activeOptionsMenu, setActiveOptionsMenu] = useState<number | null>(null);
     const [isEditing, setIsEditing] = useState(false);
+    const skipNewRequestResetRef = useRef(false);
 
     // Search and UI state
     const [accountSearch, setAccountSearch] = useState('');
@@ -557,7 +588,24 @@ export default function RequestsManager({
 
     const [showPaymentModal, setShowPaymentModal] = useState(false);
     const [paymentModalSource, setPaymentModalSource] = useState<'form' | 'opts'>('opts');
-    const [newPayment, setNewPayment] = useState({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+    const [newPayment, setNewPayment] = useState({
+        method: defaultPaymentMethodForProperty('', null),
+        note: '',
+        amount: 0,
+        date: new Date().toISOString().split('T')[0],
+    });
+
+    useEffect(() => {
+        setNewPayment((prev) => {
+            if (paymentMethodOptions.includes(prev.method)) return prev;
+            return {
+                ...prev,
+                method:
+                    paymentMethodOptions[0] ||
+                    defaultPaymentMethodForProperty(String(activeProperty?.id || ''), activeProperty),
+            };
+        });
+    }, [paymentMethodOptions, activeProperty]);
     const [showLogs, setShowLogs] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [searchFormExpanded, setSearchFormExpanded] = useState(true);
@@ -868,7 +916,11 @@ export default function RequestsManager({
             });
             return;
         }
-        if (subView === 'new_request' && !isEditing && !searchParams?.editRequestId) {
+        if (subView === 'new_request' && !isEditing && !searchParams?.editRequestId && !searchParams?.duplicateFromRequestId) {
+            if (skipNewRequestResetRef.current) {
+                skipNewRequestResetRef.current = false;
+                return;
+            }
             setStep(1);
             setRequestType(null);
             
@@ -924,7 +976,7 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, searchParams?.duplicateFromRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -1080,8 +1132,198 @@ export default function RequestsManager({
             ...getSearchOnlyParams(searchParams),
             subView: 'new_request',
             editRequestId: req.id,
+            duplicateFromRequestId: undefined,
         });
         setActiveOptionsMenu(null);
+    };
+
+    const cloneRowsWithNewIds = (rows: unknown): any[] => {
+        const arr = Array.isArray(rows) ? rows : [];
+        const base = Date.now();
+        return arr.map((row: any, i: number) => {
+            if (row && typeof row === 'object') return { ...row, id: base + i };
+            return row;
+        });
+    };
+
+    const makeDuplicateIdentity = (typeKey: string) => {
+        const id = 'REQ-' + Math.floor(Math.random() * 100000);
+        let confirmationNo = 'CNF-' + Math.floor(Math.random() * 100000);
+        if (typeKey === 'event') confirmationNo = 'EVT-' + Math.floor(Math.random() * 10000);
+        return { id, confirmationNo };
+    };
+
+    const hydrateFormsFromRequest = (req: any, opts?: { asDuplicate?: boolean }) => {
+        if (!req) return;
+        const type = normalizeRequestTypeKey(req.requestType);
+        const accountName = req.accountName || req.account || '';
+        const sourceRef = String(req.confirmationNo || req.id || '').trim() || 'source request';
+
+        let savedPayments = Array.isArray(req.payments) && req.payments.length > 0
+            ? JSON.parse(JSON.stringify(req.payments))
+            : (parseFloat(req.paidAmount?.toString().replace(/,/g, '') || '0') > 0
+                ? [{
+                    id: Date.now(),
+                    date: req.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0],
+                    method: 'Bank Transfer',
+                    note: 'Deposit on file',
+                    amount: parseFloat(req.paidAmount?.toString().replace(/,/g, '') || '0'),
+                }]
+                : []);
+
+        if (opts?.asDuplicate) {
+            savedPayments = [];
+        }
+
+        setIsEditing(!opts?.asDuplicate);
+        setRequestType(type);
+        setStep(2);
+        setAccountSearch(accountName);
+
+        const duplicateIdentity = opts?.asDuplicate ? makeDuplicateIdentity(type) : null;
+        const duplicateLogs = opts?.asDuplicate
+            ? [{
+                date: new Date().toISOString(),
+                user: requestLogUser,
+                action: 'Duplicated request',
+                details: `Copied from ${sourceRef}. Adjust as needed and save as a new request.`,
+            }]
+            : (req.logs || []);
+
+        if (type === 'event' || type === 'event_rooms' || type === 'series') {
+            const rawRooms = Array.isArray(req.rooms) ? cloneRowsWithNewIds(req.rooms) : initialAccommodation.rooms;
+            const roomsHydrated =
+                type === 'series' || type === 'event_rooms'
+                    ? rawRooms.map((r: any) => ({
+                          ...r,
+                          arrival: r.arrival || req.checkIn || '',
+                          departure: r.departure || req.checkOut || '',
+                      }))
+                    : rawRooms;
+            const ci = String(req.checkIn || '').slice(0, 10);
+            const co = String(req.checkOut || '').slice(0, 10);
+            const nightsHydrated = ci && co ? calculateNights(ci, co) : Math.max(0, Number(req.nights) || 0);
+            const accPayload: any = {
+                ...initialAccommodation,
+                ...JSON.parse(JSON.stringify(req)),
+                accountName,
+                accountId: req.accountId || '',
+                bookerName: req.bookerName || req.booker || '',
+                bookerContactId: req.bookerContactId || '',
+                receivedDate: req.receivedDate || req.requestDate || initialAccommodation.receivedDate,
+                requestName: req.requestName || '',
+                confirmationNo: req.confirmationNo || initialAccommodation.confirmationNo,
+                nights: nightsHydrated,
+                agenda: Array.isArray(req.agenda)
+                    ? cloneRowsWithNewIds(req.agenda.map((row: any) => normalizeAgendaRowTimes(row)))
+                    : initialAccommodation.agenda,
+                rooms: roomsHydrated.map((r: any) => {
+                    const a = String(r.arrival || ci || '').slice(0, 10);
+                    const d = String(r.departure || co || '').slice(0, 10);
+                    const n = a && d ? calculateNights(a, d) : Math.max(0, Number(r.nights) || 0);
+                    return {
+                        ...r,
+                        nights: n,
+                        mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
+                    };
+                }),
+                transportation: cloneRowsWithNewIds(req.transportation),
+                payments: savedPayments,
+                logs: duplicateLogs,
+                segment: req.segment || '',
+                promotionId: req.promotionId || '',
+                invoices: req.invoices ? JSON.parse(JSON.stringify(req.invoices)) : initialAccommodation.invoices,
+            };
+            if (duplicateIdentity) {
+                accPayload.id = duplicateIdentity.id;
+                accPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                accPayload.payments = [];
+                accPayload.paidAmount = '0';
+                accPayload.paymentStatus = 'Unpaid';
+                delete accPayload.feedback;
+                delete accPayload.createdAt;
+                delete accPayload.createdByUserId;
+            }
+            setAccForm(accPayload);
+            if (type === 'event') {
+                const evtPayload: any = {
+                    ...initialEvent,
+                    ...JSON.parse(JSON.stringify(req)),
+                    leadId: req.account || req.accountName || accountName,
+                    accountId: req.accountId || '',
+                    bookerName: req.bookerName || req.booker || '',
+                    bookerContactId: req.bookerContactId || '',
+                    requestName: req.requestName || '',
+                    requestDate: req.requestDate || req.receivedDate || new Date().toISOString().split('T')[0],
+                    confirmationNo: req.confirmationNo || initialEvent.confirmationNo,
+                    agenda: Array.isArray(req.agenda)
+                        ? cloneRowsWithNewIds(req.agenda.map((row: any) => normalizeAgendaRowTimes(row)))
+                        : initialEvent.agenda,
+                    payments: savedPayments,
+                    logs: duplicateLogs,
+                    segment: req.segment || '',
+                    promotionId: req.promotionId || '',
+                };
+                if (duplicateIdentity) {
+                    evtPayload.id = duplicateIdentity.id;
+                    evtPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                    evtPayload.payments = [];
+                    delete evtPayload.feedback;
+                }
+                setEvtForm(evtPayload);
+            }
+        } else {
+            const ci2 = String(req.checkIn || '').slice(0, 10);
+            const co2 = String(req.checkOut || '').slice(0, 10);
+            const nightsAcc = ci2 && co2 ? calculateNights(ci2, co2) : Math.max(0, Number(req.nights) || 0);
+            const accPayload: any = {
+                ...initialAccommodation,
+                ...JSON.parse(JSON.stringify(req)),
+                accountName,
+                accountId: req.accountId || '',
+                bookerName: req.bookerName || req.booker || '',
+                bookerContactId: req.bookerContactId || '',
+                nights: nightsAcc,
+                rooms: cloneRowsWithNewIds(Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms).map((r: any) => ({
+                    ...r,
+                    mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
+                })),
+                transportation: cloneRowsWithNewIds(req.transportation),
+                payments: savedPayments,
+                logs: duplicateLogs,
+                segment: req.segment || '',
+                promotionId: req.promotionId || '',
+                invoices: req.invoices ? JSON.parse(JSON.stringify(req.invoices)) : initialAccommodation.invoices,
+            };
+            if (duplicateIdentity) {
+                accPayload.id = duplicateIdentity.id;
+                accPayload.confirmationNo = duplicateIdentity.confirmationNo;
+                accPayload.payments = [];
+                accPayload.paidAmount = '0';
+                accPayload.paymentStatus = 'Unpaid';
+                delete accPayload.feedback;
+                delete accPayload.createdAt;
+                delete accPayload.createdByUserId;
+            }
+            setAccForm(accPayload);
+        }
+    };
+
+    const openRequestForDuplicate = (req: any) => {
+        if (readOnlyOperational || !req?.id) return;
+        if (optsHeadless && onHeadlessDuplicateRequest) {
+            setActiveOptionsMenu(null);
+            onHeadlessDuplicateRequest(String(req.id));
+            return;
+        }
+        skipNewRequestResetRef.current = true;
+        setActiveOptionsMenu(null);
+        setSearchParams({
+            ...getSearchOnlyParams(searchParams),
+            subView: 'new_request',
+            editRequestId: undefined,
+            duplicateFromRequestId: req.id,
+        });
     };
 
     useEffect(() => {
@@ -1148,109 +1390,27 @@ export default function RequestsManager({
         if (subView !== 'new_request' || !editId || !requests.length) return;
         const req = requests.find((x: any) => String(x.id) === String(editId));
         if (!req) return;
-        const type = normalizeRequestTypeKey(req.requestType);
-        const accountName = req.accountName || req.account || '';
-        const savedPayments = Array.isArray(req.payments) && req.payments.length > 0
-            ? req.payments
-            : (parseFloat(req.paidAmount?.toString() || '0') > 0
-                ? [{ id: Date.now(), date: req.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0], method: 'Bank Transfer', note: 'Deposit on file', amount: parseFloat(req.paidAmount?.toString().replace(/,/g, '') || '0') }]
-                : []);
-
-        setIsEditing(true);
-        setRequestType(type);
-        setStep(2);
-        setAccountSearch(accountName);
-        // Event-only, event+rooms, and series all use renderAccommodationForm() + accForm — populate accForm.
-        if (type === 'event' || type === 'event_rooms' || type === 'series') {
-            const rawRooms = Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms;
-            const roomsHydrated =
-                type === 'series' || type === 'event_rooms'
-                    ? rawRooms.map((r: any) => ({
-                          ...r,
-                          arrival: r.arrival || req.checkIn || '',
-                          departure: r.departure || req.checkOut || '',
-                      }))
-                    : rawRooms;
-            const ci = String(req.checkIn || '').slice(0, 10);
-            const co = String(req.checkOut || '').slice(0, 10);
-            const nightsHydrated = ci && co ? calculateNights(ci, co) : Math.max(0, Number(req.nights) || 0);
-            setAccForm({
-                ...initialAccommodation,
-                ...req,
-                accountName,
-                accountId: req.accountId || '',
-                bookerName: req.bookerName || req.booker || '',
-                bookerContactId: req.bookerContactId || '',
-                receivedDate: req.receivedDate || req.requestDate || initialAccommodation.receivedDate,
-                requestName: req.requestName || '',
-                confirmationNo: req.confirmationNo || initialAccommodation.confirmationNo,
-                nights: nightsHydrated,
-                agenda: Array.isArray(req.agenda)
-                    ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
-                    : initialAccommodation.agenda,
-                rooms: roomsHydrated.map((r: any) => {
-                    const a = String(r.arrival || ci || '').slice(0, 10);
-                    const d = String(r.departure || co || '').slice(0, 10);
-                    const n = a && d ? calculateNights(a, d) : Math.max(0, Number(r.nights) || 0);
-                    return {
-                        ...r,
-                        nights: n,
-                        mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
-                    };
-                }),
-                transportation: Array.isArray(req.transportation) ? req.transportation : [],
-                payments: savedPayments,
-                logs: req.logs || [],
-                segment: req.segment || '',
-                promotionId: req.promotionId || '',
-            });
-            if (type === 'event') {
-                setEvtForm({
-                    ...initialEvent,
-                    ...req,
-                    leadId: req.account || req.accountName || accountName,
-                    accountId: req.accountId || '',
-                    bookerName: req.bookerName || req.booker || '',
-                    bookerContactId: req.bookerContactId || '',
-                    requestName: req.requestName || '',
-                    requestDate: req.requestDate || req.receivedDate || new Date().toISOString().split('T')[0],
-                    confirmationNo: req.confirmationNo || initialEvent.confirmationNo,
-                    agenda: Array.isArray(req.agenda)
-                        ? req.agenda.map((row: any) => normalizeAgendaRowTimes(row))
-                        : initialEvent.agenda,
-                    payments: savedPayments,
-                    logs: req.logs || [],
-                    segment: req.segment || '',
-                    promotionId: req.promotionId || '',
-                });
-            }
-        } else {
-            const ci2 = String(req.checkIn || '').slice(0, 10);
-            const co2 = String(req.checkOut || '').slice(0, 10);
-            const nightsAcc = ci2 && co2 ? calculateNights(ci2, co2) : Math.max(0, Number(req.nights) || 0);
-            setAccForm({
-                ...initialAccommodation,
-                ...req,
-                accountName,
-                accountId: req.accountId || '',
-                bookerName: req.bookerName || req.booker || '',
-                bookerContactId: req.bookerContactId || '',
-                nights: nightsAcc,
-                rooms: (Array.isArray(req.rooms) ? req.rooms : initialAccommodation.rooms).map((r: any) => ({
-                    ...r,
-                    mealPlan: String(r.mealPlan || req.mealPlan || 'RO').trim() || 'RO',
-                })),
-                payments: savedPayments,
-                logs: req.logs || [],
-                segment: req.segment || '',
-                promotionId: req.promotionId || '',
-            });
-        }
+        hydrateFormsFromRequest(req, { asDuplicate: false });
         setSearchParams({
             ...getSearchOnlyParams(searchParams),
             subView: 'new_request',
         });
     }, [subView, searchParams?.editRequestId, requests, readOnlyOperational]);
+
+    useEffect(() => {
+        if (readOnlyOperational) return;
+        const dupId = searchParams?.duplicateFromRequestId;
+        if (subView !== 'new_request' || !dupId || !requests.length) return;
+        const req = requests.find((x: any) => String(x.id) === String(dupId));
+        if (!req) return;
+        skipNewRequestResetRef.current = true;
+        hydrateFormsFromRequest(req, { asDuplicate: true });
+        setSearchParams({
+            ...getSearchOnlyParams(searchParams),
+            subView: 'new_request',
+            duplicateFromRequestId: undefined,
+        });
+    }, [subView, searchParams?.duplicateFromRequestId, requests, readOnlyOperational]);
 
     const handleSaveRequest = async (formData: any, type: string) => {
         if (readOnlyOperational) return;
@@ -2138,7 +2298,7 @@ export default function RequestsManager({
                 ],
             });
             setShowPaymentModal(false);
-            setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+            setNewPayment(emptyNewPayment());
         };
 
         const offsetPayment = (payment: any) => {
@@ -3276,7 +3436,7 @@ export default function RequestsManager({
                         <div className="flex justify-between items-center">
                             <h4 className="text-xs font-black uppercase opacity-30 tracking-widest pl-2">Payment Records</h4>
                             <button onClick={() => {
-                                setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                                setNewPayment(emptyNewPayment());
                                 setPaymentModalSource('form');
                                 setShowPaymentModal(true);
                             }}
@@ -4407,7 +4567,9 @@ export default function RequestsManager({
                             <label className="text-xs font-black uppercase opacity-40 mb-2 block" style={{ color: colors.textMain }}>Method</label>
                             <select value={newPayment.method} onChange={e => setNewPayment({ ...newPayment, method: e.target.value })}
                                 className="w-full px-4 py-3 rounded-xl border bg-black/20 outline-none" style={{ borderColor: colors.border, color: colors.textMain }}>
-                                <option>Cash</option><option>Bank Transfer</option><option>Credit Card</option><option>Cheque</option><option>Point of Sale</option>
+                                {paymentMethodOptions.map((m) => (
+                                    <option key={m} value={m}>{m}</option>
+                                ))}
                             </select>
                         </div>
                     </div>
@@ -4588,7 +4750,7 @@ export default function RequestsManager({
                                 setActiveOptionsMenu(null);
                             }
                             setShowPaymentModal(false);
-                            setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                            setNewPayment(emptyNewPayment());
                         }}
                         className="flex-1 py-3 rounded-xl font-bold text-sm bg-emerald-500 text-white transition-all hover:bg-emerald-600 active:scale-95">
                         Confirm Deposit
@@ -4700,7 +4862,7 @@ export default function RequestsManager({
                         <button 
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setNewPayment({ method: 'Cash', note: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                                setNewPayment(emptyNewPayment());
                                 setPaymentModalSource('opts');
                                 setShowPaymentModal(true);
                             }}
@@ -4738,6 +4900,23 @@ export default function RequestsManager({
                                 <FileText size={12} />
                             </div>
                             <span>Modify Details</span>
+                        </button>
+                    )}
+                    {!readOnlyOperational && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                                if (!req) return;
+                                openRequestForDuplicate(req);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-white/10 text-left transition-all active:scale-[0.98]"
+                            style={{ color: colors.textMain }}
+                        >
+                            <div className="w-6 h-6 rounded-md bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                                <Copy size={12} />
+                            </div>
+                            <span>Duplicate Request</span>
                         </button>
                     )}
                     {!readOnlyOperational &&
