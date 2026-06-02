@@ -6,6 +6,7 @@ import {
     isFieldRequired,
     type FormConfigurationPropertySource,
 } from './formConfigurations';
+import { getTagColor, setTagColorForName } from './tagColorSettings';
 
 interface AddSalesCallModalProps {
     isOpen: boolean;
@@ -35,6 +36,7 @@ export default function AddSalesCallModal({
     const [showAccountDropdown, setShowAccountDropdown] = useState(false);
     const accountComboRef = useRef<HTMLDivElement>(null);
     const [formCfgError, setFormCfgError] = useState('');
+    const [tagInput, setTagInput] = useState('');
 
     const [newCallData, setNewCallData] = useState({
         accountId: '',
@@ -42,9 +44,10 @@ export default function AddSalesCallModal({
         date: new Date().toISOString().split('T')[0],
         city: '',
         subject: '',
+        customSubject: '',
+        tags: [] as string[],
         description: '',
         status: 'new',
-        nextStep: '',
         followUpRequired: false,
         followUpDate: '',
     });
@@ -57,15 +60,17 @@ export default function AddSalesCallModal({
                 date: new Date().toISOString().split('T')[0],
                 city: '',
                 subject: '',
+                customSubject: '',
+                tags: [],
                 description: '',
                 status: 'new',
-                nextStep: '',
                 followUpRequired: false,
                 followUpDate: '',
             });
             setAccountSearch('');
             setShowAccountDropdown(false);
             setFormCfgError('');
+            setTagInput('');
         }
     }, [isOpen]);
 
@@ -87,13 +92,35 @@ export default function AddSalesCallModal({
     const salesSectionOrder = getSectionOrderForForm(pid, 'sales_call_new', null, cfgSrc);
 
     const handleSave = () => {
-        const viol = collectSalesCallFormViolations(pid, newCallData, cfgSrc);
+        const normalizedSubject =
+            String(newCallData.subject || '').trim() === '__other__'
+                ? String(newCallData.customSubject || '').trim()
+                : String(newCallData.subject || '').trim();
+        const payload = { ...newCallData, subject: normalizedSubject };
+        const viol = collectSalesCallFormViolations(pid, payload, cfgSrc);
         if (viol.length) {
             setFormCfgError(viol.join('\n'));
             return;
         }
         setFormCfgError('');
-        onSave(newCallData);
+        onSave(payload);
+    };
+
+    const addTag = (raw: string) => {
+        const tag = String(raw || '').trim();
+        if (!tag) return;
+        setNewCallData((prev) => {
+            const existing = Array.isArray(prev.tags) ? prev.tags : [];
+            if (existing.some((t: string) => String(t).toLowerCase() === tag.toLowerCase())) return prev;
+            return { ...prev, tags: [...existing, tag] };
+        });
+    };
+    const removeTag = (raw: string) => {
+        const key = String(raw || '').toLowerCase();
+        setNewCallData((prev) => ({
+            ...prev,
+            tags: (Array.isArray(prev.tags) ? prev.tags : []).filter((t: string) => String(t).toLowerCase() !== key),
+        }));
     };
 
     return (
@@ -201,8 +228,24 @@ export default function AddSalesCallModal({
                                             <option>Site Visit</option>
                                             <option>Follow-up Call</option>
                                             <option>General Inquiry</option>
+                                            <option value="__other__">Other</option>
                                         </select>
                                     </div>
+                                    {newCallData.subject === '__other__' ? (
+                                        <div>
+                                            <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
+                                                Custom Subject
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={newCallData.customSubject || ''}
+                                                onChange={e => setNewCallData({ ...newCallData, customSubject: e.target.value })}
+                                                className="w-full px-3 py-2 rounded-lg border text-sm"
+                                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                                placeholder="Write custom subject..."
+                                            />
+                                        </div>
+                                    ) : null}
                                     <div>
                                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
                                             Description{rq('description') ? ' *' : ''}
@@ -211,17 +254,72 @@ export default function AddSalesCallModal({
                                     </div>
                                     <div>
                                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
+                                            Tags
+                                        </label>
+                                        <div className="flex gap-2 mb-2">
+                                            <input
+                                                type="text"
+                                                value={tagInput}
+                                                onChange={(e) => setTagInput(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key !== 'Enter') return;
+                                                    e.preventDefault();
+                                                    addTag(tagInput);
+                                                    setTagInput('');
+                                                }}
+                                                placeholder="Type tag and press Enter"
+                                                className="w-full px-3 py-2 rounded-lg border text-sm"
+                                                style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    addTag(tagInput);
+                                                    setTagInput('');
+                                                }}
+                                                className="px-3 py-2 rounded-lg border text-xs font-bold"
+                                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                            >
+                                                Add
+                                            </button>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {(Array.isArray(newCallData.tags) ? newCallData.tags : []).map((tag: string) => {
+                                                const tc = getTagColor(tag, colors.primary);
+                                                return (
+                                                    <div
+                                                        key={tag}
+                                                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border"
+                                                        style={{ borderColor: `${tc}66`, backgroundColor: `${tc}20`, color: tc }}
+                                                    >
+                                                        <span className="text-[10px] font-semibold">{tag}</span>
+                                                        <input
+                                                            type="color"
+                                                            value={tc}
+                                                            onChange={(e) => setTagColorForName(tag, e.target.value)}
+                                                            className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+                                                            title={`Set color for ${tag}`}
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            className="text-[10px] font-bold"
+                                                            onClick={() => removeTag(tag)}
+                                                            style={{ color: tc }}
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
                                             Status{rq('status') ? ' *' : ''}
                                         </label>
                                         <select value={newCallData.status} onChange={e => setNewCallData({ ...newCallData, status: e.target.value })} className="w-full px-3 py-2 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
                                             {stages.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
                                         </select>
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
-                                            Next Step Description{rq('next_step') ? ' *' : ''}
-                                        </label>
-                                        <textarea rows={2} value={newCallData.nextStep} onChange={e => setNewCallData({ ...newCallData, nextStep: e.target.value })} className="w-full px-3 py-2 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }} placeholder="What needs to happen next?" />
                                     </div>
                                 </>
                             ) : null}

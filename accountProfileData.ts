@@ -138,9 +138,19 @@ export function buildAccountTimeline(input: {
     const items: TimelineItem[] = [];
 
     for (const call of input.salesCalls) {
-        const when = call.lastContact || call.followUpDate || '';
-        const title = call.subject || `${String(call.stage || 'Call').toUpperCase()} — ${call.company || 'Sales call'}`;
-        const body = [call.description, call.nextStep].filter(Boolean).join('\n') || '—';
+        const when = call.lastContact || call.followUpDate || call.date || '';
+        const completed =
+            call.activityCompleted === true ||
+            call.activityCompleted === 1 ||
+            String(call.activityCompleted || '').toLowerCase() === 'true';
+        const baseTitle =
+            call.subject || `${String(call.stage || 'Call').toUpperCase()} — ${call.company || 'Sales call'}`;
+        const title = completed ? `${baseTitle} (completed)` : baseTitle;
+        const loggedHint = call.callLoggedAt
+            ? `Logged: ${new Date(call.callLoggedAt).toLocaleString()}`
+            : '';
+        const body =
+            [call.description, call.nextStep, loggedHint].filter(Boolean).join('\n') || '—';
         items.push({
             id: `call-${call.id}`,
             sortKey: parseWhen(when) || parseWhen(call.followUpDate),

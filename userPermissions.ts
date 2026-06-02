@@ -39,6 +39,7 @@ export const ALL_PERMISSION_IDS = [
     /** Add / edit / delete request alerts, OPTS → Alert, and toolbar bell (view pop-ups still show for all). */
     'requests.alerts',
     'crm.deleteCalls',
+    'crm.editCalls',
     'accounts.timelineManual',
     'promotions.view',
     'promotions.create',
@@ -81,7 +82,8 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'requests.delete': 'Delete requests',
     'requests.deletePayments': 'Delete request payment / deposit lines',
     'requests.alerts': 'Requests: alerts (add, edit, delete & toolbar)',
-    'crm.deleteCalls': 'Delete sales calls',
+    'crm.deleteCalls': 'Delete sales calls (Activities hub & CRM list)',
+    'crm.editCalls': 'Edit sales calls (Activities hub & CRM list)',
     'accounts.timelineManual': 'Edit / delete manual timeline activities',
     'promotions.view': 'Promotions: view page and performance list',
     'promotions.create': 'Promotions: create promotions',
@@ -94,7 +96,7 @@ export const PERMISSION_LABELS: Record<PermissionId, string> = {
     'nav.todo': 'Main menu: To Do',
     'nav.events': 'Main menu: Events & Catering',
     'nav.requests': 'Main menu: Requests Management',
-    'nav.crm': 'Main menu: Sales Calls (CRM)',
+    'nav.crm': 'Main menu: CRM',
     'nav.contracts': 'Main menu: Contracts',
     'nav.accounts': 'Main menu: Accounts',
     'nav.promotions': 'Main menu: Promotions',
@@ -167,7 +169,7 @@ export const USER_MODAL_SECTIONS: readonly UserModalPermissionSection[] = [
     {
         id: 'crm',
         title: 'CRM & sales calls',
-        permissions: ['crm.deleteCalls'],
+        permissions: ['crm.editCalls', 'crm.deleteCalls'],
     },
     {
         id: 'todo',
@@ -234,7 +236,6 @@ const HEAD_OF_SALES_LIKE_DEFAULTS = permSet(
     'requests.delete',
     'requests.deletePayments',
     'requests.alerts',
-    'crm.deleteCalls',
     'accounts.timelineManual'
 );
 
@@ -436,6 +437,10 @@ export function canUseRequestAlerts(user: any): boolean {
 
 export function canDeleteSalesCalls(user: any): boolean {
     return can(user, 'crm.deleteCalls');
+}
+
+export function canEditSalesCalls(user: any): boolean {
+    return can(user, 'crm.editCalls');
 }
 
 export function canManageManualTimeline(user: any): boolean {

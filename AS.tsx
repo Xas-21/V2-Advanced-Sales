@@ -91,6 +91,22 @@ import AccountsPage from './AccountsPage';
 import PromotionsPage from './PromotionsPage';
 import { collectSalesCallFormViolations, FORM_CONFIGURATION_CHANGED_EVENT } from './formConfigurations';
 import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
+import {
+    defaultCrmState,
+    mergeCrmStateFromApi,
+    PIPELINE_STAGE_KEYS,
+    filterPipelineForProperty,
+    filterSalesCallsForProperty,
+    crmStateToLegacyLeads,
+    updatePipelineForLinkedRequest,
+    syncAllPipelineCardsFromRequests,
+    clearPipelineLinkForDeletedRequest,
+    linkRequestToMonthlyPipelineCard,
+    linkAgreementTemplateToMonthlyPipelineCard,
+    migrateLegacyLeads,
+    type CrmStatePayload,
+    type PipelineLinkExtras,
+} from './crmStateModel';
 import { formatCompactAmount, formatCompactCurrency } from './formatCompactCurrency';
 import { CURRENCY_OPTIONS, type CurrencyCode, formatCurrencyAmount, resolveCurrencyCode } from './currency';
 import { contactDisplayName } from './accountLeadMapping';
@@ -144,8 +160,13 @@ import {
     addProratedRequestFinancialsToDashboardBuckets,
     buildReportSegmentsForRequest,
     computeRequestRevenueBreakdownNoTax,
+    getRequestOperationalCountDates,
+    incrementUniqueRequestChartCounts,
+    requestCountsInChartsPeriod,
+    requestOperationalDatesOverlapRange,
+    requestTouchesOperationalRange,
     sumRequestProratedEventRevenueExTaxInRange,
-    sumRequestProratedRevenueExTaxInRange,
+    sumRequestOperationalRevenueExTaxInRange,
     sumRequestProratedRoomRevenueExTaxInRange,
 } from './operationalSegmentRevenue';
 import {
@@ -398,63 +419,6 @@ function isEventsCateringEligibleRequest(req: any): boolean {
     return false;
 }
 
-const getRequestCountDates = (req: any): string[] => {
-    if (isSeriesRequest(req)) {
-        const rows = Array.isArray(req?.rooms) ? req.rooms : [];
-        const dates = rows
-            .map((r: any) => parseYmd(r?.arrival || r?.checkIn))
-            .filter(Boolean) as string[];
-        if (dates.length) return dates;
-        const primary = getPrimaryOperationalDate(req);
-        return primary ? [primary] : [];
-    }
-    if (isEventsCateringEligibleRequest(req)) {
-        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
-        const starts = agenda
-            .map((row: any) => parseYmd(row?.startDate || row?.endDate))
-            .filter(Boolean) as string[];
-        if (starts.length) return [...new Set(starts)].sort();
-    }
-    const primary = getPrimaryOperationalDate(req);
-    return primary ? [primary] : [];
-};
-
-/** True if any operational slice of the request (count dates, stay nights, agenda days, or primary) intersects the range. */
-const requestTouchesOperationalRange = (req: any, range: { start: string; end: string }): boolean => {
-    for (const d of getRequestCountDates(req)) {
-        if (d && isIsoInRange(d, range)) return true;
-    }
-    const pd = getPrimaryOperationalDate(req);
-    if (pd && isIsoInRange(pd, range)) return true;
-    const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
-    for (const rr of rooms) {
-        const a = parseYmd(rr?.arrival || req?.checkIn);
-        const b = parseYmd(rr?.departure || req?.checkOut);
-        if (a && b) {
-            const cur = new Date(`${a}T00:00:00`);
-            const endMs = new Date(`${b}T00:00:00`).getTime();
-            let c = cur.getTime();
-            while (c < endMs) {
-                const iso = toYmd(new Date(c));
-                if (isIsoInRange(iso, range)) return true;
-                c += 86400000;
-            }
-        } else if (a && isIsoInRange(a, range)) return true;
-    }
-    for (const item of Array.isArray(req?.agenda) ? req.agenda : []) {
-        const s = parseYmd(item?.startDate);
-        const e = parseYmd(item?.endDate || item?.startDate);
-        if (!s) continue;
-        let c = new Date(`${s}T00:00:00`).getTime();
-        const endAt = new Date(`${e || s}T00:00:00`).getTime();
-        while (c <= endAt) {
-            if (isIsoInRange(toYmd(new Date(c)), range)) return true;
-            c += 86400000;
-        }
-    }
-    return false;
-};
-
 /** Calendar days in range for MICE event/agenda attribution (dashboard charts). */
 const getMiceAttributionDatesInRange = (req: any, range: { start: string; end: string }): string[] => {
     if (!isEventsCateringEligibleRequest(req)) return [];
@@ -477,7 +441,7 @@ const getMiceAttributionDatesInRange = (req: any, range: { start: string; end: s
         }
     }
     if (out.length) return out.sort();
-    for (const d of getRequestCountDates(req)) {
+    for (const d of getRequestOperationalCountDates(req)) {
         if (d && isIsoInRange(d, range)) pushDay(d);
     }
     return out.sort();
@@ -983,8 +947,8 @@ function humanizeCrmStageKey(raw: string): string {
 function crmCalendarStageMeta(stageKey: string, c: any): { label: string; color: string } {
     const k = String(stageKey || 'new').toLowerCase().replace(/\s+/g, '');
     const map: Record<string, { label: string; color: string }> = {
-        new: { label: 'Upcoming Sales Calls', color: c.blue },
-        waiting: { label: 'Waiting list', color: '#94a3b8' },
+        new: { label: 'New Calls', color: c.blue },
+        waiting: { label: 'Leads', color: '#94a3b8' },
         qualified: { label: 'QUALIFIED', color: c.cyan },
         proposal: { label: 'PROPOSAL', color: c.yellow },
         negotiation: { label: 'NEGOTIATION', color: c.orange },
@@ -4069,7 +4033,8 @@ export default function AdvancedSalesDashboard() {
 
     // Events Sub-View State: 'pipeline' (default), 'calendar', 'availability', 'beo'
     const [eventsSubView, setEventsSubView] = useState('pipeline');
-    const [crmSubView, setCrmSubView] = useState<'pipeline' | 'list' | 'dashboard'>('pipeline');
+    const [crmSubView, setCrmSubView] = useState<'activities' | 'pipeline' | 'list' | 'dashboard'>('activities');
+    const [crmViewMode, setCrmViewMode] = useState<'account' | 'request'>('account');
     const [dashboardPeriodMode, setDashboardPeriodMode] = useState<DashboardPeriodMode>('autoCurrentYear');
     const [dashboardNowAnchor, setDashboardNowAnchor] = useState(() => Date.now());
     const [chartTab, setChartTab] = useState('Performance');
@@ -4100,7 +4065,7 @@ export default function AdvancedSalesDashboard() {
         account: '',
         segment: '',
         confNumber: '',
-        status: 'all',
+        statuses: [] as string[],
         createdByUserId: '',
     });
     const navigateRequestsSubView = (nextSubView: string) => {
@@ -4177,6 +4142,8 @@ export default function AdvancedSalesDashboard() {
     const tasksHydratedForPropertyId = useRef<string | null>(null);
     const skipNextCrmPersist = useRef(false);
     const crmHydratedForPropertyId = useRef<string | null>(null);
+    const crmServerCountsRef = useRef({ salesCalls: 0, pipeline: 0 });
+    const crmPersistEnabledRef = useRef(false);
 
     const [accounts, setAccounts] = useState<any[]>([]);
 
@@ -4192,7 +4159,80 @@ export default function AdvancedSalesDashboard() {
     }, []);
 
 
-    const [crmLeads, setCrmLeads] = useState<Record<string, any[]>>(() => defaultCrmLeadBuckets());
+    const [crmState, setCrmState] = useState<CrmStatePayload>(() => defaultCrmState());
+    const crmLeads = useMemo(() => crmStateToLegacyLeads(crmState), [crmState]);
+
+    const setCrmLeads = useCallback((updater: React.SetStateAction<Record<string, any[]>>) => {
+        setCrmState((prev) => {
+            const current = crmStateToLegacyLeads(prev);
+            const nextLegacy = typeof updater === 'function' ? updater(current) : updater;
+            return migrateLegacyLeads(nextLegacy);
+        });
+    }, []);
+
+    const [pendingPipelineLink, setPendingPipelineLink] = useState<PipelineLinkExtras & {
+        accountId: string;
+        periodMonth: string;
+    } | null>(null);
+    const [pendingRequestContactFromCall, setPendingRequestContactFromCall] = useState<{
+        name: string;
+        contactId: string;
+    } | null>(null);
+    const [pendingAgreementPipelineLink, setPendingAgreementPipelineLink] = useState<{
+        accountId: string;
+        periodMonth: string;
+        extras?: PipelineLinkExtras;
+    } | null>(null);
+
+    const crmRequestRevenue = useCallback(
+        (req: any) => sumRequestOperationalRevenueExTaxInRange(req, '1900-01-01', '2100-12-31'),
+        []
+    );
+
+    const syncPipelineFromRequest = useCallback(
+        (request: any) => {
+            if (!request?.id) return;
+            setCrmState((prev) => ({
+                ...prev,
+                pipeline: updatePipelineForLinkedRequest(prev.pipeline, request, crmRequestRevenue),
+            }));
+        },
+        [crmRequestRevenue]
+    );
+
+    const handleCrmRequestSaved = useCallback(
+        (request: any) => {
+            if (!request?.id) return;
+            setCrmState((prev) => {
+                let pipeline = prev.pipeline;
+                if (pendingPipelineLink) {
+                    pipeline = linkRequestToMonthlyPipelineCard(
+                        pipeline,
+                        pendingPipelineLink.accountId,
+                        pendingPipelineLink.periodMonth,
+                        request,
+                        crmRequestRevenue,
+                        pendingPipelineLink
+                    );
+                } else {
+                    pipeline = updatePipelineForLinkedRequest(pipeline, request, crmRequestRevenue);
+                }
+                return { ...prev, pipeline };
+            });
+            setPendingPipelineLink(null);
+            setPendingRequestContactFromCall(null);
+        },
+        [pendingPipelineLink, crmRequestRevenue]
+    );
+
+    const handleCrmRequestDeleted = useCallback((requestId: string) => {
+        const rid = String(requestId || '').trim();
+        if (!rid) return;
+        setCrmState((prev) => ({
+            ...prev,
+            pipeline: clearPipelineLinkForDeletedRequest(prev.pipeline, rid),
+        }));
+    }, []);
 
     const handleSalesCallSave = (callData: any) => {
         const viol = collectSalesCallFormViolations(activeProperty?.id, callData, activeProperty);
@@ -4530,6 +4570,8 @@ export default function AdvancedSalesDashboard() {
     const [pendingCrmAccountId, setPendingCrmAccountId] = useState<string | null>(null);
     const [pendingOpenCrmLeadId, setPendingOpenCrmLeadId] = useState<string | null>(null);
     const [pendingContractsAccountId, setPendingContractsAccountId] = useState<string | null>(null);
+    const [pendingRequestAccountId, setPendingRequestAccountId] = useState<string | null>(null);
+    const [pendingAgreementAfterRequestAccountId, setPendingAgreementAfterRequestAccountId] = useState<string | null>(null);
 
     useEffect(() => {
         if (currentView !== 'events') {
@@ -4547,7 +4589,13 @@ export default function AdvancedSalesDashboard() {
                 readOnly: !canMutateOperational(currentUser),
                 requestLogUser: String(currentUser?.name || 'System').trim() || 'System',
             });
-            if (Array.isArray(data)) setSharedRequests(data);
+            if (Array.isArray(data)) {
+                setSharedRequests(data);
+                setCrmState((prev) => ({
+                    ...prev,
+                    pipeline: syncAllPipelineCardsFromRequests(prev.pipeline, data, crmRequestRevenue),
+                }));
+            }
         } catch (e) {
             console.error('refreshSharedRequests', e);
         }
@@ -4557,29 +4605,55 @@ export default function AdvancedSalesDashboard() {
         async (requestId: string, status: string) => {
             const existing = sharedRequests.find((r: any) => String(r.id) === String(requestId));
             if (!existing) return;
+            const logUser =
+                String(currentUser?.name || currentUser?.username || currentUser?.email || 'User').trim() ||
+                'User';
+            const previousStatus = existing.status;
+            const optimistic = {
+                ...existing,
+                status,
+                logs: [
+                    {
+                        date: new Date().toISOString(),
+                        user: logUser,
+                        action: `Status changed to ${status}`,
+                    },
+                    ...(Array.isArray(existing.logs) ? existing.logs : []),
+                ],
+            };
+
+            setSharedRequests((prev) =>
+                prev.map((r: any) => (String(r.id) === String(requestId) ? optimistic : r))
+            );
+            syncPipelineFromRequest(optimistic);
+
             try {
                 const res = await fetch(apiUrl('/api/requests'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        ...existing,
-                        status,
-                        logs: [
-                            {
-                                date: new Date().toISOString(),
-                                user: 'Current User',
-                                action: `Status changed to ${status}`,
-                            },
-                            ...(Array.isArray(existing.logs) ? existing.logs : []),
-                        ],
-                    }),
+                    body: JSON.stringify(optimistic),
                 });
-                if (res.ok) await refreshSharedRequests();
+                if (res.ok) {
+                    await refreshSharedRequests();
+                } else {
+                    setSharedRequests((prev) =>
+                        prev.map((r: any) =>
+                            String(r.id) === String(requestId) ? { ...existing, status: previousStatus } : r
+                        )
+                    );
+                    syncPipelineFromRequest(existing);
+                }
             } catch (e) {
                 console.error('patchRequestStatus', e);
+                setSharedRequests((prev) =>
+                    prev.map((r: any) =>
+                        String(r.id) === String(requestId) ? { ...existing, status: previousStatus } : r
+                    )
+                );
+                syncPipelineFromRequest(existing);
             }
         },
-        [sharedRequests]
+        [sharedRequests, syncPipelineFromRequest, currentUser]
     );
 
     useEffect(() => {
@@ -4649,24 +4723,54 @@ export default function AdvancedSalesDashboard() {
         let cancelled = false;
         const pid = activeProperty?.id;
         crmHydratedForPropertyId.current = null;
+        crmPersistEnabledRef.current = false;
         if (!pid) {
-            setCrmLeads(defaultCrmLeadBuckets());
+            setCrmState(defaultCrmState());
             return;
         }
         const pidStr = String(pid);
         skipNextCrmPersist.current = true;
-        setCrmLeads(defaultCrmLeadBuckets());
+        const applyCrmPayload = (payload: any, accs: any[]) => {
+            const merged = mergeCrmStateFromApi(payload);
+            const pipeCount = PIPELINE_STAGE_KEYS.reduce(
+                (n, k) => n + (merged.pipeline[k]?.length || 0),
+                0
+            );
+            crmServerCountsRef.current = {
+                salesCalls: merged.salesCalls.length,
+                pipeline: pipeCount,
+            };
+            const scoped: CrmStatePayload = {
+                salesCalls: filterSalesCallsForProperty(merged.salesCalls, pidStr, accs),
+                pipeline: filterPipelineForProperty(merged.pipeline, pidStr, accs),
+            };
+            crmHydratedForPropertyId.current = pidStr;
+            setCrmState(scoped);
+            window.setTimeout(() => {
+                crmPersistEnabledRef.current = true;
+            }, 0);
+        };
         fetch(apiUrl(`/api/crm-state?propertyId=${encodeURIComponent(pidStr)}`))
             .then((res) => (res.ok ? res.json() : null))
-            .then((data) => {
+            .then(async (data) => {
                 if (cancelled) return;
-                const merged = mergeCrmBucketsFromApi(data?.leads);
-                fetchAccountsForProperty(pidStr).then((accs) => {
-                    if (cancelled) return;
-                    const scoped = filterCrmBucketsForPropertyContext(merged, pidStr, accs);
-                    crmHydratedForPropertyId.current = pidStr;
-                    setCrmLeads(scoped);
-                });
+                let payload = data;
+                const pre = mergeCrmStateFromApi(data || {});
+                const preTotal =
+                    pre.salesCalls.length +
+                    PIPELINE_STAGE_KEYS.reduce((n, k) => n + (pre.pipeline[k]?.length || 0), 0);
+                if (preTotal === 0) {
+                    try {
+                        const rec = await fetch(
+                            apiUrl(`/api/crm-state/recover?propertyId=${encodeURIComponent(pidStr)}`),
+                            { method: 'POST' }
+                        );
+                        if (rec.ok) payload = await rec.json();
+                    } catch { /* ignore */ }
+                }
+                const accs = await fetchAccountsForProperty(pidStr);
+                if (cancelled) return;
+                applyCrmPayload(payload, accs);
             })
             .catch(() => {
                 if (cancelled) return;
@@ -4675,18 +4779,17 @@ export default function AdvancedSalesDashboard() {
                     if (raw) {
                         const parsed = JSON.parse(raw);
                         if (parsed && typeof parsed === 'object') {
-                            const merged = mergeCrmBucketsFromApi(parsed);
+                            const merged = mergeCrmStateFromApi(parsed);
                             fetchAccountsForProperty(pidStr).then((accs) => {
                                 if (cancelled) return;
-                                crmHydratedForPropertyId.current = pidStr;
-                                setCrmLeads(filterCrmBucketsForPropertyContext(merged, pidStr, accs));
+                                applyCrmPayload(parsed, accs);
                             });
                             return;
                         }
                     }
                 } catch { /* ignore */ }
                 crmHydratedForPropertyId.current = pidStr;
-                setCrmLeads(defaultCrmLeadBuckets());
+                setCrmState(defaultCrmState());
             });
         return () => {
             cancelled = true;
@@ -4701,22 +4804,46 @@ export default function AdvancedSalesDashboard() {
             return;
         }
         try {
-            localStorage.setItem(crmLocalStorageKey(String(pid)), JSON.stringify(crmLeads));
+            localStorage.setItem(
+                crmLocalStorageKey(String(pid)),
+                JSON.stringify({ salesCalls: crmState.salesCalls, pipeline: crmState.pipeline })
+            );
         } catch { /* ignore */ }
-    }, [crmLeads, activeProperty?.id]);
+    }, [crmState, activeProperty?.id]);
 
     useEffect(() => {
         const pid = activeProperty?.id;
         if (!pid || crmHydratedForPropertyId.current !== String(pid)) return;
+        if (!crmPersistEnabledRef.current) return;
+        const clientPipe = PIPELINE_STAGE_KEYS.reduce(
+            (n, k) => n + (crmState.pipeline[k]?.length || 0),
+            0
+        );
+        const clientTotal = crmState.salesCalls.length + clientPipe;
+        const serverTotal = crmServerCountsRef.current.salesCalls + crmServerCountsRef.current.pipeline;
+        if (clientTotal === 0 && serverTotal > 0) return;
         const t = setTimeout(() => {
             fetch(apiUrl('/api/crm-state'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ propertyId: String(pid), leads: crmLeads })
-            }).catch(() => {});
+                body: JSON.stringify({
+                    propertyId: String(pid),
+                    salesCalls: crmState.salesCalls,
+                    pipeline: crmState.pipeline,
+                }),
+            })
+                .then((res) => {
+                    if (res.ok) {
+                        crmServerCountsRef.current = {
+                            salesCalls: crmState.salesCalls.length,
+                            pipeline: clientPipe,
+                        };
+                    }
+                })
+                .catch(() => {});
         }, 1200);
         return () => clearTimeout(t);
-    }, [crmLeads, activeProperty?.id]);
+    }, [crmState, activeProperty?.id]);
 
     const canAccessProperty = useCallback(
         (prop: any) =>
@@ -5055,7 +5182,7 @@ export default function AdvancedSalesDashboard() {
         let totalRevenue = 0;
         let paidRevenue = 0;
         let cancelledRevenue = 0;
-        /** Non-cancelled requests with at least one operational segment in range (aligns with Reports). */
+        /** Non-cancelled requests whose check-in / agenda dates overlap the range (not received date). */
         let requestCount = 0;
         /** Total segment rows in range (series / multi-line = multiple units). */
         let requestUnits = 0;
@@ -5065,22 +5192,21 @@ export default function AdvancedSalesDashboard() {
         }).length;
 
         for (const req of scopedRequests) {
-            if (!requestTouchesOperationalRange(req, range)) continue;
+            if (!requestOperationalDatesOverlapRange(req, range.start, range.end)) continue;
             const st = normalizeStatus(req?.status);
             if (st) {
                 statusCounts[st] += 1;
                 if (st === 'Cancelled') {
-                    cancelledRevenue += sumRequestProratedRevenueExTaxInRange(req, range.start, range.end);
+                    cancelledRevenue += sumRequestOperationalRevenueExTaxInRange(req, range.start, range.end);
                 }
             }
             if (isDashboardExcludedRequest(req)) continue;
             const segs = buildReportSegmentsForRequest(req, range.start, range.end);
-            if (segs.length === 0) continue;
-            const segTotal = sumRequestProratedRevenueExTaxInRange(req, range.start, range.end);
+            const segTotal = sumRequestOperationalRevenueExTaxInRange(req, range.start, range.end);
             requestCount += 1;
             totalRevenue += segTotal;
             paidRevenue += asNumber(req?.paidAmount || 0);
-            requestUnits += segs.length;
+            requestUnits += segs.length > 0 ? segs.length : 1;
         }
 
         const avgValue = requestCount > 0 ? totalRevenue / requestCount : 0;
@@ -5169,13 +5295,14 @@ export default function AdvancedSalesDashboard() {
         );
 
         for (const req of scopedRequests) {
-            if (!requestTouchesOperationalRange(req, dashboardCurrentRange)) continue;
+            const dRange = dashboardCurrentRange;
+            const inPeriodCharts = requestCountsInChartsPeriod(req, dRange.start, dRange.end);
+            const inOverlap = requestTouchesOperationalRange(req, dRange);
+            if (!inOverlap && !inPeriodCharts) continue;
 
             const skipPerf = isDashboardExcludedRequest(req);
-            const unitDates = getRequestCountDates(req);
-            const dRange = dashboardCurrentRange;
 
-            if (!skipPerf && dRange.start && dRange.end) {
+            if (inOverlap && !skipPerf && dRange.start && dRange.end) {
                 addProratedRequestFinancialsToDashboardBuckets(
                     req,
                     dRange.start,
@@ -5191,46 +5318,13 @@ export default function AdvancedSalesDashboard() {
                 );
             }
 
-            if (!skipPerf) {
-                let addedRequestUnit = false;
-                for (const unitDate of unitDates) {
-                    if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
-                    const unitRow = byMonth.get(keyFor(unitDate));
-                    if (unitRow) {
-                        unitRow.totalRequests += 1;
-                        addedRequestUnit = true;
-                    }
-                }
-                if (!addedRequestUnit) {
-                    const pd = getPrimaryOperationalDate(req);
-                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
-                        const unitRow = byMonth.get(keyFor(pd));
-                        if (unitRow) unitRow.totalRequests += 1;
-                    }
-                }
-            }
-
-            const status = normalizeStatus(req?.status).toLowerCase();
-            if (status) {
-                let addedStatus = false;
-                for (const unitDate of unitDates) {
-                    if (!isIsoInRange(unitDate, dashboardCurrentRange)) continue;
-                    const unitRow = byMonth.get(keyFor(unitDate));
-                    if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
-                        unitRow[status] += 1;
-                        addedStatus = true;
-                    }
-                }
-                if (!addedStatus) {
-                    const pd = getPrimaryOperationalDate(req);
-                    if (pd && isIsoInRange(pd, dashboardCurrentRange)) {
-                        const unitRow = byMonth.get(keyFor(pd));
-                        if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
-                            unitRow[status] += 1;
-                        }
-                    }
-                }
-            }
+            incrementUniqueRequestChartCounts(
+                req,
+                dRange.start,
+                dRange.end,
+                (anchorYmd) => byMonth.get(keyFor(anchorYmd)),
+                { includeInRequestCount: !skipPerf }
+            );
 
         }
 
@@ -5382,7 +5476,7 @@ export default function AdvancedSalesDashboard() {
         const mapped = list.map((r: any, i: number) => {
             const r0 = dashboardCurrentRange.start;
             const r1 = dashboardCurrentRange.end;
-            const raw = r0 && r1 ? sumRequestProratedRevenueExTaxInRange(r, r0, r1) : computeRequestCostBreakdown(r).totalRevenue;
+            const raw = r0 && r1 ? sumRequestOperationalRevenueExTaxInRange(r, r0, r1) : computeRequestCostBreakdown(r).totalRevenue;
             const amount = formatCompactAmount(raw);
             return {
                 id: r.id ?? `req-${i}`,
@@ -5851,7 +5945,7 @@ export default function AdvancedSalesDashboard() {
             case 'calendar': return 'Calendar';
             case 'events': return 'Events & Catering';
             case 'requests': return 'Requests Center';
-            case 'crm': return 'Sales Calls';
+            case 'crm': return 'CRM';
             case 'contracts': return 'Contracts';
             case 'accounts': return 'Accounts';
             case 'promotions': return 'Promotions';
@@ -5867,7 +5961,7 @@ export default function AdvancedSalesDashboard() {
         { icon: ListTodo, label: 'To Do', id: 'todo' },
         { icon: Wine, label: 'Events & Catering', id: 'events' },
         { icon: BedDouble, label: 'Requests Management', id: 'requests' },
-        { icon: Users, label: 'Sales Calls Management', id: 'crm' },
+        { icon: Users, label: 'CRM', id: 'crm' },
         { icon: FileText, label: 'Contracts', id: 'contracts' },
         { icon: BriefcaseIcon, label: 'Accounts', id: 'accounts' },
         { icon: Target, label: 'Promotions', id: 'promotions' }
@@ -5937,7 +6031,7 @@ export default function AdvancedSalesDashboard() {
                                     key={i}
                                     onClick={() => {
                                         setCurrentView(item.id);
-                                        if (item.id === 'crm') setCrmSubView('pipeline');
+                                        if (item.id === 'crm') setCrmSubView('activities');
                                         setPendingCrmAction(null);
                                         setPendingRequestType(null);
                                         if (!isSidebarPinned) setIsSideNavOpen(false);
@@ -6019,22 +6113,7 @@ export default function AdvancedSalesDashboard() {
                         </div>
                         {/* Mobile Only Tools */}
                         <div className="flex md:hidden items-center gap-3">
-                            {currentView === 'crm' && canMutateOperational(currentUser) && (
-                                <button
-                                    type="button"
-                                    onClick={() => setCrmAddCallNonce((n) => n + 1)}
-                                    className="p-1.5 rounded-lg border font-bold shrink-0"
-                                    style={{
-                                        borderColor: colors.border,
-                                        backgroundColor: colors.primary + '25',
-                                        color: colors.primary,
-                                    }}
-                                    title="Add Sales Call"
-                                    aria-label="Add Sales Call"
-                                >
-                                    <Plus size={18} strokeWidth={2.5} />
-                                </button>
-                            )}
+                            
                             <AlertsBell
                                 colors={colors}
                                 bellSize={20}
@@ -6632,6 +6711,17 @@ export default function AdvancedSalesDashboard() {
                                 >
                                     <button
                                         type="button"
+                                        onClick={() => setCrmSubView('activities')}
+                                        className={`p-1.5 rounded transition-all ${crmSubView === 'activities' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        title="Activities"
+                                    >
+                                        <ClipboardList
+                                            size={14}
+                                            style={{ color: crmSubView === 'activities' ? colors.primary : colors.textMuted }}
+                                        />
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={() => setCrmSubView('pipeline')}
                                         className={`p-1.5 rounded transition-all ${crmSubView === 'pipeline' ? 'bg-white/10' : 'hover:bg-white/5'}`}
                                         title="Pipeline View"
@@ -6639,17 +6729,6 @@ export default function AdvancedSalesDashboard() {
                                         <Grid
                                             size={14}
                                             style={{ color: crmSubView === 'pipeline' ? colors.primary : colors.textMuted }}
-                                        />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setCrmSubView('list')}
-                                        className={`p-1.5 rounded transition-all ${crmSubView === 'list' ? 'bg-white/10' : 'hover:bg-white/5'}`}
-                                        title="Table List View"
-                                    >
-                                        <List
-                                            size={14}
-                                            style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }}
                                         />
                                     </button>
                                     <button
@@ -6665,7 +6744,29 @@ export default function AdvancedSalesDashboard() {
                                             }}
                                         />
                                     </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCrmSubView('list')}
+                                        className={`p-1.5 rounded transition-all ${crmSubView === 'list' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                        title="Table List View"
+                                    >
+                                        <List
+                                            size={14}
+                                            style={{ color: crmSubView === 'list' ? colors.primary : colors.textMuted }}
+                                        />
+                                    </button>
                                 </div>
+                                {(crmSubView === 'pipeline' || crmSubView === 'dashboard') && (
+                                    <select
+                                        value={crmViewMode}
+                                        onChange={(e) => setCrmViewMode(e.target.value as 'account' | 'request')}
+                                        className="text-[10px] font-bold px-2 py-1.5 rounded-lg border outline-none shrink-0"
+                                        style={{ backgroundColor: colors.card, borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        <option value="account">View by Account</option>
+                                        <option value="request">View by Request</option>
+                                    </select>
+                                )}
                             </div>
                         ) : currentView === 'settings' ? (
                             null
@@ -6772,16 +6873,7 @@ export default function AdvancedSalesDashboard() {
                                         ))}
                                     </select>
                                 )}
-                                {canMutateOperational(currentUser) && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setCrmAddCallNonce((n) => n + 1)}
-                                        className="px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 text-[10px] uppercase tracking-wide shadow-lg"
-                                        style={{ backgroundColor: colors.primary, color: '#000' }}
-                                    >
-                                        <Plus size={14} /> Add Sales Call
-                                    </button>
-                                )}
+                                
                                 <div className="w-[1px] h-6" style={{ backgroundColor: colors.border }} aria-hidden />
                             </>
                         )}
@@ -7022,13 +7114,27 @@ export default function AdvancedSalesDashboard() {
                     ) : currentView === 'crm' ? (
                         <CRM
                             theme={theme}
-                            externalView={crmSubView as 'pipeline' | 'list' | 'dashboard'}
+                            externalView={crmSubView}
+                            crmViewMode={crmViewMode}
                             initialAction={pendingCrmAction}
                             activeProperty={activeProperty}
                             accounts={accounts}
                             setAccounts={setAccounts}
-                            crmLeads={crmLeads}
-                            setCrmLeads={setCrmLeads}
+                            salesCalls={crmState.salesCalls}
+                            setSalesCalls={(updater) =>
+                                setCrmState((prev) => ({
+                                    ...prev,
+                                    salesCalls:
+                                        typeof updater === 'function' ? updater(prev.salesCalls) : updater,
+                                }))
+                            }
+                            pipeline={crmState.pipeline}
+                            setPipeline={(updater) =>
+                                setCrmState((prev) => ({
+                                    ...prev,
+                                    pipeline: typeof updater === 'function' ? updater(prev.pipeline) : updater,
+                                }))
+                            }
                             sharedRequests={sharedRequests}
                             currentUser={currentUser}
                             pendingCrmAccountId={pendingCrmAccountId}
@@ -7051,6 +7157,42 @@ export default function AdvancedSalesDashboard() {
                             propertyFinancialKpis={propertyFinancialKpis}
                             setSharedRequests={setSharedRequests}
                             assignableUsersForAccounts={taskAssignableUsers}
+                            onNavigateToNewRequest={(accountId, chainAgreement, meta) => {
+                                setPendingRequestAccountId(accountId);
+                                if (meta) {
+                                    setPendingPipelineLink({
+                                        accountId: String(meta.accountId || accountId),
+                                        periodMonth: String(meta.periodMonth || ''),
+                                        pipelineCardId: meta.pipelineCardId,
+                                        company: meta.company,
+                                        contact: meta.contact,
+                                        tags: meta.tags,
+                                        sourceCallIds: meta.sourceCallIds,
+                                        propertyId: meta.propertyId,
+                                    });
+                                    if (meta.contactId || meta.contact) {
+                                        setPendingRequestContactFromCall({
+                                            name: String(meta.contact || ''),
+                                            contactId: String(meta.contactId || ''),
+                                        });
+                                    }
+                                }
+                                if (chainAgreement) setPendingAgreementAfterRequestAccountId(accountId);
+                                setCurrentView('requests');
+                                navigateRequestsSubView('new_request');
+                            }}
+                            onNavigateToNewAgreement={(accountId, meta) => {
+                                setPendingContractsAccountId(accountId);
+                                if (meta) {
+                                    setPendingAgreementPipelineLink({
+                                        accountId: String(meta.accountId || accountId),
+                                        periodMonth: String(meta.periodMonth || ''),
+                                        extras: meta,
+                                    });
+                                }
+                                setCurrentView('contracts');
+                            }}
+                            onPatchRequestStatus={patchRequestStatus}
                         />
                     ) : currentView === 'contracts' ? (
                         <Contracts
@@ -7064,6 +7206,21 @@ export default function AdvancedSalesDashboard() {
                             canDeleteContractTemplates={canDeleteContractTemplates(currentUser)}
                             initialAccountId={pendingContractsAccountId}
                             onConsumedInitialAccountId={() => setPendingContractsAccountId(null)}
+                            onAgreementGenerated={(templateName, accountId) => {
+                                const link = pendingAgreementPipelineLink;
+                                if (!link || String(link.accountId) !== String(accountId)) return;
+                                setCrmState((prev) => ({
+                                    ...prev,
+                                    pipeline: linkAgreementTemplateToMonthlyPipelineCard(
+                                        prev.pipeline,
+                                        link.accountId,
+                                        link.periodMonth,
+                                        templateName,
+                                        link.extras
+                                    ),
+                                }));
+                                setPendingAgreementPipelineLink(null);
+                            }}
                         />
                     ) : currentView === 'reports' ? (
                         <Reports
@@ -7099,7 +7256,14 @@ export default function AdvancedSalesDashboard() {
                                 setRequestsSubView(p.subView);
                             }
                             setRequestSearchParams(p);
-                        }} initialRequestType={pendingRequestType} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} promotionOptions={promotions} canLinkRequestPromotions={canLinkRequestPromotions(currentUser)} />
+                        }} initialRequestType={pendingRequestType} initialAccountId={pendingRequestAccountId} initialContactFromCall={pendingRequestContactFromCall} onConsumedInitialAccountId={() => setPendingRequestAccountId(null)} onConsumedInitialContactFromCall={() => setPendingRequestContactFromCall(null)} onRequestSaved={handleCrmRequestSaved} onRequestDeleted={handleCrmRequestDeleted} onRequestWizardFinished={() => {
+                            const aid = pendingAgreementAfterRequestAccountId;
+                            if (aid) {
+                                setPendingAgreementAfterRequestAccountId(null);
+                                setPendingContractsAccountId(aid);
+                                setCurrentView('contracts');
+                            }
+                        }} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} promotionOptions={promotions} canLinkRequestPromotions={canLinkRequestPromotions(currentUser)} />
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">
@@ -8296,7 +8460,7 @@ export default function AdvancedSalesDashboard() {
                 configurationProperty={activeProperty || undefined}
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 stages={[
-                    { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
+                    { id: 'new', title: 'New Calls', color: colors.blue },
                     { id: 'waiting', title: 'Waiting list', color: '#94a3b8' },
                     { id: 'qualified', title: 'QUALIFIED', color: colors.cyan },
                     { id: 'proposal', title: 'PROPOSAL', color: colors.yellow },

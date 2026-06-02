@@ -10,10 +10,11 @@ import AddAccountModal from './AddAccountModal';
 import CRMProfileView from './CRMProfileView';
 import { leadToAccount, accountToLead, contactDisplayName, mergeAccountIntoCrmLead } from './accountLeadMapping';
 import { probabilityForStage } from './crmStageUtils';
-import { getTagColor, TAG_COLORS_EVENT } from './tagColorSettings';
+import { getTagColor, setTagColorForName, TAG_COLORS_EVENT } from './tagColorSettings';
 import {
     canMutateOperational,
     canDeleteSalesCalls,
+    canEditSalesCalls,
     canDeleteAccounts,
     canManageManualTimeline,
     isSystemAdmin,
@@ -27,9 +28,27 @@ import {
     filterSalesCallsForAccount,
     filterOpenOpportunityLeads
 } from './accountProfileData';
-import { sumRequestProratedRevenueExTaxInRange } from './operationalSegmentRevenue';
+import {
+    flattenPipeline,
+    PIPELINE_STAGE_KEYS,
+    type CrmPipelineBuckets,
+    type PipelineStageKey,
+    upsertPipelineCardFromLogCall,
+    periodMonthFromDate,
+    crmStateToLegacyLeads,
+    migrateLegacyLeads,
+} from './crmStateModel';
+import {
+    computeRequestRevenueBreakdownNoTax,
+    sumRequestOperationalRevenueExTaxInRange,
+    requestTouchesOperationalRange,
+} from './operationalSegmentRevenue';
+import { formatCrmFunnelRequestTypeDisplay } from './requestTypeUtils';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
+import CrmActivitiesView from './CrmActivitiesView';
+import type { LogCallFormData } from './LogCallModal';
+import { appendCallDescription, getCallDueDate } from './crmActivitiesUtils';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { collectSalesCallFormViolations } from './formConfigurations';
@@ -81,6 +100,24 @@ function leadMatchesSalesPeriod(
         if (!Number.isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1 };
         return { year: 0, month: 0 };
     };
+    const pm = String(lead?.periodMonth || '').trim();
+    if (/^\d{4}-\d{2}$/.test(pm)) {
+        const [yStr, moStr] = pm.split('-');
+        const y = Number(yStr);
+        const mo = Number(moStr);
+        if (Number.isFinite(y) && Number.isFinite(mo) && y > 0 && mo >= 1 && mo <= 12) {
+            if (period.mode === 'month') {
+                return y === period.year && mo === period.month;
+            }
+            if (period.mode === 'year') {
+                return y === period.year;
+            }
+            if (period.mode === 'quarter' && period.quarter) {
+                const months = quarterBuckets[period.quarter];
+                return Boolean(months?.length) && y === period.year && months.includes(mo);
+            }
+        }
+    }
     const periodAnchor =
         lead?.enteredFunnelAt ||
         lead?.date ||
@@ -111,15 +148,29 @@ function crmLeadHasScheduledFollowUp(lead: any): boolean {
     return false;
 }
 
+export type CrmNavigateMeta = {
+    accountId?: string;
+    periodMonth?: string;
+    pipelineCardId?: string;
+    company?: string;
+    contact?: string;
+    contactId?: string;
+    tags?: string[];
+    sourceCallIds?: string[];
+    propertyId?: string;
+};
+
 interface CRMProps {
     theme: any;
-    externalView?: 'pipeline' | 'list' | 'dashboard';
+    externalView?: 'activities' | 'pipeline' | 'list' | 'dashboard';
     initialAction?: 'add_call' | null;
     activeProperty?: any;
     accounts: any[];
     setAccounts: React.Dispatch<React.SetStateAction<any[]>>;
-    crmLeads: Record<string, any[]>;
-    setCrmLeads: React.Dispatch<React.SetStateAction<Record<string, any[]>>>;
+    salesCalls: any[];
+    setSalesCalls: React.Dispatch<React.SetStateAction<any[]>>;
+    pipeline: CrmPipelineBuckets;
+    setPipeline: React.Dispatch<React.SetStateAction<CrmPipelineBuckets>>;
     sharedRequests: any[];
     currentUser: any;
     pendingCrmAccountId?: string | null;
@@ -142,6 +193,11 @@ interface CRMProps {
     propertyFinancialKpis?: any[];
     setSharedRequests?: React.Dispatch<React.SetStateAction<any[]>>;
     assignableUsersForAccounts?: { id: string; name: string }[];
+    onNavigateToNewRequest?: (accountId: string, chainAgreement?: boolean, meta?: CrmNavigateMeta) => void;
+    onNavigateToNewAgreement?: (accountId: string, meta?: CrmNavigateMeta) => void;
+    /** Persist request status when dragging cards in Request View kanban. */
+    onPatchRequestStatus?: (requestId: string, status: string) => void | Promise<void>;
+    crmViewMode?: 'account' | 'request';
 }
 
 export default function CRM({
@@ -151,8 +207,10 @@ export default function CRM({
     activeProperty,
     accounts,
     setAccounts,
-    crmLeads,
-    setCrmLeads,
+    salesCalls,
+    setSalesCalls,
+    pipeline,
+    setPipeline,
     sharedRequests,
     currentUser,
     pendingCrmAccountId,
@@ -171,6 +229,10 @@ export default function CRM({
     propertyFinancialKpis = [],
     setSharedRequests,
     assignableUsersForAccounts = [],
+    onNavigateToNewRequest,
+    onNavigateToNewAgreement,
+    onPatchRequestStatus,
+    crmViewMode = 'account',
 }: CRMProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -178,11 +240,12 @@ export default function CRM({
         formatCurrencyAmount(amountSar, selectedCurrency, { maximumFractionDigits: maxFractionDigits });
     const crmReadOnly = !canMutateOperational(currentUser);
     const canDelSalesCalls = canDeleteSalesCalls(currentUser);
+    const canEditSalesCallsPerm = canEditSalesCalls(currentUser);
     const allowDeleteAccount = canDeleteAccounts(currentUser);
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
-    const [currentView, setCurrentView] = useState<'pipeline' | 'list' | 'dashboard' | 'profile'>('pipeline');
+    const [currentView, setCurrentView] = useState<'activities' | 'pipeline' | 'list' | 'dashboard' | 'profile'>('activities');
 
     useEffect(() => {
         if (externalView) {
@@ -213,7 +276,44 @@ export default function CRM({
     const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
     const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null);
     const [deleteImpactMessage, setDeleteImpactMessage] = useState('');
-    const flatCrmLeads = useMemo(() => flattenCrmLeads(crmLeads), [crmLeads]);
+    const crmLeads = useMemo(() => crmStateToLegacyLeads({ salesCalls, pipeline }), [salesCalls, pipeline]);
+
+    const setCrmLeads = useCallback(
+        (updater: React.SetStateAction<Record<string, any[]>>) => {
+            const current = crmStateToLegacyLeads({ salesCalls, pipeline });
+            const nextLegacy = typeof updater === 'function' ? updater(current) : updater;
+            const migrated = migrateLegacyLeads(nextLegacy);
+            setSalesCalls(migrated.salesCalls);
+            setPipeline(migrated.pipeline);
+        },
+        [salesCalls, pipeline, setSalesCalls, setPipeline]
+    );
+
+    const flatCrmLeads = useMemo(
+        () => [...salesCalls.map((c) => ({ ...c, stage: 'new' })), ...flattenPipeline(pipeline)],
+        [salesCalls, pipeline]
+    );
+
+    const filterLeadsByPeriod = useCallback(
+        (arr: any[]) =>
+            arr.filter((l: any) => leadMatchesSalesPeriod(l, crmSalesPeriod, CRM_QUARTER_MONTH_BLOCKS)),
+        [crmSalesPeriod]
+    );
+
+    const pipelineForView = useMemo(() => {
+        const out = { ...pipeline } as CrmPipelineBuckets;
+        PIPELINE_STAGE_KEYS.forEach((k) => {
+            out[k] = filterLeadsByPeriod(out[k] || []);
+        });
+        return out;
+    }, [pipeline, filterLeadsByPeriod]);
+
+    const salesCallsForView = useMemo(
+        () => filterLeadsByPeriod(salesCalls),
+        [salesCalls, filterLeadsByPeriod]
+    );
+
+    const crmLeadsForView = pipelineForView;
 
     const accountsSameProperty = useMemo(() => {
         const pid = String(activeProperty?.id || '').trim();
@@ -223,16 +323,6 @@ export default function CRM({
             return !p || p === 'P-GLOBAL' || p === pid;
         });
     }, [accounts, activeProperty?.id]);
-
-    const crmLeadsForView = useMemo(() => {
-        const out: Record<string, any[]> = { ...crmLeads };
-        (Object.keys(out) as string[]).forEach((k) => {
-            out[k] = (out[k] || []).filter((l: any) =>
-                leadMatchesSalesPeriod(l, crmSalesPeriod, CRM_QUARTER_MONTH_BLOCKS)
-            );
-        });
-        return out;
-    }, [crmLeads, crmSalesPeriod]);
 
     const crmLeadsForDisplay = useMemo(() => {
         const fid = String(createdByUserFilterId || '').trim();
@@ -246,6 +336,15 @@ export default function CRM({
         });
         return out;
     }, [crmLeadsForView, createdByUserFilterId, crmFilterUsers]);
+    const salesCallsForDisplay = useMemo(() => {
+        const fid = String(createdByUserFilterId || '').trim();
+        if (!fid) return salesCallsForView;
+        const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
+        if (!userRow) return salesCallsForView;
+        return salesCallsForView.filter((l: any) =>
+            crmLeadAttributedToUser(l, { id: userRow.id, name: userRow.name })
+        );
+    }, [salesCallsForView, createdByUserFilterId, crmFilterUsers]);
 
     const [tagColorTick, setTagColorTick] = useState(0);
     useEffect(() => {
@@ -265,10 +364,12 @@ export default function CRM({
         expectedRevenue: '',
         description: '',
         status: 'new',
-        nextStep: '',
+        customSubject: '',
+        tags: [] as string[],
         followUpRequired: false,
         followUpDate: ''
     });
+    const [newCallTagInput, setNewCallTagInput] = useState('');
 
     const [showAddContactPersonModal, setShowAddContactPersonModal] = useState(false);
     const [newContactPersonForm, setNewContactPersonForm] = useState({
@@ -299,21 +400,67 @@ export default function CRM({
     }, [pendingCrmAccountId, accounts, onConsumedPendingCrmAccount, crmReadOnly]);
 
     const stages = [
-        { id: 'new', title: 'Upcoming Sales Calls', color: colors.blue },
-        { id: 'waiting', title: 'Waiting list', color: '#94a3b8' },
+        { id: 'waiting', title: 'Leads', color: '#94a3b8' },
         { id: 'qualified', title: 'QUALIFIED', color: colors.cyan },
         { id: 'proposal', title: 'PROPOSAL', color: colors.yellow },
         { id: 'negotiation', title: 'NEGOTIATION', color: colors.orange },
         { id: 'won', title: 'WON', color: colors.green },
         { id: 'notInterested', title: 'Not Interested', color: '#8b0000' }
     ];
+    const pipelineStages = stages;
 
-    const stageTitle = (id: string) => stages.find((s) => s.id === id)?.title || id;
-    const stageColor = (id: string) => stages.find((s) => s.id === id)?.color || colors.textMuted;
+    const requestStages = useMemo(() => [
+        { id: 'waiting', title: 'Inquiry', color: colors.textMuted },
+        { id: 'qualified', title: 'Accepted', color: colors.yellow },
+        { id: 'negotiation', title: 'Tentative', color: colors.blue },
+        { id: 'won', title: 'Definite', color: colors.green },
+        { id: 'actual', title: 'Actual', color: '#059669' },
+        { id: 'notInterested', title: 'Cancelled', color: colors.red },
+    ], [colors]);
+
+    const activePipelineStages = crmViewMode === 'request' ? requestStages : pipelineStages;
+
+    const requestStatusToStageId = (status: string): string => {
+        const s = String(status || '').toLowerCase().trim();
+        if (s === 'inquiry') return 'waiting';
+        if (s === 'accepted') return 'qualified';
+        if (s === 'tentative') return 'negotiation';
+        if (s === 'definite') return 'won';
+        if (s === 'actual') return 'actual';
+        if (s === 'cancelled' || s === 'lost') return 'notInterested';
+        return 'waiting';
+    };
+
+    const stageIdToRequestStatus = (stageId: string): string => {
+        if (stageId === 'waiting') return 'Inquiry';
+        if (stageId === 'qualified') return 'Accepted';
+        if (stageId === 'negotiation') return 'Tentative';
+        if (stageId === 'won') return 'Definite';
+        if (stageId === 'actual') return 'Actual';
+        if (stageId === 'notInterested') return 'Cancelled';
+        return 'Inquiry';
+    };
+
+    const stageTitle = (id: string) => {
+        if (crmViewMode === 'request') {
+            const rs = requestStages.find((s) => s.id === id);
+            if (rs) return rs.title;
+        }
+        return stages.find((s) => s.id === id)?.title || id;
+    };
+    const stageColor = (id: string) => {
+        if (crmViewMode === 'request') {
+            const rs = requestStages.find((s) => s.id === id);
+            if (rs) return rs.color;
+        }
+        return stages.find((s) => s.id === id)?.color || colors.textMuted;
+    };
     const now = new Date();
     const dashboardStageOrder = useMemo(
-        () => ['waiting', 'qualified', 'proposal', 'negotiation', 'won'],
-        []
+        () => crmViewMode === 'request'
+            ? ['waiting', 'qualified', 'negotiation', 'won', 'actual']
+            : ['qualified', 'proposal', 'negotiation', 'won'],
+        [crmViewMode]
     );
     const dashboardStageLabel = (stageId: string, fallback: string) => {
         if (stageId === 'new') return 'Leads';
@@ -331,6 +478,145 @@ export default function CRM({
         if (!s) return '';
         return s.slice(0, 10);
     };
+    const requestDeadlineSnapshotRef = useRef<Map<string, string>>(new Map());
+    const resolveCallSubject = (rawSubject: any, rawCustomSubject: any): string => {
+        const subject = String(rawSubject || '').trim();
+        if (subject === '__other__') return String(rawCustomSubject || '').trim();
+        return subject;
+    };
+    const normalizeYmd = (raw: any): string => {
+        const v = String(raw || '').trim();
+        if (!v) return '';
+        const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return '';
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+    const deadlineCallTypes = [
+        { key: 'offerDeadline', type: 'offer_acceptance', title: 'Offer Acceptance Deadline' },
+        { key: 'depositDeadline', type: 'deposit', title: 'Deposit Deadline' },
+        { key: 'paymentDeadline', type: 'full_payment', title: 'Full Payment Deadline' },
+    ] as const;
+
+    useEffect(() => {
+        const requests = Array.isArray(sharedRequests) ? sharedRequests : [];
+        const isBootstrap = requestDeadlineSnapshotRef.current.size === 0;
+        const todayYmd = normalizeYmd(new Date().toISOString());
+        const activePid = String(activeProperty?.id || '').trim();
+        const snapshots = new Map<string, string>();
+        requests.forEach((req: any) => {
+            const reqId = String(req?.id || '').trim();
+            if (!reqId) return;
+            const reqPid = String(req?.propertyId || '').trim();
+            if (activePid && reqPid && reqPid !== activePid && reqPid !== 'P-GLOBAL') return;
+            const parts = deadlineCallTypes.map((d) => `${d.type}:${normalizeYmd(req?.[d.key]) || ''}`);
+            snapshots.set(reqId, parts.join('|'));
+        });
+
+        const existingAutoKeys = new Set(
+            (salesCalls || [])
+                .filter((c: any) => String(c?.autoGeneratedType || '') === 'request_deadline')
+                .map((c: any) => `${String(c?.requestId || '').trim()}::${String(c?.requestDeadlineType || '').trim()}::${normalizeYmd(c?.dueDate || c?.date)}`)
+        );
+
+        const generatedCalls: any[] = [];
+        requests.forEach((req: any) => {
+            const reqId = String(req?.id || '').trim();
+            if (!reqId) return;
+            const reqPid = String(req?.propertyId || '').trim();
+            if (activePid && reqPid && reqPid !== activePid && reqPid !== 'P-GLOBAL') return;
+            const prevSig = requestDeadlineSnapshotRef.current.get(reqId) || '';
+            const nextSig = snapshots.get(reqId) || '';
+            if (!isBootstrap && prevSig === nextSig) return;
+
+            const rawCreatorId = String(req?.createdByUserId || '').trim();
+            const rawCreatorName = String(
+                req?.createdByUserName ||
+                req?.createdByName ||
+                req?.createdBy ||
+                req?.userName ||
+                ''
+            ).trim();
+            const matchedCreatorByName =
+                !rawCreatorId && rawCreatorName && Array.isArray(crmFilterUsers)
+                    ? crmFilterUsers.find((u) => String(u?.name || '').trim().toLowerCase() === rawCreatorName.toLowerCase())
+                    : null;
+            const validUserIds = new Set((crmFilterUsers || []).map((u) => String(u?.id || '').trim()).filter(Boolean));
+            const preferredCreatorId = String(rawCreatorId || matchedCreatorByName?.id || '').trim();
+            const requestCreatorId = String(
+                (preferredCreatorId && validUserIds.has(preferredCreatorId))
+                    ? preferredCreatorId
+                    : resolveUserAttributionId(currentUser) || ''
+            ).trim();
+            const accountId = String(req?.accountId || '').trim();
+            const accountName = String(req?.account || req?.accountName || '').trim();
+            const account =
+                (accountId && accounts.find((a: any) => String(a?.id || '').trim() === accountId)) ||
+                (accountName && accounts.find((a: any) => String(a?.name || '').trim().toLowerCase() === accountName.toLowerCase())) ||
+                null;
+            const firstContact = Array.isArray(account?.contacts) ? account.contacts.find((c: any) => String(contactDisplayName(c) || '').trim()) : null;
+            const assignedUserName =
+                requestCreatorId && Array.isArray(crmFilterUsers)
+                    ? String(crmFilterUsers.find((u) => String(u.id) === requestCreatorId)?.name || '').trim()
+                    : '';
+            const requestDisplayName = String(
+                req?.name ||
+                req?.requestName ||
+                req?.title ||
+                req?.eventName ||
+                req?.groupName ||
+                req?.confirmationNo ||
+                req?.id ||
+                'Request'
+            ).trim();
+
+            deadlineCallTypes.forEach((d) => {
+                const dueDate = normalizeYmd(req?.[d.key]);
+                if (!dueDate) return;
+                if (isBootstrap && dueDate !== todayYmd) return;
+                const dedupeKey = `${reqId}::${d.type}::${dueDate}`;
+                if (existingAutoKeys.has(dedupeKey)) return;
+                existingAutoKeys.add(dedupeKey);
+                generatedCalls.push({
+                    id: `L-DL-${reqId}-${d.type}-${dueDate}-${Math.random().toString(36).slice(2, 7)}`,
+                    propertyId: activePid || String(req?.propertyId || '').trim() || undefined,
+                    ownerUserId: requestCreatorId || undefined,
+                    createdByUserId: requestCreatorId || undefined,
+                    ownerUserName: assignedUserName || rawCreatorName || undefined,
+                    createdByUserName: assignedUserName || rawCreatorName || undefined,
+                    accountId: String(account?.id || accountId || '').trim(),
+                    company: String(account?.name || accountName || '').trim(),
+                    subject: requestDisplayName || 'Request',
+                    contact: firstContact ? contactDisplayName(firstContact) : String(req?.bookerName || '').trim(),
+                    position: firstContact?.position || '',
+                    email: firstContact?.email || '',
+                    phone: firstContact?.phone || '',
+                    city: String(account?.city || firstContact?.city || '').trim(),
+                    country: String(account?.country || firstContact?.country || '').trim(),
+                    value: Number(req?.estimatedValue || req?.revenue || 0) || 0,
+                    tags: ['Request Deadline', d.title],
+                    enteredFunnelAt: dueDate,
+                    date: dueDate,
+                    dueDate,
+                    lastContact: dueDate,
+                    accountManager: assignedUserName || String(req?.createdByUserName || currentUser?.name || 'Staff'),
+                    description: `Auto-created from request deadline (${d.title}). Request ID: ${reqId}`,
+                    nextStep: '',
+                    followUpRequired: false,
+                    followUpDate: '',
+                    activityCompleted: false,
+                    autoGeneratedType: 'request_deadline',
+                    requestId: reqId,
+                    requestDeadlineType: d.type,
+                });
+            });
+        });
+
+        requestDeadlineSnapshotRef.current = snapshots;
+        if (!generatedCalls.length) return;
+        setSalesCalls((prev) => [...generatedCalls, ...prev]);
+    }, [sharedRequests, salesCalls, accounts, crmFilterUsers, activeProperty?.id, currentUser?.name, setSalesCalls]);
     const leadPeriodYmd = (lead: any): string =>
         toYmd(lead?.enteredFunnelAt || lead?.date || lead?.createdAt || lead?.lastContact);
     const parseYearMonth = (raw: any): { year: number; month: number } => {
@@ -390,19 +676,19 @@ export default function CRM({
 
     const crmLeadsForCreatorAllTime = useMemo(() => {
         const fid = String(createdByUserFilterId || '').trim();
-        if (!fid) return crmLeads;
+        if (!fid) return pipeline;
         const userRow = (crmFilterUsers || []).find((u) => String(u.id) === fid);
-        if (!userRow) return crmLeads;
+        if (!userRow) return pipeline;
         const filterUser = { id: userRow.id, name: userRow.name };
-        const out: Record<string, any[]> = { ...crmLeads };
-        (Object.keys(out) as string[]).forEach((k) => {
+        const out = { ...pipeline } as CrmPipelineBuckets;
+        PIPELINE_STAGE_KEYS.forEach((k) => {
             out[k] = (out[k] || []).filter((l: any) => crmLeadAttributedToUser(l, filterUser));
         });
         return out;
-    }, [crmLeads, createdByUserFilterId, crmFilterUsers]);
+    }, [pipeline, createdByUserFilterId, crmFilterUsers]);
 
-    const periodCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
-    const allCreatorScopedLeads = useMemo(() => flattenCrmLeads(crmLeadsForCreatorAllTime), [crmLeadsForCreatorAllTime]);
+    const periodCreatorScopedLeads = useMemo(() => flattenPipeline(crmLeadsForCreatorOnly), [crmLeadsForCreatorOnly]);
+    const allCreatorScopedLeads = useMemo(() => flattenPipeline(crmLeadsForCreatorAllTime), [crmLeadsForCreatorAllTime]);
     const funnelJourneyStageSet = useMemo(() => new Set(dashboardStageOrder), [dashboardStageOrder]);
     const funnelJourneyLeadsForDashboard = useMemo(
         () =>
@@ -468,6 +754,99 @@ export default function CRM({
         });
     };
 
+    const pipelineCardDisplayRevenue = useCallback((lead: any): number => {
+        const linkedId = String(lead?.linkedRequestId || '').trim();
+        if (linkedId) {
+            const req = scopedRequestsAll.find((r: any) => String(r.id) === linkedId);
+            if (req) {
+                const total = Number(computeRequestRevenueBreakdownNoTax(req).totalLineNoTax || 0);
+                if (total > 0) return total;
+                const fallback = Number(
+                    req?.grandTotalNoTax ?? req?.totalCostNoTax ?? req?.totalCost ?? req?.grandTotal ?? req?.totalAmount ?? 0
+                );
+                if (fallback > 0) return fallback;
+                return Number(lead?.linkedRequestRevenue ?? lead?.value ?? 0);
+            }
+            return Number(lead?.linkedRequestRevenue ?? lead?.value ?? 0);
+        }
+        const pm = String(lead?.periodMonth || '').trim();
+        const aid = String(lead?.accountId || '').trim();
+        if (pm && aid) {
+            const reqs = scopedRequestsAll.filter((r: any) => {
+                if (String(r?.accountId || '').trim() !== aid) return false;
+                const op = requestOperationalDate(r);
+                return op && op.slice(0, 7) === pm;
+            });
+            if (reqs.length) {
+                return reqs.reduce(
+                    (sum: number, r: any) =>
+                        sum + sumRequestOperationalRevenueExTaxInRange(r, dashboardRange.start, dashboardRange.end),
+                    0
+                );
+            }
+        }
+        return Number(lead?.value ?? 0);
+    }, [scopedRequestsAll, dashboardRange]);
+
+    const requestRevenue = useCallback(
+        (req: any): number =>
+            sumRequestOperationalRevenueExTaxInRange(req, dashboardRange.start, dashboardRange.end),
+        [dashboardRange]
+    );
+    const requestRevenueForAccountView = useCallback((req: any): number => {
+        const total = Number(computeRequestRevenueBreakdownNoTax(req).totalLineNoTax || 0);
+        if (total > 0) return total;
+        const fallback = Number(
+            req?.grandTotalNoTax ?? req?.totalCostNoTax ?? req?.totalCost ?? req?.grandTotal ?? req?.totalAmount ?? 0
+        );
+        return fallback > 0 ? fallback : 0;
+    }, []);
+
+    // --- Request-mode data pipeline ---
+    const requestCardsForPeriod = useMemo(() => {
+        if (crmViewMode !== 'request') return [];
+        const pid = String(activeProperty?.id || '').trim();
+        return scopedRequestsAll.filter((req: any) => {
+            if (pid) {
+                const rp = String(req?.propertyId || '').trim();
+                if (rp && rp !== pid && rp !== 'P-GLOBAL') return false;
+            }
+            return requestTouchesOperationalRange(req, dashboardRange);
+        }).filter((req: any) => {
+            const fid = String(createdByUserFilterId || '').trim();
+            if (!fid) return true;
+            return String(req?.createdByUserId || '') === fid;
+        });
+    }, [crmViewMode, scopedRequestsAll, activeProperty?.id, dashboardRange, createdByUserFilterId]);
+
+    const requestCardsByStage = useMemo(() => {
+        const buckets: Record<string, any[]> = {};
+        requestStages.forEach((s) => { buckets[s.id] = []; });
+        for (const req of requestCardsForPeriod) {
+            const sid = requestStatusToStageId(req.status);
+            if (!buckets[sid]) buckets[sid] = [];
+            buckets[sid].push(req);
+        }
+        return buckets;
+    }, [requestCardsForPeriod, requestStages]);
+
+    const requestAllTimeForPeriodGoals = useMemo(() => {
+        if (crmViewMode !== 'request') return [];
+        const pid = String(activeProperty?.id || '').trim();
+        const yearRange = { start: `${crmSalesPeriod.year}-01-01`, end: `${crmSalesPeriod.year}-12-31` };
+        return scopedRequestsAll.filter((req: any) => {
+            if (pid) {
+                const rp = String(req?.propertyId || '').trim();
+                if (rp && rp !== pid && rp !== 'P-GLOBAL') return false;
+            }
+            return requestTouchesOperationalRange(req, yearRange);
+        }).filter((req: any) => {
+            const fid = String(createdByUserFilterId || '').trim();
+            if (!fid) return true;
+            return String(req?.createdByUserId || '') === fid;
+        });
+    }, [crmViewMode, scopedRequestsAll, activeProperty?.id, crmSalesPeriod.year, createdByUserFilterId]);
+
     const dashboardStats = useMemo(() => {
         const byStage = new Map<string, any[]>();
         stages.forEach((s) => byStage.set(s.id, []));
@@ -485,9 +864,18 @@ export default function CRM({
             let requestsCount = 0;
             let revenue = 0;
             leads.forEach((lead: any) => {
-                const reqs = linkedRequestsForLead(lead);
+                const reqs =
+                    crmViewMode === 'request'
+                        ? linkedRequestsForLead(lead).filter((req: any) =>
+                              requestTouchesOperationalRange(req, dashboardRange)
+                          )
+                        : linkedRequestsForLead(lead);
                 requestsCount += reqs.length;
-                revenue += reqs.reduce((sum: number, req: any) => sum + sumRequestProratedRevenueExTaxInRange(req, '1900-01-01', '2100-12-31'), 0);
+                revenue += reqs.reduce(
+                    (sum: number, req: any) =>
+                        sum + (crmViewMode === 'request' ? requestRevenue(req) : requestRevenueForAccountView(req)),
+                    0
+                );
             });
             return {
                 stageId: s.id,
@@ -500,7 +888,6 @@ export default function CRM({
         });
         const won = (byStage.get('won') || []).length;
         const journeyLeadsTotal =
-            (byStage.get('waiting') || []).length +
             (byStage.get('qualified') || []).length +
             (byStage.get('proposal') || []).length +
             (byStage.get('negotiation') || []).length +
@@ -530,7 +917,7 @@ export default function CRM({
             totalRequests: allRequestCount,
             preferredBusinessData,
         };
-    }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll]);
+    }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll, requestRevenue, requestRevenueForAccountView, crmViewMode]);
     const funnelAccountTypeTotals = useMemo(() => {
         const typeCounts = new Map<string, number>();
         dashboardFilteredLeads.forEach((lead: any) => {
@@ -562,6 +949,15 @@ export default function CRM({
         }
         return selectedPeriodMonths;
     }, [crmSalesPeriod.mode, crmSalesPeriod.month, crmSalesPeriod.quarter, selectedPeriodMonths]);
+
+    const ytdOperationalRange = useMemo(() => {
+        const y = crmSalesPeriod.year;
+        const lastMonth = ytdPeriodMonths.length ? Math.max(...ytdPeriodMonths) : 12;
+        const endDay = new Date(y, lastMonth, 0).getDate();
+        const endMonth = String(lastMonth).padStart(2, '0');
+        return { start: `${y}-01-01`, end: `${y}-${endMonth}-${String(endDay).padStart(2, '0')}` };
+    }, [crmSalesPeriod.year, ytdPeriodMonths]);
+
     const financialYearRow = useMemo(() => {
         const rows = (propertyFinancialKpis || []).filter((r: any) => Number(r?.year) === crmSalesPeriod.year);
         if (!rows.length) return null;
@@ -620,11 +1016,113 @@ export default function CRM({
         return (monthlyActual / monthlyTarget) * 100;
     }, [monthlyActual, monthlyTarget]);
     const ytdGoalPct = useMemo(() => {
-        // YTD progress is cumulative actual leads divided by cumulative target (never average of monthly percentages).
         if (ytdTarget <= 0) return 0;
         return (ytdActual / ytdTarget) * 100;
     }, [ytdActual, ytdTarget]);
+
+    // --- Request-mode funnel dashboard stats ---
+    const reqDashboardStats = useMemo(() => {
+        if (crmViewMode !== 'request') return null;
+        const funnelOrder = ['waiting', 'qualified', 'negotiation', 'won', 'actual'];
+        const buckets: Record<string, any[]> = {};
+        funnelOrder.forEach((id) => { buckets[id] = []; });
+        for (const req of requestCardsForPeriod) {
+            const sid = requestStatusToStageId(req.status);
+            if (buckets[sid]) buckets[sid].push(req);
+        }
+        const funnelStages = funnelOrder.map((id) => {
+            const rs = requestStages.find((s) => s.id === id)!;
+            const items = buckets[id] || [];
+            const totalInFunnel = funnelOrder.reduce((acc, k) => acc + (buckets[k] || []).length, 0);
+            return {
+                stageId: id,
+                stageTitle: rs.title,
+                count: items.length,
+                pct: totalInFunnel ? (items.length / totalInFunnel) * 100 : 0,
+                revenue: items.reduce((sum: number, r: any) => sum + requestRevenue(r), 0),
+            };
+        });
+        const totalInFunnel = funnelStages.reduce((a, s) => a + s.count, 0);
+        const actualRevenue = (buckets['actual'] || []).reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
+        const otbRevenue = [...(buckets['qualified'] || []), ...(buckets['negotiation'] || []), ...(buckets['won'] || [])]
+            .reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
+        const pipelineRevenue = (buckets['waiting'] || []).reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
+        const nonCancelled = requestCardsForPeriod.filter(
+            (r: any) => requestStatusToStageId(r.status) !== 'notInterested'
+        ).length;
+        const definiteActualCount = (buckets['won'] || []).length + (buckets['actual'] || []).length;
+        const conversionRate = nonCancelled > 0 ? (definiteActualCount / nonCancelled) * 100 : 0;
+        const typeMap = new Map<string, number>();
+        requestCardsForPeriod.forEach((req: any) => {
+            const t = formatCrmFunnelRequestTypeDisplay(req?.requestType);
+            typeMap.set(t, (typeMap.get(t) || 0) + 1);
+        });
+        const requestTypeData = [...typeMap.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, value]) => ({ name, value }));
+        return {
+            stageRows: funnelStages,
+            totalRequests: totalInFunnel,
+            actualRevenue,
+            otbRevenue,
+            pipelineRevenue,
+            conversionRate,
+            requestTypeData,
+        };
+    }, [crmViewMode, requestCardsForPeriod, requestStages, requestRevenue]);
+
+    const reqMonthlyTarget = useMemo(() => {
+        if (crmViewMode !== 'request') return 0;
+        const row = financialYearRow;
+        if (!row) return 0;
+        const months = Array.isArray(row?.months) ? row.months : [];
+        const monthSet = new Set(selectedPeriodMonths);
+        return months.reduce((sum: number, m: any) => {
+            const mn = monthNameToNumber(m?.month);
+            if (!monthSet.has(mn)) return sum;
+            return sum + (Number(m?.roomsBudget || 0) || 0);
+        }, 0);
+    }, [crmViewMode, financialYearRow, selectedPeriodMonths]);
+
+    const reqYtdTarget = useMemo(() => {
+        if (crmViewMode !== 'request') return 0;
+        const row = financialYearRow;
+        if (!row) return 0;
+        const months = Array.isArray(row?.months) ? row.months : [];
+        const monthSet = new Set(ytdPeriodMonths);
+        return months.reduce((sum: number, m: any) => {
+            const mn = monthNameToNumber(m?.month);
+            if (!monthSet.has(mn)) return sum;
+            return sum + (Number(m?.roomsBudget || 0) || 0);
+        }, 0);
+    }, [crmViewMode, financialYearRow, ytdPeriodMonths]);
+
+    const reqMonthlyActualRevenue = useMemo(() => {
+        if (crmViewMode !== 'request') return 0;
+        return requestCardsForPeriod.filter((r: any) => {
+            const s = String(r.status || '').toLowerCase().trim();
+            return s === 'definite' || s === 'actual';
+        }).reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
+    }, [crmViewMode, requestCardsForPeriod]);
+
+    const reqYtdActualRevenue = useMemo(() => {
+        if (crmViewMode !== 'request') return 0;
+        return requestAllTimeForPeriodGoals.filter((r: any) => {
+            const s = String(r.status || '').toLowerCase().trim();
+            return s === 'definite' || s === 'actual';
+        }).filter((r: any) => requestTouchesOperationalRange(r, ytdOperationalRange))
+            .reduce(
+                (sum: number, r: any) =>
+                    sum + sumRequestOperationalRevenueExTaxInRange(r, ytdOperationalRange.start, ytdOperationalRange.end),
+                0
+            );
+    }, [crmViewMode, requestAllTimeForPeriodGoals, ytdOperationalRange]);
+
+    const reqMonthlyGoalPct = reqMonthlyTarget > 0 ? (reqMonthlyActualRevenue / reqMonthlyTarget) * 100 : 0;
+    const reqYtdGoalPct = reqYtdTarget > 0 ? (reqYtdActualRevenue / reqYtdTarget) * 100 : 0;
+
     const [expandedDashboardAccounts, setExpandedDashboardAccounts] = useState<string[]>([]);
+    const [expandedStageTables, setExpandedStageTables] = useState<string[]>([]);
     const dashboardAccountRows = useMemo(() => {
         const stageRank = new Map<string, number>();
         dashboardStageOrder.forEach((id, idx) => stageRank.set(id, idx));
@@ -649,13 +1147,15 @@ export default function CRM({
                     requestName: String(req?.requestName || req?.eventName || req?.requestType || 'Request'),
                     startDate,
                     endDate,
-                    requestSegment: String(req?.segment || '—'),
+                    requestType: formatCrmFunnelRequestTypeDisplay(req?.requestType),
                     accountType: String(
                         accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''))?.type ||
                         req?.accountType ||
                         '—'
                     ),
-                    revenue: sumRequestProratedRevenueExTaxInRange(req, '1900-01-01', '2100-12-31'),
+                    revenue: crmViewMode === 'request'
+                        ? sumRequestOperationalRevenueExTaxInRange(req, dashboardRange.start, dashboardRange.end)
+                        : requestRevenueForAccountView(req),
                 };
             });
             const totalRevenue = requestRows.reduce((sum, r) => sum + (Number(r.revenue) || 0), 0);
@@ -684,7 +1184,7 @@ export default function CRM({
             }
         }
         return [...accountMap.values()].sort((a, b) => (b.totalRevenue - a.totalRevenue) || (b.requestCount - a.requestCount));
-    }, [dashboardFilteredLeads, dashboardStageOrder, accounts, dashboardRange]);
+    }, [dashboardFilteredLeads, dashboardStageOrder, accounts, dashboardRange, crmViewMode, requestRevenueForAccountView]);
 
     const downloadFile = (fileName: string, content: string, mimeType: string) => {
         const blob = new Blob([content], { type: mimeType });
@@ -943,6 +1443,24 @@ export default function CRM({
         (crmLeadsForDisplay.proposal?.length || 0) + (crmLeadsForDisplay.negotiation?.length || 0);
     const followUpRequiredCount = allLeads.filter((lead: any) => crmLeadHasScheduledFollowUp(lead)).length;
 
+    // Request-mode pipeline KPIs
+    const requestTotalCount = requestCardsForPeriod.length;
+    const requestHighPotentialCount = requestCardsForPeriod.filter(
+        (r: any) => requestStatusToStageId(r.status) === 'qualified'
+    ).length;
+    const requestFollowUpCount = requestCardsForPeriod.filter(
+        (r: any) => requestStatusToStageId(r.status) === 'negotiation'
+    ).length;
+    const requestConversionRate = (() => {
+        const nonCancelled = requestCardsForPeriod.filter(
+            (r: any) => requestStatusToStageId(r.status) !== 'notInterested'
+        ).length;
+        const definiteActual = requestCardsForPeriod.filter(
+            (r: any) => { const sid = requestStatusToStageId(r.status); return sid === 'won' || sid === 'actual'; }
+        ).length;
+        return nonCancelled > 0 ? ((definiteActual / nonCancelled) * 100).toFixed(0) : '0';
+    })();
+
     const openLeadProfile = (lead: any) => {
         setListMenuLeadId(null);
         const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
@@ -1005,7 +1523,9 @@ export default function CRM({
     };
 
     const handleSaveCall = () => {
-        const cfgViol = collectSalesCallFormViolations(activeProperty?.id, newCallData, activeProperty);
+        const normalizedSubject = resolveCallSubject(newCallData.subject, newCallData.customSubject);
+        const payload = { ...newCallData, subject: normalizedSubject };
+        const cfgViol = collectSalesCallFormViolations(activeProperty?.id, payload, activeProperty);
         if (cfgViol.length) {
             window.alert(cfgViol.join('\n'));
             return;
@@ -1030,16 +1550,18 @@ export default function CRM({
         }
 
         const expected = parseFloat(String(newCallData.expectedRevenue || '').replace(/,/g, '')) || 0;
-        const stageKey = newCallData.status as string;
+        const manualTags = Array.isArray(newCallData.tags)
+            ? newCallData.tags.map((t: any) => String(t || '').trim()).filter(Boolean)
+            : [];
         const tagList =
-            Array.isArray(account.tags) && account.tags.length
-                ? [...account.tags]
-                : account.type
-                  ? [account.type]
-                  : ['Corporate'];
+            manualTags.length
+                ? [...new Set(manualTags)]
+                : Array.isArray(account.tags) && account.tags.length
+                  ? [...account.tags]
+                  : account.type
+                    ? [account.type]
+                    : ['Corporate'];
 
-        const toNotInterestedNew = stageKey === 'notInterested';
-        const toWonNew = stageKey === 'won';
         const newLead = {
             id: `L${Date.now()}`,
             propertyId: activeProperty?.id || undefined,
@@ -1047,7 +1569,7 @@ export default function CRM({
             createdByUserId: resolveUserAttributionId(currentUser) || undefined,
             accountId: account.id,
             company: newCallData.accountName,
-            subject: newCallData.subject,
+            subject: normalizedSubject,
             contact: contactDisplayName(primaryContact),
             position: primaryContact.position,
             email: primaryContact.email,
@@ -1055,36 +1577,30 @@ export default function CRM({
             city: newCallData.city || account.city || primaryContact.city || '',
             country: account.country || primaryContact.country || '',
             value: expected,
-            probability: probabilityForStage(stageKey),
             tags: tagList,
             enteredFunnelAt: newCallData.date,
             date: newCallData.date,
+            dueDate: newCallData.date,
             lastContact: newCallData.date,
             accountManager: currentUser?.name || currentUser?.email || 'Staff',
             totalRequests: 0,
             totalSpend: 0,
             winRate: 0,
             description: newCallData.description,
-            nextStep: newCallData.nextStep,
-            followUpRequired: toNotInterestedNew || toWonNew ? false : !!newCallData.followUpRequired,
-            followUpDate:
-                toNotInterestedNew || toWonNew ? '' : newCallData.followUpRequired ? newCallData.followUpDate : ''
+            nextStep: '',
+            followUpRequired: !!newCallData.followUpRequired,
+            followUpDate: newCallData.followUpRequired ? newCallData.followUpDate : '',
+            activityCompleted: false,
         };
 
-        const targetStage = newCallData.status as keyof typeof crmLeads;
-        setCrmLeads(prev => ({
-            ...prev,
-            [targetStage]: [newLead, ...prev[targetStage]]
-        }));
+        setSalesCalls((prev) => [newLead, ...prev]);
 
-        const stLabel = stageTitle(String(targetStage));
         appendCrmActivityToAccount(
             account.id,
             'Sales call created',
-            `${currentUser?.name || currentUser?.username || 'User'} created a sales opportunity in ${stLabel}.\n` +
-                `Subject: ${newCallData.subject}\n` +
-                `Expected revenue: ${formatMoney(expected, 0)}\n` +
-                `Probability: ${probabilityForStage(stageKey)}%`
+            `${currentUser?.name || currentUser?.username || 'User'} created a sales call task.\n` +
+                `Subject: ${normalizedSubject}\n` +
+                `Expected revenue: ${formatMoney(expected, 0)}`
         );
 
         setShowAddCallModal(false);
@@ -1098,10 +1614,30 @@ export default function CRM({
             expectedRevenue: '',
             description: '',
             status: 'new',
-            nextStep: '',
+            customSubject: '',
+            tags: [],
             followUpRequired: false,
             followUpDate: '',
         });
+        setNewCallTagInput('');
+    };
+
+    const addNewCallTag = (rawTag: string) => {
+        const tag = String(rawTag || '').trim();
+        if (!tag) return;
+        setNewCallData((prev) => {
+            const existing = Array.isArray(prev.tags) ? prev.tags : [];
+            if (existing.some((t: string) => String(t).toLowerCase() === tag.toLowerCase())) return prev;
+            return { ...prev, tags: [...existing, tag] };
+        });
+    };
+
+    const removeNewCallTag = (tagToRemove: string) => {
+        const key = String(tagToRemove || '').toLowerCase();
+        setNewCallData((prev) => ({
+            ...prev,
+            tags: (Array.isArray(prev.tags) ? prev.tags : []).filter((t: string) => String(t).toLowerCase() !== key),
+        }));
     };
 
     const saveNewContactPersonToAccount = () => {
@@ -1182,6 +1718,7 @@ export default function CRM({
     };
 
     const openEditSalesCallModal = (lead: any) => {
+        if (!canEditSalesCallsPerm) return;
         const sid = findLeadStageId(crmLeads, lead.id);
         if (!sid) return;
         editSnapshotRef.current = { lead: { ...lead }, stageId: sid };
@@ -1189,7 +1726,7 @@ export default function CRM({
             leadId: lead.id,
             accountId: lead.accountId,
             accountName: lead.company,
-            date: lead.lastContact || new Date().toISOString().split('T')[0],
+            date: getCallDueDate(lead) || lead.lastContact || new Date().toISOString().split('T')[0],
             city: lead.city || '',
             subject: lead.subject || '',
             expectedRevenue: String(lead.value ?? ''),
@@ -1209,6 +1746,43 @@ export default function CRM({
         if (!editCallForm.subject?.trim()) return;
         const oldLead = snap.lead;
         const oldStage = snap.stageId;
+        const isActivityCall = oldStage === 'new' || salesCalls.some((c) => c.id === editCallForm.leadId);
+
+        if (isActivityCall) {
+            const dueDate = editCallForm.date;
+            const updated = {
+                ...oldLead,
+                propertyId: activeProperty?.id || oldLead.propertyId,
+                company: editCallForm.accountName,
+                subject: editCallForm.subject,
+                description: editCallForm.description,
+                nextStep: editCallForm.nextStep,
+                lastContact: dueDate,
+                dueDate,
+                date: dueDate,
+                city: editCallForm.city,
+                value: parseFloat(String(editCallForm.expectedRevenue || '').replace(/,/g, '')) || 0,
+                followUpRequired: !!editCallForm.followUpRequired,
+                followUpDate: editCallForm.followUpRequired ? editCallForm.followUpDate : '',
+            };
+            setSalesCalls((prev) => prev.map((c) => (c.id === editCallForm.leadId ? updated : c)));
+
+            const changes: string[] = [];
+            if ((oldLead.subject || '') !== (editCallForm.subject || '')) changes.push('Subject updated');
+            if ((oldLead.description || '') !== (editCallForm.description || '')) changes.push('Description updated');
+            if ((oldLead.nextStep || '') !== (editCallForm.nextStep || '')) changes.push('Next step updated');
+            if (String(getCallDueDate(oldLead) || '') !== String(dueDate || '')) changes.push('Due date updated');
+
+            appendCrmActivityToAccount(
+                editCallForm.accountId,
+                'Sales call updated',
+                `${currentUser?.name || currentUser?.username || 'User'} updated this sales call.\n${changes.join('\n') || 'Details refreshed.'}`
+            );
+            setShowEditCallModal(false);
+            editSnapshotRef.current = null;
+            return;
+        }
+
         const newStage = editCallForm.status as keyof typeof crmLeads;
         const newValue = parseFloat(String(editCallForm.expectedRevenue || '').replace(/,/g, '')) || 0;
         const newProb = probabilityForStage(String(newStage));
@@ -1264,14 +1838,232 @@ export default function CRM({
         editSnapshotRef.current = null;
     };
 
+    const updateLeadInCrmLeads = (leadId: string, updater: (lead: any, stageId: string) => any) => {
+        if (salesCalls.some((c) => c.id === leadId)) {
+            setSalesCalls((prev) => prev.map((l) => (l.id === leadId ? updater(l, 'new') : l)));
+            return;
+        }
+        const stageId = findLeadStageId(crmLeads, leadId);
+        if (!stageId || stageId === 'new') return;
+        setPipeline((prev) => {
+            const out = { ...prev } as CrmPipelineBuckets;
+            const key = stageId as PipelineStageKey;
+            out[key] = (out[key] || []).map((l: any) => (l.id === leadId ? updater(l, stageId) : l));
+            return out;
+        });
+    };
+
+    const handleToggleActivityCompleted = (lead: any, completed: boolean) => {
+        if (crmReadOnly) return;
+        const nowIso = new Date().toISOString();
+        updateLeadInCrmLeads(lead.id, (l) => ({
+            ...l,
+            activityCompleted: completed,
+            activityCompletedAt: completed ? nowIso : undefined,
+        }));
+        if (completed && lead.accountId) {
+            appendCrmActivityToAccount(
+                lead.accountId,
+                'Call completed',
+                `${currentUser?.name || currentUser?.username || 'User'} marked the call as completed.\n` +
+                    `Subject: ${lead.subject || '—'}\n` +
+                    `Due: ${getCallDueDate(lead) || '—'}`
+            );
+        }
+    };
+
+    const buildFollowUpLead = (sourceLead: any, followUpDate: string) => {
+        const followSubject = sourceLead.subject
+            ? `Follow-up: ${sourceLead.subject}`
+            : 'Follow-up Call';
+        return {
+            id: `L${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            propertyId: activeProperty?.id || sourceLead.propertyId,
+            ownerUserId: resolveUserAttributionId(currentUser) || sourceLead.ownerUserId,
+            createdByUserId: resolveUserAttributionId(currentUser) || sourceLead.createdByUserId,
+            accountId: sourceLead.accountId,
+            company: sourceLead.company,
+            subject: followSubject,
+            contact: sourceLead.contact,
+            position: sourceLead.position,
+            email: sourceLead.email,
+            phone: sourceLead.phone,
+            city: sourceLead.city || '',
+            country: sourceLead.country || '',
+            value: sourceLead.value ?? 0,
+            probability: probabilityForStage('new'),
+            tags: Array.isArray(sourceLead.tags) ? [...sourceLead.tags] : [],
+            enteredFunnelAt: followUpDate,
+            date: followUpDate,
+            lastContact: followUpDate,
+            dueDate: followUpDate,
+            accountManager: sourceLead.accountManager || currentUser?.name || 'Staff',
+            totalRequests: sourceLead.totalRequests ?? 0,
+            totalSpend: sourceLead.totalSpend ?? 0,
+            winRate: sourceLead.winRate ?? 0,
+            description: '',
+            nextStep: '',
+            followUpRequired: false,
+            followUpDate: '',
+            parentCallId: sourceLead.id,
+            activityCompleted: false,
+        };
+    };
+
+    const handleLogCallSave = (lead: any, data: LogCallFormData) => {
+        if (crmReadOnly) return;
+        const nowIso = new Date().toISOString();
+        const loggedDescription = appendCallDescription(lead.description, data.description);
+        const clearFollowUpOnSource = data.followUpRequired && data.followUpDate;
+        const priorDueDate = getCallDueDate(lead);
+        const effectiveDueDate =
+            data.followUpRequired && data.followUpDate
+                ? data.followUpDate
+                : priorDueDate || nowIso.slice(0, 10);
+
+        let targetStage: PipelineStageKey | null = null;
+        if (data.interest === 'not_interested') {
+            targetStage = 'notInterested';
+        } else if (data.interest === 'waiting') {
+            targetStage = 'waiting';
+        } else if (data.interest === 'interested') {
+            targetStage = data.newRequest || data.newAgreement ? 'qualified' : 'qualified';
+        }
+
+        const toNotInterested = targetStage === 'notInterested';
+        const updatedLead = {
+            ...lead,
+            description: loggedDescription,
+            nextStep: data.nextStep || lead.nextStep || '',
+            tags: data.tags && data.tags.length ? data.tags : lead.tags,
+            interestStatus: String(data.interest || '').trim(),
+            callLoggedAt: nowIso,
+            activityCompleted: true,
+            followUpRequired: toNotInterested ? false : (clearFollowUpOnSource ? false : lead.followUpRequired),
+            followUpDate: toNotInterested ? '' : (clearFollowUpOnSource ? '' : lead.followUpDate),
+        };
+
+        const followUpLead =
+            data.followUpRequired && data.followUpDate && !toNotInterested
+                ? buildFollowUpLead(lead, data.followUpDate)
+                : null;
+
+        let pipelineMeta: { cardId: string; periodMonth: string } = { cardId: '', periodMonth: '' };
+
+        setSalesCalls((prev) => {
+            let next = prev.map((c) => (c.id === lead.id ? { ...updatedLead, pipelineCardId: c.pipelineCardId } : c));
+            if (followUpLead) next = [followUpLead, ...next];
+            return next;
+        });
+
+        if (targetStage || (data.followUpRequired && data.followUpDate && String(lead?.accountId || '').trim())) {
+            setPipeline((prev) => {
+                const result = upsertPipelineCardFromLogCall(prev, updatedLead, targetStage, {
+                    nowIso,
+                    sourceCallId: String(lead.id),
+                    dueDate: effectiveDueDate,
+                    pipelineCardId: String(lead.pipelineCardId || '').trim() || undefined,
+                    priorDueDate,
+                });
+                pipelineMeta = { cardId: result.cardId, periodMonth: result.periodMonth };
+                return result.pipeline;
+            });
+            if (pipelineMeta.cardId) {
+                setSalesCalls((prev) =>
+                    prev.map((c) => {
+                        if (c.id === lead.id || (followUpLead && c.id === followUpLead.id)) {
+                            return { ...c, pipelineCardId: pipelineMeta.cardId, activityCompleted: c.id === lead.id ? true : c.activityCompleted };
+                        }
+                        return c;
+                    })
+                );
+            }
+        } else {
+            setSalesCalls((prev) => prev.map((c) => (c.id === lead.id ? updatedLead : c)));
+        }
+
+        if (data.tags && data.tags.length && lead.accountId) {
+            const aid = lead.accountId;
+            setAccounts((prev: any[]) =>
+                prev.map((a: any) => (a.id === aid ? { ...a, tags: data.tags } : a))
+            );
+            setSalesCalls((prev) => prev.map((c) => (c.accountId === aid ? { ...c, tags: data.tags } : c)));
+            setPipeline((prev) => {
+                const out = { ...prev } as CrmPipelineBuckets;
+                PIPELINE_STAGE_KEYS.forEach((k) => {
+                    out[k] = (out[k] || []).map((c) => (c.accountId === aid ? { ...c, tags: data.tags } : c));
+                });
+                return out;
+            });
+        }
+
+        let followNote = '';
+        if (followUpLead) {
+            followNote = `\nFollow-up scheduled: ${data.followUpDate}`;
+            if (lead.accountId) {
+                appendCrmActivityToAccount(
+                    lead.accountId,
+                    'Follow-up call scheduled',
+                    `${currentUser?.name || currentUser?.username || 'User'} scheduled a follow-up on ${data.followUpDate}.\n` +
+                        `Subject: ${followUpLead.subject}`
+                );
+            }
+        }
+
+        const stageNote = targetStage
+            ? `\nPipeline card moved to: ${stageTitle(targetStage)}`
+            : '';
+
+        if (lead.accountId) {
+            appendCrmActivityToAccount(
+                lead.accountId,
+                'Call logged',
+                `${currentUser?.name || currentUser?.username || 'User'} logged a call.\n${data.description.trim()}${followNote}${stageNote}`
+            );
+        }
+
+        const accountId = String(lead.accountId || '').trim();
+        const contactRow = accounts
+            .find((a: any) => String(a.id) === accountId)
+            ?.contacts?.find((c: any, idx: number) => {
+                const label = contactDisplayName(c);
+                return label && label === String(lead.contact || '').trim();
+            });
+        const navigateMeta: CrmNavigateMeta = {
+            accountId,
+            periodMonth: pipelineMeta.periodMonth || periodMonthFromDate(getCallDueDate(lead) || nowIso),
+            pipelineCardId: pipelineMeta.cardId,
+            company: lead.company,
+            contact: lead.contact,
+            contactId: contactRow?._id || contactRow?.id || '',
+            tags: updatedLead.tags,
+            sourceCallIds: [String(lead.id)],
+            propertyId: activeProperty?.id,
+        };
+
+        if (data.newRequest && accountId) {
+            onNavigateToNewRequest?.(accountId, data.newAgreement, navigateMeta);
+        } else if (data.newAgreement && accountId) {
+            onNavigateToNewAgreement?.(accountId, navigateMeta);
+        }
+    };
+
     const deleteSalesCallByLead = (lead: any) => {
-        const sid = findLeadStageId(crmLeads, lead.id);
+        if (!canDelSalesCalls) return;
+        const inCalls = salesCalls.some((c) => c.id === lead.id);
+        const sid = inCalls ? 'new' : findLeadStageId(crmLeads, lead.id);
         if (!sid) return;
         if (!window.confirm('Delete this sales call? This cannot be undone.')) return;
-        setCrmLeads((prev) => ({
-            ...prev,
-            [sid]: (prev[sid] || []).filter((l: any) => l.id !== lead.id)
-        }));
+        if (inCalls) {
+            setSalesCalls((prev) => prev.filter((l) => l.id !== lead.id));
+        } else {
+            setPipeline((prev) => {
+                const out = { ...prev } as CrmPipelineBuckets;
+                const key = sid as PipelineStageKey;
+                out[key] = (out[key] || []).filter((l: any) => l.id !== lead.id);
+                return out;
+            });
+        }
         appendCrmActivityToAccount(
             lead.accountId,
             'Sales call deleted',
@@ -1337,9 +2129,10 @@ export default function CRM({
                 return;
             }
             setAccounts((prev: any[]) => prev.filter((a: any) => a.id !== pendingDeleteAccountId));
-            setCrmLeads((prev) => {
-                const out = { ...prev } as Record<string, any[]>;
-                (Object.keys(out) as string[]).forEach((k) => {
+            setSalesCalls((prev) => prev.filter((l) => l.accountId !== pendingDeleteAccountId));
+            setPipeline((prev) => {
+                const out = { ...prev } as CrmPipelineBuckets;
+                PIPELINE_STAGE_KEYS.forEach((k) => {
                     out[k] = (out[k] || []).filter((l: any) => l.accountId !== pendingDeleteAccountId);
                 });
                 return out;
@@ -1438,7 +2231,7 @@ export default function CRM({
         const aid = selectedLead.accountId || selectedLead.id;
         const aname = selectedLead.company;
         const linkedReq = filterRequestsForAccount(sharedRequests, aid, aname);
-        const salesForAcc = filterSalesCallsForAccount(flatCrmLeads, aid, aname);
+        const salesForAcc = filterSalesCallsForAccount(salesCalls, aid, aname);
         const oppLeads = filterOpenOpportunityLeads(flatCrmLeads, aid, aname);
         const editingRow = accounts.find((a: any) => a.id === aid);
         return (
@@ -1533,24 +2326,24 @@ export default function CRM({
     return (
         <>
         <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
-            {currentView !== 'dashboard' && (
+            {currentView !== 'dashboard' && currentView !== 'activities' && (
                 <div className="shrink-0 px-4 py-3 border-b" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
                         <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Total Calls</p>
-                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{totalLeads}</p>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>{crmViewMode === 'request' ? 'Total Requests' : 'Total Leads'}</p>
+                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>{crmViewMode === 'request' ? requestTotalCount : totalLeads}</p>
                         </div>
                         <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>High Potential Client</p>
-                            <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{highPotentialCount}</p>
+                            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>{crmViewMode === 'request' ? 'High Potential Request' : 'High Potential Client'}</p>
+                            <p className="text-2xl font-bold font-mono" style={{ color: colors.primary }}>{crmViewMode === 'request' ? requestHighPotentialCount : highPotentialCount}</p>
                         </div>
                         <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Follow up Required</p>
-                            <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{followUpRequiredCount}</p>
+                            <p className="text-2xl font-bold font-mono" style={{ color: colors.orange }}>{crmViewMode === 'request' ? requestFollowUpCount : followUpRequiredCount}</p>
                         </div>
                         <div className="p-3 rounded-xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg" style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
                             <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: colors.textMuted }}>Conversion Rate</p>
-                            <p className="text-2xl font-bold" style={{ color: colors.green }}>{(((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
+                            <p className="text-2xl font-bold" style={{ color: colors.green }}>{crmViewMode === 'request' ? requestConversionRate : (((crmLeadsForDisplay.won?.length || 0) / (totalLeads || 1)) * 100).toFixed(0)}%</p>
                         </div>
                     </div>
                 </div>
@@ -1558,35 +2351,77 @@ export default function CRM({
 
             {/* Pipeline or List Content */}
             <div ref={currentView === 'dashboard' ? dashboardSnapshotRef : undefined} className="flex-1 overflow-hidden flex flex-col p-4 pt-2">
-                {currentView === 'dashboard' ? (
+                {currentView === 'activities' ? (
+                    <CrmActivitiesView
+                        theme={theme}
+                        salesCalls={salesCalls}
+                        crmSalesPeriod={crmSalesPeriod}
+                        createdByUserFilterId={createdByUserFilterId}
+                        crmFilterUsers={crmFilterUsers}
+                        activePropertyId={activeProperty?.id}
+                        readOnly={crmReadOnly}
+                        canEditSalesCalls={canEditSalesCallsPerm}
+                        canDeleteSalesCalls={canDelSalesCalls}
+                        onOpenLeadProfile={openLeadProfile}
+                        onLogCallSave={handleLogCallSave}
+                        onToggleActivityCompleted={handleToggleActivityCompleted}
+                        onEditCall={openEditSalesCallModal}
+                        onDeleteCall={deleteSalesCallByLead}
+                        onAddSalesCall={() => setShowAddCallModal(true)}
+                    />
+                ) : currentView === 'dashboard' ? (
                     <div className="flex-1 min-h-0 grid grid-cols-1 gap-4 overflow-y-auto">
                         <div className="rounded-xl border p-4" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                            <h3 className="text-sm font-bold uppercase tracking-wide mb-3 text-center" style={{ color: colors.textMain }}>Sales Funnel - Conversion Rate Tracking</h3>
+                            <h3 className="text-sm font-bold uppercase tracking-wide mb-3 text-center" style={{ color: colors.textMain }}>
+                                {crmViewMode === 'request' ? 'Request Funnel - Conversion Rate Tracking' : 'Sales Funnel - Conversion Rate Tracking'}
+                            </h3>
                             <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
                                 <div className="xl:col-span-2 space-y-2">
-                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Total Leads</p>
-                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalLeads}</p>
-                                    </div>
-                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Revenues</p>
-                                        <p className="text-xl font-black" style={{ color: colors.primary }}>{formatMoney(dashboardStats.totalRevenue)}</p>
-                                    </div>
-                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Avg Revenue</p>
-                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{formatMoney(dashboardStats.avgRevenue)}</p>
-                                    </div>
-                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Requests</p>
-                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalRequests}</p>
-                                    </div>
+                                    {crmViewMode === 'request' ? (
+                                        <>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Total Requests</p>
+                                                <p className="text-xl font-black" style={{ color: colors.textMain }}>{reqDashboardStats?.totalRequests ?? 0}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Actual Revenue</p>
+                                                <p className="text-xl font-black" style={{ color: '#059669' }}>{formatMoney(reqDashboardStats?.actualRevenue ?? 0)}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>OTB Revenue</p>
+                                                <p className="text-xl font-black" style={{ color: colors.primary }}>{formatMoney(reqDashboardStats?.otbRevenue ?? 0)}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Pipeline Revenue</p>
+                                                <p className="text-xl font-black" style={{ color: colors.textMuted }}>{formatMoney(reqDashboardStats?.pipelineRevenue ?? 0)}</p>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Total Leads</p>
+                                                <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalLeads}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Revenues</p>
+                                                <p className="text-xl font-black" style={{ color: colors.primary }}>{formatMoney(dashboardStats.totalRevenue)}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Avg Revenue</p>
+                                                <p className="text-xl font-black" style={{ color: colors.textMain }}>{formatMoney(dashboardStats.avgRevenue)}</p>
+                                            </div>
+                                            <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                                <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Requests</p>
+                                                <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalRequests}</p>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                                 <div className="xl:col-span-8 rounded-xl border p-3 overflow-x-auto" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                     <div className="min-w-[760px] flex items-center h-[230px]">
-                                        {dashboardStats.stageRows.map((row, idx) => {
-                                            const total = dashboardStats.stageRows.length || 1;
+                                        {(crmViewMode === 'request' ? (reqDashboardStats?.stageRows || []) : dashboardStats.stageRows).map((row, idx) => {
+                                            const total = (crmViewMode === 'request' ? (reqDashboardStats?.stageRows || []) : dashboardStats.stageRows).length || 1;
                                             const startH = 190 - idx * (110 / total);
-                                            const endH = idx === total - 1 ? startH : 190 - (idx + 1) * (110 / total);
                                             return (
                                                 <div
                                                     key={row.stageId}
@@ -1604,7 +2439,7 @@ export default function CRM({
                                                 >
                                                     <div className="text-[11px] leading-tight px-2">
                                                         <div>{row.pct.toFixed(0)}%</div>
-                                                        <div>{row.stageTitle.replace('Upcoming Sales Calls', 'Inquiries')}</div>
+                                                        <div>{row.stageTitle}</div>
                                                         <div>{row.count}</div>
                                                     </div>
                                                     {idx === total - 1 && (
@@ -1618,53 +2453,109 @@ export default function CRM({
                                     </div>
                                     <div className="mt-2 border-t pt-2" style={{ borderColor: colors.border }}>
                                         <div className="text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color: colors.textMuted }}>
-                                            Account Types In Funnel
+                                            {crmViewMode === 'request' ? 'Request Types In Funnel' : 'Account Types In Funnel'}
                                         </div>
-                                        {funnelAccountTypeTotals.length > 0 ? (
-                                            <div className="flex flex-wrap items-center gap-1.5">
-                                                {funnelAccountTypeTotals.map((badge) => (
-                                                    <span
-                                                        key={`funnel-total-${badge}`}
-                                                        className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
-                                                        style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
-                                                    >
-                                                        {badge}
-                                                    </span>
-                                                ))}
-                                            </div>
+                                        {crmViewMode === 'request' ? (
+                                            (reqDashboardStats?.requestTypeData || []).length > 0 ? (
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    {(reqDashboardStats?.requestTypeData || []).map((item: any) => (
+                                                        <span
+                                                            key={`req-type-${item.name}`}
+                                                            className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+                                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                                                        >
+                                                            {item.name} ({item.value})
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="text-[10px]" style={{ color: colors.textMuted }}>No request types in this funnel period.</div>
+                                            )
                                         ) : (
-                                            <div className="text-[10px]" style={{ color: colors.textMuted }}>
-                                                No account types in this funnel period.
-                                            </div>
+                                            funnelAccountTypeTotals.length > 0 ? (
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    {funnelAccountTypeTotals.map((badge) => (
+                                                        <span
+                                                            key={`funnel-total-${badge}`}
+                                                            className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+                                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
+                                                        >
+                                                            {badge}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="text-[10px]" style={{ color: colors.textMuted }}>
+                                                    No account types in this funnel period.
+                                                </div>
+                                            )
                                         )}
                                     </div>
                                 </div>
                                 <div className="xl:col-span-2 space-y-2">
-                                    <CircularIndicator label="Conversion Rate" value={dashboardStats.conversionRate} tone={colors.green} />
-                                    <CircularIndicator label="Monthly Goal" value={monthlyGoalPct} tone={colors.cyan} />
-                                    <CircularIndicator label="YTD Goal" value={ytdGoalPct} tone={colors.primary} />
-                                    <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
-                                        <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Customers</p>
-                                        <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalClients}</p>
-                                    </div>
+                                    <CircularIndicator label="Conversion Rate" value={crmViewMode === 'request' ? (reqDashboardStats?.conversionRate ?? 0) : dashboardStats.conversionRate} tone={colors.green} />
+                                    <CircularIndicator label="Monthly Goal" value={crmViewMode === 'request' ? reqMonthlyGoalPct : monthlyGoalPct} tone={colors.cyan} />
+                                    <CircularIndicator label="YTD Goal" value={crmViewMode === 'request' ? reqYtdGoalPct : ytdGoalPct} tone={colors.primary} />
+                                    {crmViewMode !== 'request' && (
+                                        <div className="p-3 rounded-xl border" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
+                                            <p className="text-[10px] uppercase tracking-wide font-bold" style={{ color: colors.textMuted }}>Customers</p>
+                                            <p className="text-xl font-black" style={{ color: colors.textMain }}>{dashboardStats.totalClients}</p>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
-                        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-                            {[
-                                { id: 'proposal', label: 'Proposal' },
-                                { id: 'negotiation', label: 'Negotiation' },
-                                { id: 'won', label: 'Won' },
-                            ].map((stageCfg) => {
-                                const stageRows = dashboardAccountRows.filter((r: any) => r.stageId === stageCfg.id);
+                        <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+                            {(crmViewMode === 'request'
+                                ? [
+                                    { id: 'qualified', label: 'Accepted' },
+                                    { id: 'negotiation', label: 'Tentative' },
+                                    { id: 'won', label: 'Definite' },
+                                    { id: 'actual', label: 'Actual' },
+                                ]
+                                : [
+                                    { id: 'qualified', label: 'Qualified' },
+                                    { id: 'proposal', label: 'Proposal' },
+                                    { id: 'negotiation', label: 'Negotiation' },
+                                    { id: 'won', label: 'Won' },
+                                ]
+                            ).map((stageCfg) => {
+                                const stageRows = crmViewMode === 'request'
+                                    ? (requestCardsByStage[stageCfg.id] || []).map((req: any) => {
+                                        const acc = accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''));
+                                        return {
+                                            key: String(req.id),
+                                            accountName: String(acc?.name || req?.account || req?.accountName || 'Unknown'),
+                                            requestCount: 1,
+                                            totalRevenue: requestRevenue(req),
+                                            requests: [{
+                                                id: req.id,
+                                                requestName: String(req?.requestName || req?.eventName || req?.requestType || 'Request'),
+                                                startDate: String(req?.checkIn || req?.arrivalDate || req?.eventStart || '').slice(0, 10),
+                                                endDate: String(req?.checkOut || req?.departureDate || req?.eventEnd || '').slice(0, 10),
+                                                requestType: formatCrmFunnelRequestTypeDisplay(req?.requestType),
+                                                revenue: requestRevenue(req),
+                                            }],
+                                            stageId: stageCfg.id,
+                                        };
+                                    })
+                                    : dashboardAccountRows.filter((r: any) => r.stageId === stageCfg.id);
                                 const stageTone = stageColor(stageCfg.id);
+                                const isTableExpanded = expandedStageTables.includes(stageCfg.id);
+                                const visibleRows = isTableExpanded ? stageRows : stageRows.slice(0, 7);
+                                const hasMore = stageRows.length > 7;
+                                const stageAccountsCount = stageRows.length;
+                                const stageTotalValue = stageRows.reduce((sum: number, row: any) => sum + (Number(row?.totalRevenue) || 0), 0);
                                 return (
                                     <div key={stageCfg.id} className="rounded-xl border overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                                         <div
-                                            className="px-4 py-3 border-b text-xs font-bold uppercase tracking-wide text-center"
+                                            className="px-4 py-2.5 border-b text-xs font-bold uppercase tracking-wide text-center"
                                             style={{ borderColor: colors.border, color: '#fff', backgroundColor: stageTone }}
                                         >
-                                            {stageCfg.label}
+                                            <div>{stageCfg.label}</div>
+                                            <div className="text-[10px] font-semibold normal-case mt-0.5">
+                                                {stageAccountsCount} accounts · {formatMoney(stageTotalValue)}
+                                            </div>
                                         </div>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-left border-collapse">
@@ -1676,7 +2567,7 @@ export default function CRM({
                                                     </tr>
                                                 </thead>
                                                 <tbody className="text-xs">
-                                                    {stageRows.map((row: any) => {
+                                                    {visibleRows.map((row: any) => {
                                                         const expanded = expandedDashboardAccounts.includes(row.key);
                                                         return (
                                                             <React.Fragment key={`${stageCfg.id}-${row.key}`}>
@@ -1704,22 +2595,30 @@ export default function CRM({
                                                                             <table className="w-full text-left border-collapse">
                                                                                 <thead className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: colors.textMuted }}>
                                                                                     <tr>
-                                                                                        <th className="py-2 pr-3">Request</th>
+                                                                                        {crmViewMode === 'request' ? (
+                                                                                            <th className="py-2 pr-3">Request</th>
+                                                                                        ) : null}
                                                                                         <th className="py-2 pr-3">Start Date</th>
                                                                                         <th className="py-2 pr-3">End Date</th>
-                                                                                        <th className="py-2 pr-3">Request Segment</th>
-                                                                                        <th className="py-2 pr-3">Account Type</th>
+                                                                                        <th className="py-2 pr-3">Request Type</th>
+                                                                                        {crmViewMode !== 'request' ? (
+                                                                                            <th className="py-2 pr-3">Account Type</th>
+                                                                                        ) : null}
                                                                                         <th className="py-2 pr-3">Total Revenue</th>
                                                                                     </tr>
                                                                                 </thead>
                                                                                 <tbody>
                                                                                     {row.requests.map((req: any) => (
                                                                                         <tr key={req.id} className="border-t" style={{ borderColor: colors.border }}>
-                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestName}</td>
+                                                                                            {crmViewMode === 'request' ? (
+                                                                                                <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestName}</td>
+                                                                                            ) : null}
                                                                                             <td className="py-2 pr-3" style={{ color: colors.textMuted }}>{req.startDate || '—'}</td>
                                                                                             <td className="py-2 pr-3" style={{ color: colors.textMuted }}>{req.endDate || '—'}</td>
-                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestSegment || '—'}</td>
-                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.accountType || '—'}</td>
+                                                                                            <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.requestType || '—'}</td>
+                                                                                            {crmViewMode !== 'request' ? (
+                                                                                                <td className="py-2 pr-3" style={{ color: colors.textMain }}>{req.accountType || '—'}</td>
+                                                                                            ) : null}
                                                                                             <td className="py-2 pr-3 font-mono" style={{ color: colors.primary }}>{formatMoney(req.revenue)}</td>
                                                                                         </tr>
                                                                                     ))}
@@ -1740,6 +2639,20 @@ export default function CRM({
                                                     )}
                                                 </tbody>
                                             </table>
+                                            {hasMore && (
+                                                <div className="px-4 py-2 border-t text-center" style={{ borderColor: colors.border }}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setExpandedStageTables((prev) =>
+                                                            prev.includes(stageCfg.id) ? prev.filter((k) => k !== stageCfg.id) : [...prev, stageCfg.id]
+                                                        )}
+                                                        className="text-[10px] font-bold uppercase tracking-wide hover:underline"
+                                                        style={{ color: colors.primary }}
+                                                    >
+                                                        {isTableExpanded ? 'Show less' : `Show more (${stageRows.length - 7})`}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 );
@@ -1813,7 +2726,7 @@ export default function CRM({
                                                         {stage?.title}
                                                     </span>
                                                 </td>
-                                                <td className="px-6 py-4 font-mono font-bold" style={{ color: colors.primary }}>{formatSarCompact(lead.value)}</td>
+                                                <td className="px-6 py-4 font-mono font-bold" style={{ color: colors.primary }}>{formatSarCompact(pipelineCardDisplayRevenue(lead))}</td>
                                                 <td className="px-6 py-4" style={{ color: colors.textMuted }}>{lead.probability}%</td>
                                                 <td className="px-6 py-4" style={{ color: colors.textMuted }}>{lead.lastContact}</td>
                                                 <td className="px-6 py-4 text-right relative" onClick={(e) => e.stopPropagation()}>
@@ -1872,13 +2785,40 @@ export default function CRM({
                             </button>
                         </div>
                         <div ref={pipelineBoardScrollRef} className="flex-1 min-h-0 overflow-x-auto flex gap-4 pb-1 scrollbar-thin">
-                        {stages.map((stage) => (
+                        {activePipelineStages.map((stage) => {
+                            const stageCards = crmViewMode === 'request'
+                                ? (requestCardsByStage[stage.id] || [])
+                                : (crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay] || []);
+                            const stageCount = stageCards.length;
+                            const stageTotalValue = crmViewMode === 'request'
+                                ? stageCards.reduce((sum: number, req: any) => sum + requestRevenue(req), 0)
+                                : stageCards.reduce((sum: number, lead: any) => sum + pipelineCardDisplayRevenue(lead), 0);
+                            return (
                             <div key={stage.id} className="w-80 shrink-0 flex flex-col rounded-xl border overflow-hidden"
                                 style={{ backgroundColor: colors.card, borderColor: colors.border }}
                                 onDragOver={(e) => e.preventDefault()}
                                 onDrop={(e) => {
                                     e.preventDefault();
                                     if (crmReadOnly) return;
+                                    if (crmViewMode === 'request') {
+                                        const reqId = e.dataTransfer.getData('text/plain');
+                                        if (!reqId) return;
+                                        const newStatus = stageIdToRequestStatus(stage.id);
+                                        const existing = (sharedRequests || []).find(
+                                            (r: any) => String(r.id) === String(reqId)
+                                        );
+                                        if (!existing) return;
+                                        const prevStatus = String(existing.status || '').trim();
+                                        if (prevStatus.toLowerCase() === newStatus.toLowerCase()) return;
+
+                                        setSharedRequests?.((prev: any[]) =>
+                                            prev.map((r: any) =>
+                                                String(r.id) === String(reqId) ? { ...r, status: newStatus } : r
+                                            )
+                                        );
+                                        void onPatchRequestStatus?.(reqId, newStatus);
+                                        return;
+                                    }
                                     if (draggedLead && draggedLead.stage !== stage.id) {
                                         const oldStage = draggedLead.stage;
                                         const prob = probabilityForStage(String(stage.id));
@@ -1892,10 +2832,13 @@ export default function CRM({
                                                 ? { followUpRequired: false, followUpDate: '' }
                                                 : {}),
                                         };
-                                        setCrmLeads({
-                                            ...crmLeads,
-                                            [oldStage]: crmLeads[oldStage as keyof typeof crmLeads].filter((l: any) => l.id !== draggedLead.id),
-                                            [stage.id]: [...crmLeads[stage.id as keyof typeof crmLeads], moved]
+                                        setPipeline((prev) => {
+                                            const out = { ...prev } as CrmPipelineBuckets;
+                                            const oldKey = oldStage as PipelineStageKey;
+                                            const newKey = stage.id as PipelineStageKey;
+                                            out[oldKey] = (out[oldKey] || []).filter((l: any) => l.id !== draggedLead.id);
+                                            out[newKey] = [moved, ...(out[newKey] || [])];
+                                            return out;
                                         });
                                         appendCrmActivityToAccount(
                                             moved.accountId,
@@ -1909,104 +2852,158 @@ export default function CRM({
                             >
                                 <div className="p-3 border-b-4 flex justify-between items-center"
                                     style={{ borderColor: colors.border, borderBottomColor: stage.color, backgroundColor: colors.bg }}>
-                                    <span className="font-bold uppercase text-xs tracking-wider" style={{ color: colors.textMain }}>{stage.title}</span>
+                                    <div className="min-w-0">
+                                        <span className="font-bold uppercase text-xs tracking-wider" style={{ color: colors.textMain }}>{stage.title}</span>
+                                        <div className="text-[10px] font-mono mt-0.5" style={{ color: colors.textMuted }}>
+                                            {formatMoney(stageTotalValue)}
+                                        </div>
+                                    </div>
                                     <span className="text-xs px-2 py-0.5 rounded font-bold" style={{ backgroundColor: `${stage.color}20`, color: stage.color }}>
-                                        {crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay]?.length || 0}
+                                        {stageCount}
                                     </span>
                                 </div>
                                 <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                                    {crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay]?.map((lead: any) => (
-                                        <div key={lead.id}
-                                            draggable={!crmReadOnly}
-                                            onDragStart={() => {
-                                                if (crmReadOnly) return;
-                                                ignoreNextPipelineCardClickIdRef.current = String(lead.id);
-                                                setDraggedLead({ ...lead, stage: stage.id });
-                                            }}
-                                            onDragEnd={() => {
-                                                setDraggedLead(null);
-                                                const id = String(lead.id);
-                                                window.setTimeout(() => {
-                                                    if (ignoreNextPipelineCardClickIdRef.current === id) {
-                                                        ignoreNextPipelineCardClickIdRef.current = null;
-                                                    }
-                                                }, 280);
-                                            }}
-                                            onClick={() => {
-                                                if (ignoreNextPipelineCardClickIdRef.current === String(lead.id)) {
-                                                    ignoreNextPipelineCardClickIdRef.current = null;
-                                                    return;
-                                                }
-                                                openLeadProfile(lead);
-                                            }}
-                                            className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300 relative"
-                                            style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-
-                                            <div className="flex justify-between items-start gap-2 mb-2">
-                                                <div className="min-w-0 flex-1">
-                                                    <h4 className="font-bold text-sm mb-1" style={{ color: colors.textMain }}>{lead.company}</h4>
-                                                    <p className="text-xs" style={{ color: colors.textMuted }}>{lead.contact} • {lead.position}</p>
-                                                </div>
-                                                <div className="shrink-0 relative" data-crm-list-menu onClick={(e) => e.stopPropagation()}>
-                                                    <button
-                                                        type="button"
-                                                        className="p-1.5 rounded-md border opacity-70 hover:opacity-100 hover:bg-white/10 transition-all"
-                                                        style={{ color: colors.textMuted, borderColor: colors.border }}
-                                                        title="Actions"
-                                                        aria-expanded={listMenuLeadId === lead.id}
-                                                        aria-label="Sales call actions"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            crmMenuAnchorRef.current = e.currentTarget as HTMLElement;
-                                                            setListMenuLeadId((id) => (id === lead.id ? null : lead.id));
-                                                        }}
-                                                    >
-                                                        <MoreHorizontal size={16} />
-                                                    </button>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-wrap gap-1 mb-3" key={tagColorTick}>
-                                                {(lead.tags || []).map((tag: string, tidx: number) => {
-                                                    const tc = getTagColor(tag, colors.primary);
-                                                    return (
-                                                        <span key={`${tag}-${tidx}`} className="px-2 py-0.5 rounded text-[10px] font-medium"
-                                                            style={{ backgroundColor: `${tc}28`, color: tc }}>
-                                                            {tag}
+                                    {crmViewMode === 'request' ? (
+                                        (requestCardsByStage[stage.id] || []).map((req: any) => {
+                                            const acc = accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''));
+                                            const reqName = String(req?.requestName || req?.eventName || req?.requestType || 'Request');
+                                            const accountName = String(acc?.name || req?.account || req?.accountName || '—');
+                                            const checkInDate = String(req?.checkIn || req?.arrivalDate || req?.eventStart || '').slice(0, 10);
+                                            const segment = String(req?.segment || '—');
+                                            const rev = requestRevenue(req);
+                                            return (
+                                                <div key={req.id}
+                                                    draggable
+                                                    onDragStart={(e) => {
+                                                        e.dataTransfer.setData('text/plain', String(req.id));
+                                                    }}
+                                                    className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300"
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
+                                                    <h4 className="font-bold text-sm mb-1 truncate" style={{ color: colors.textMain }}>{reqName}</h4>
+                                                    <p className="text-xs mb-2 truncate" style={{ color: colors.textMuted }}>{accountName}</p>
+                                                    <div className="flex flex-wrap gap-1 mb-2">
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ backgroundColor: `${stage.color}28`, color: stage.color }}>
+                                                            {String(req.status || '')}
                                                         </span>
-                                                    );
-                                                })}
-                                            </div>
+                                                        {segment !== '—' && (
+                                                            <span className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ backgroundColor: `${colors.cyan}20`, color: colors.cyan }}>
+                                                                {segment}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex justify-between items-center text-xs">
+                                                        <span style={{ color: colors.textMuted }}>{checkInDate || '—'}</span>
+                                                        <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(rev)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })
+                                    ) : (
+                                        crmLeadsForDisplay[stage.id as keyof typeof crmLeadsForDisplay]?.map((lead: any) => (
+                                            <div key={lead.id}
+                                                draggable={!crmReadOnly}
+                                                onDragStart={() => {
+                                                    if (crmReadOnly) return;
+                                                    ignoreNextPipelineCardClickIdRef.current = String(lead.id);
+                                                    setDraggedLead({ ...lead, stage: stage.id });
+                                                }}
+                                                onDragEnd={() => {
+                                                    setDraggedLead(null);
+                                                    const id = String(lead.id);
+                                                    window.setTimeout(() => {
+                                                        if (ignoreNextPipelineCardClickIdRef.current === id) {
+                                                            ignoreNextPipelineCardClickIdRef.current = null;
+                                                        }
+                                                    }, 280);
+                                                }}
+                                                onClick={() => {
+                                                    if (ignoreNextPipelineCardClickIdRef.current === String(lead.id)) {
+                                                        ignoreNextPipelineCardClickIdRef.current = null;
+                                                        return;
+                                                    }
+                                                    openLeadProfile(lead);
+                                                }}
+                                                className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300 relative"
+                                                style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
 
-                                            {crmLeadHasScheduledFollowUp(lead) ? (
-                                                <div className="flex justify-end mb-2">
-                                                    <span
-                                                        className="px-2 py-0.5 rounded text-[10px] font-bold"
-                                                        style={{ backgroundColor: `${colors.orange}28`, color: colors.orange }}
-                                                    >
-                                                        Follow up · {String(lead.followUpDate).trim()}
+                                                <div className="flex justify-between items-start gap-2 mb-2">
+                                                    <div className="min-w-0 flex-1">
+                                                        <h4 className="font-bold text-sm mb-1" style={{ color: colors.textMain }}>{lead.company}</h4>
+                                                        <p className="text-xs" style={{ color: colors.textMuted }}>{lead.contact} • {lead.position}</p>
+                                                    </div>
+                                                    <div className="shrink-0 relative" data-crm-list-menu onClick={(e) => e.stopPropagation()}>
+                                                        <button
+                                                            type="button"
+                                                            className="p-1.5 rounded-md border opacity-70 hover:opacity-100 hover:bg-white/10 transition-all"
+                                                            style={{ color: colors.textMuted, borderColor: colors.border }}
+                                                            title="Actions"
+                                                            aria-expanded={listMenuLeadId === lead.id}
+                                                            aria-label="Sales call actions"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                crmMenuAnchorRef.current = e.currentTarget as HTMLElement;
+                                                                setListMenuLeadId((id) => (id === lead.id ? null : lead.id));
+                                                            }}
+                                                        >
+                                                            <MoreHorizontal size={16} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex flex-wrap gap-1 mb-3" key={tagColorTick}>
+                                                    {(lead.tags || []).map((tag: string, tidx: number) => {
+                                                        const tc = getTagColor(tag, colors.primary);
+                                                        return (
+                                                            <span key={`${tag}-${tidx}`} className="px-2 py-0.5 rounded text-[10px] font-medium"
+                                                                style={{ backgroundColor: `${tc}28`, color: tc }}>
+                                                                {tag}
+                                                            </span>
+                                                        );
+                                                    })}
+                                                    {lead.linkedRequestType ? (
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-medium"
+                                                            style={{ backgroundColor: `${colors.yellow}28`, color: colors.yellow }}>
+                                                            {lead.linkedRequestType}
+                                                        </span>
+                                                    ) : null}
+                                                    {lead.linkedTemplateName ? (
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-medium"
+                                                            style={{ backgroundColor: `${colors.cyan}28`, color: colors.cyan }}>
+                                                            {lead.linkedTemplateName}
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+
+                                                {crmLeadHasScheduledFollowUp(lead) ? (
+                                                    <div className="flex justify-end mb-2">
+                                                        <span
+                                                            className="px-2 py-0.5 rounded text-[10px] font-bold"
+                                                            style={{ backgroundColor: `${colors.orange}28`, color: colors.orange }}
+                                                        >
+                                                            Follow up · {String(lead.followUpDate).trim()}
+                                                        </span>
+                                                    </div>
+                                                ) : null}
+
+                                                <div className="flex justify-between items-center text-xs mb-2">
+                                                    <span style={{ color: colors.textMuted }}>{lead.probability}% probability</span>
+                                                    <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(pipelineCardDisplayRevenue(lead))}</span>
+                                                </div>
+
+                                                <div className="pt-2 border-t text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                    <span>
+                                                        Date: {String(lead.lastContact || lead.date || '').trim() || '—'}
+                                                    </span>
+                                                    <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
+                                                        {String(lead.accountManager || lead.ownerUserId || '').trim() || '—'}
                                                     </span>
                                                 </div>
-                                            ) : null}
-
-                                            <div className="flex justify-between items-center text-xs mb-2">
-                                                <span style={{ color: colors.textMuted }}>{lead.probability}% probability</span>
-                                                <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(lead.value)}</span>
                                             </div>
-
-                                            <div className="pt-2 border-t text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5" style={{ borderColor: colors.border, color: colors.textMuted }}>
-                                                <span>
-                                                    Date: {String(lead.lastContact || lead.date || '').trim() || '—'}
-                                                </span>
-                                                <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
-                                                    {String(lead.accountManager || lead.ownerUserId || '').trim() || '—'}
-                                                </span>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        ))
+                                    )}
                                 </div>
                             </div>
-                        ))}
+                        )})}
                         </div>
                     </div>
                 )}
@@ -2171,8 +3168,22 @@ export default function CRM({
                                     <option>Site Visit</option>
                                     <option>Follow-up Call</option>
                                     <option>General Inquiry</option>
+                                    <option value="__other__">Other</option>
                                 </select>
                             </div>
+                            {newCallData.subject === '__other__' ? (
+                                <div>
+                                    <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Custom Subject</label>
+                                    <input
+                                        type="text"
+                                        value={newCallData.customSubject || ''}
+                                        onChange={(e) => setNewCallData({ ...newCallData, customSubject: e.target.value })}
+                                        placeholder="Write custom subject..."
+                                        className="w-full px-3 py-2 rounded-lg border text-sm"
+                                        style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    />
+                                </div>
+                            ) : null}
 
                             <div>
                                 <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>{`Expected revenue (${selectedCurrency})`}</label>
@@ -2194,18 +3205,65 @@ export default function CRM({
                             </div>
 
                             <div>
-                                <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Initial pipeline stage</label>
-                                <select value={newCallData.status} onChange={e => setNewCallData({ ...newCallData, status: e.target.value })} className="w-full px-3 py-2 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}>
-                                    {stages.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
-                                </select>
-                                <p className="text-[10px] mt-1" style={{ color: colors.textMuted }}>
-                                    Card probability will start at {probabilityForStage(newCallData.status)}% for this stage (updates when you move the card).
-                                </p>
-                            </div>
-
-                            <div>
-                                <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Next Step Description</label>
-                                <textarea rows={2} value={newCallData.nextStep} onChange={e => setNewCallData({ ...newCallData, nextStep: e.target.value })} className="w-full px-3 py-2 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }} placeholder="What needs to happen next?" />
+                                <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
+                                    Tags
+                                </label>
+                                <div className="flex gap-2 mb-2">
+                                    <input
+                                        type="text"
+                                        value={newCallTagInput}
+                                        onChange={(e) => setNewCallTagInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key !== 'Enter') return;
+                                            e.preventDefault();
+                                            addNewCallTag(newCallTagInput);
+                                            setNewCallTagInput('');
+                                        }}
+                                        placeholder="Type tag and press Enter"
+                                        className="flex-1 px-3 py-2 rounded-lg border text-sm"
+                                        style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            addNewCallTag(newCallTagInput);
+                                            setNewCallTagInput('');
+                                        }}
+                                        className="px-3 py-2 rounded-lg border text-xs font-bold"
+                                        style={{ borderColor: colors.border, color: colors.textMain }}
+                                    >
+                                        Add
+                                    </button>
+                                </div>
+                                <div className="flex flex-wrap gap-2" key={tagColorTick}>
+                                    {(Array.isArray(newCallData.tags) ? newCallData.tags : []).map((tag: string) => {
+                                        const tc = getTagColor(tag, colors.primary);
+                                        return (
+                                            <div
+                                                key={tag}
+                                                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border"
+                                                style={{ borderColor: `${tc}66`, backgroundColor: `${tc}20`, color: tc }}
+                                            >
+                                                <span className="text-[10px] font-semibold">{tag}</span>
+                                                <input
+                                                    type="color"
+                                                    value={tc}
+                                                    onChange={(e) => setTagColorForName(tag, e.target.value)}
+                                                    className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+                                                    title={`Set color for ${tag}`}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="text-[10px] font-bold"
+                                                    onClick={() => removeNewCallTag(tag)}
+                                                    style={{ color: tc }}
+                                                >
+                                                    ×
+                                                </button>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
 
                             <div className="flex items-center gap-6 p-3 rounded-xl border bg-white/5" style={{ borderColor: colors.border }}>
@@ -2392,7 +3450,9 @@ export default function CRM({
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Last contact</label>
+                                    <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>
+                                        {editSnapshotRef.current?.stageId === 'new' ? 'Due date' : 'Last contact'}
+                                    </label>
                                     <input
                                         type="date"
                                         value={editCallForm.date}
@@ -2435,6 +3495,7 @@ export default function CRM({
                                     style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                                 />
                             </div>
+                            {editSnapshotRef.current?.stageId !== 'new' ? (
                             <div>
                                 <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Pipeline stage</label>
                                 <select
@@ -2451,6 +3512,7 @@ export default function CRM({
                                     Saving will set probability to {probabilityForStage(editCallForm.status)}% for this stage.
                                 </p>
                             </div>
+                            ) : null}
                             <div>
                                 <label className="text-[10px] uppercase font-bold tracking-wider mb-1.5 block" style={{ color: colors.textMuted }}>Description</label>
                                 <textarea
@@ -2551,7 +3613,7 @@ export default function CRM({
                           borderColor: colors.border,
                       }}
                   >
-                      {!crmReadOnly && (
+                      {canEditSalesCallsPerm && (
                           <button
                               type="button"
                               className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"

@@ -116,7 +116,8 @@ export function computeRequestRevenueBreakdownNoTax(r: any): {
     };
 }
 
-function fallbackOperationalAnchorYmd(r: any): string {
+/** Check-in, event start, room arrival, or agenda start — never received/created dates. */
+function operationalStayAnchorYmd(r: any): string {
     const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
     for (const row of rooms) {
         const a = parseYmdAgenda(row?.arrival || r?.checkIn);
@@ -124,12 +125,14 @@ function fallbackOperationalAnchorYmd(r: any): string {
     }
     const ci = parseYmdAgenda(r?.checkIn);
     if (ci) return ci;
-    if (Array.isArray(r?.agenda) && r.agenda[0]) {
-        const a = parseYmdAgenda(r.agenda[0]?.startDate);
-        if (a) return a;
-    }
-    const d = r?.receivedDate || r?.requestDate || (typeof r?.createdAt === 'string' ? r.createdAt.split('T')[0] : '');
-    return String(d || '').slice(0, 10);
+    const es = parseYmdAgenda(r?.eventStart);
+    if (es) return es;
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    const starts = agenda
+        .map((row: any) => parseYmdAgenda(row?.startDate))
+        .filter(Boolean) as string[];
+    if (starts.length) return starts.sort()[0];
+    return '';
 }
 
 export type ReportSegment = {
@@ -152,7 +155,7 @@ export function segmentLineTotalExTax(s: ReportSegment, transportOnThisRow: numb
 
 /**
  * One row per room stay and/or per agenda line that overlaps [filterStart, filterEnd].
- * Transport (no tax) is attached to the first segment only.
+ * Transport is excluded from report revenue totals.
  */
 export function buildReportSegmentsForRequest(r: any, filterStart: string, filterEnd: string): ReportSegment[] {
     if (!filterStart || !filterEnd) return [];
@@ -163,15 +166,18 @@ export function buildReportSegmentsForRequest(r: any, filterStart: string, filte
         const inA = parseYmdAgenda(row?.arrival || r?.checkIn);
         const outA = parseYmdAgenda(row?.departure || r?.checkOut);
         if (!inA || !outA) continue;
-        if (!rangesOverlapYmd(inA, outA, filterStart, filterEnd)) continue;
-        const nights = Math.max(0, calculateNights(inA, outA));
+        const nightsInRange = eachOccupiedNightYmd(inA, outA).filter((d) =>
+            ymdInInclusiveRange(d, filterStart, filterEnd)
+        );
+        if (!nightsInRange.length) continue;
+        const nights = nightsInRange.length;
         const count = Number(row?.count || 0);
         const rate = Number(row?.rate || 0);
         const roomRev = count * rate * nights;
         out.push({
-            key: `room-${i}-${inA}`,
-            line: `Room · ${inA}`,
-            displayDate: inA,
+            key: `room-${i}-${nightsInRange[0]}`,
+            line: `Room · ${nightsInRange[0]}`,
+            displayDate: nightsInRange[0],
             roomRev,
             eventRev: 0,
             roomNights: count * nights,
@@ -183,26 +189,32 @@ export function buildReportSegmentsForRequest(r: any, filterStart: string, filte
         });
     }
     if (!rooms.length) {
-        const inA = parseYmdAgenda(r?.checkIn);
-        const outA = parseYmdAgenda(r?.checkOut);
-        if (inA && outA && rangesOverlapYmd(inA, outA, filterStart, filterEnd)) {
-            const br = computeRequestRevenueBreakdownNoTax(r);
-            const nights = Math.max(0, calculateNights(inA, outA));
-            const roomRev = br.roomsRevenue;
-            if (roomRev > 0) {
-                out.push({
-                    key: `accom-${inA}`,
-                    line: 'Accommodation (request dates)',
-                    displayDate: inA,
-                    roomRev,
-                    eventRev: 0,
-                    roomNights: nights * (Number(r?.totalRooms) || 1) || 0,
-                    stayNights: nights,
-                    pax: 0,
-                    agendaStart: '',
-                    agendaEnd: '',
-                    agendaDays: 0,
-                });
+        const inA = parseYmdAgenda(r?.checkIn || r?.eventStart);
+        const outA = parseYmdAgenda(r?.checkOut || r?.eventEnd);
+        if (inA && outA) {
+            const nightsInRange = eachOccupiedNightYmd(inA, outA).filter((d) =>
+                ymdInInclusiveRange(d, filterStart, filterEnd)
+            );
+            if (nightsInRange.length) {
+                const br = computeRequestRevenueBreakdownNoTax(r);
+                const totalNights = Math.max(0, calculateNights(inA, outA));
+                const nights = nightsInRange.length;
+                const roomRev = totalNights > 0 ? (br.roomsRevenue * nights) / totalNights : br.roomsRevenue;
+                if (roomRev > 0) {
+                    out.push({
+                        key: `accom-${nightsInRange[0]}`,
+                        line: 'Accommodation (request dates)',
+                        displayDate: nightsInRange[0],
+                        roomRev,
+                        eventRev: 0,
+                        roomNights: nights * (Number(r?.totalRooms) || 1) || 0,
+                        stayNights: nights,
+                        pax: 0,
+                        agendaStart: '',
+                        agendaEnd: '',
+                        agendaDays: 0,
+                    });
+                }
             }
         }
     }
@@ -213,64 +225,60 @@ export function buildReportSegmentsForRequest(r: any, filterStart: string, filte
         const sd = parseYmdAgenda(item.startDate);
         const ed = parseYmdAgenda(item.endDate || item.startDate) || sd;
         if (!sd) continue;
-        if (!rangesOverlapYmd(sd, ed, filterStart, filterEnd)) continue;
-        let rowDays = 1;
-        if (sd && ed) {
-            const ms = new Date(`${ed}T00:00:00`).getTime() - new Date(`${sd}T00:00:00`).getTime();
-            if (!Number.isNaN(ms)) rowDays = Math.max(1, Math.floor(ms / 86400000) + 1);
+        const daysInRange: string[] = [];
+        let dayCursor = new Date(`${sd}T00:00:00`).getTime();
+        const dayEnd = new Date(`${ed || sd}T00:00:00`).getTime();
+        while (dayCursor <= dayEnd) {
+            const ymd = toYmdUtcMidnight(dayCursor);
+            if (ymd && ymdInInclusiveRange(ymd, filterStart, filterEnd)) daysInRange.push(ymd);
+            dayCursor += 86400000;
         }
+        if (!daysInRange.length) continue;
         const rowCost = (Number(item.rate || 0) * Number(item.pax || 0)) + Number(item.rental || 0);
-        const eventRev = rowCost * rowDays;
+        const eventRev = rowCost * daysInRange.length;
         const paxN = Number(item.pax || 0) || 0;
         out.push({
-            key: `agenda-${i}-${sd}`,
-            line: `Event · ${sd}`,
-            displayDate: sd,
+            key: `agenda-${i}-${daysInRange[0]}`,
+            line: `Event · ${daysInRange[0]}`,
+            displayDate: daysInRange[0],
             roomRev: 0,
             eventRev,
             roomNights: 0,
             stayNights: 0,
             pax: paxN,
-            agendaStart: sd,
-            agendaEnd: ed,
-            agendaDays: inclusiveAgendaDayCount(sd, ed),
+            agendaStart: daysInRange[0],
+            agendaEnd: daysInRange[daysInRange.length - 1],
+            agendaDays: daysInRange.length,
         });
     }
     if (out.length) return out;
     const br = computeRequestRevenueBreakdownNoTax(r);
     if (br.totalLineNoTax <= 0) return [];
-    const anchor = fallbackOperationalAnchorYmd(r);
-    if (anchor && inDateRangeYMD(anchor, filterStart, filterEnd)) {
-        const t = String(r?.requestType || '').toLowerCase();
-        const evHeavy =
-            t === 'event' || t === 'event_rooms' || t.includes('event') || t === 'event with rooms' || t.includes('series');
-        const trans = br.transportRevenue;
-        if (evHeavy) {
-            return [
-                {
-                    key: 'fallback-1',
-                    line: 'Request total (line detail not split)',
-                    displayDate: anchor,
-                    roomRev: br.roomsRevenue + trans,
-                    eventRev: br.eventRevenue,
-                    roomNights: 0,
-                    stayNights: 0,
-                    pax: 0,
-                    agendaStart: '',
-                    agendaEnd: '',
-                    agendaDays: 0,
-                },
-            ];
-        }
+    const inA = parseYmdAgenda(r?.checkIn || r?.eventStart);
+    const outA = parseYmdAgenda(r?.checkOut || r?.eventEnd || inA);
+    if (!inA || !rangesOverlapYmd(inA, outA || inA, filterStart, filterEnd)) return [];
+    const nightsInRange = outA
+        ? eachOccupiedNightYmd(inA, outA).filter((d) => ymdInInclusiveRange(d, filterStart, filterEnd))
+        : inDateRangeYMD(inA, filterStart, filterEnd)
+          ? [inA]
+          : [];
+    if (!nightsInRange.length) return [];
+    const displayDate = nightsInRange[0];
+    const totalNights = outA ? Math.max(0, calculateNights(inA, outA)) : 1;
+    const scale = totalNights > 0 ? nightsInRange.length / totalNights : 1;
+    const t = String(r?.requestType || '').toLowerCase();
+    const evHeavy =
+        t === 'event' || t === 'event_rooms' || t.includes('event') || t === 'event with rooms' || t.includes('series');
+    if (evHeavy) {
         return [
             {
                 key: 'fallback-1',
                 line: 'Request total (line detail not split)',
-                displayDate: anchor,
-                roomRev: br.totalLineNoTax,
-                eventRev: 0,
+                displayDate,
+                roomRev: br.roomsRevenue * scale,
+                eventRev: br.eventRevenue * scale,
                 roomNights: 0,
-                stayNights: 0,
+                stayNights: nightsInRange.length,
                 pax: 0,
                 agendaStart: '',
                 agendaEnd: '',
@@ -278,23 +286,247 @@ export function buildReportSegmentsForRequest(r: any, filterStart: string, filte
             },
         ];
     }
-    return [];
+    return [
+        {
+            key: 'fallback-1',
+            line: 'Request total (line detail not split)',
+            displayDate,
+            roomRev: Math.max(0, br.roomsRevenue + br.eventRevenue) * scale,
+            eventRev: 0,
+            roomNights: 0,
+            stayNights: nightsInRange.length,
+            pax: 0,
+            agendaStart: '',
+            agendaEnd: '',
+            agendaDays: 0,
+        },
+    ];
+}
+
+function isSeriesRequestOperational(r: any): boolean {
+    return String(r?.requestType || '').toLowerCase().includes('series');
+}
+
+function requestTypeKey(r: any): string {
+    return String(r?.requestType || '').toLowerCase().trim();
+}
+
+function isEventOnlyOperational(r: any): boolean {
+    if (isSeriesRequestOperational(r)) return false;
+    const t = requestTypeKey(r);
+    if (t === 'event_rooms' || t.includes('event with room')) return false;
+    if (t === 'event') return true;
+    return false;
+}
+
+function isEventRoomsOperational(r: any): boolean {
+    if (isSeriesRequestOperational(r)) return false;
+    const t = requestTypeKey(r);
+    return t === 'event_rooms' || t.includes('event with room');
+}
+
+function isEventsCateringEligibleOperational(r: any): boolean {
+    return isEventOnlyOperational(r) || isEventRoomsOperational(r);
+}
+
+/** Check-in / room arrival / agenda start anchors for chart unit bucketing (no received date). */
+export function getRequestOperationalCountDates(r: any): string[] {
+    if (isSeriesRequestOperational(r)) {
+        const rows = Array.isArray(r?.rooms) ? r.rooms : [];
+        const dates = rows
+            .map((row: any) => parseYmdAgenda(row?.arrival || row?.checkIn))
+            .filter(Boolean) as string[];
+        if (dates.length) return dates;
+        const anchor = operationalStayAnchorYmd(r);
+        return anchor ? [anchor] : [];
+    }
+    if (isEventsCateringEligibleOperational(r)) {
+        const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+        const starts = agenda
+            .map((row: any) => parseYmdAgenda(row?.startDate || row?.endDate))
+            .filter(Boolean) as string[];
+        if (starts.length) return [...new Set(starts)].sort();
+    }
+    const anchor = operationalStayAnchorYmd(r);
+    return anchor ? [anchor] : [];
+}
+
+/**
+ * True when stay (check-in/out) or agenda dates overlap the filter range.
+ * Does not use received / request / created dates.
+ */
+export function requestOperationalDatesOverlapRange(
+    r: any,
+    filterStart: string,
+    filterEnd: string
+): boolean {
+    if (!filterStart || !filterEnd) return true;
+
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    for (const rr of rooms) {
+        const a = parseYmdAgenda(rr?.arrival || r?.checkIn);
+        const b = parseYmdAgenda(rr?.departure || r?.checkOut);
+        if (a && b && rangesOverlapYmd(a, b, filterStart, filterEnd)) return true;
+        if (a && !b && inDateRangeYMD(a, filterStart, filterEnd)) return true;
+    }
+
+    if (!rooms.length) {
+        const inA = parseYmdAgenda(r?.checkIn || r?.eventStart);
+        const outA = parseYmdAgenda(r?.checkOut || r?.eventEnd || inA);
+        if (inA) {
+            if (outA && rangesOverlapYmd(inA, outA, filterStart, filterEnd)) return true;
+            if (inDateRangeYMD(inA, filterStart, filterEnd)) return true;
+        }
+    }
+
+    for (const item of Array.isArray(r?.agenda) ? r.agenda : []) {
+        const s = parseYmdAgenda(item?.startDate);
+        const e = parseYmdAgenda(item?.endDate || item?.startDate) || s;
+        if (s && rangesOverlapYmd(s, e, filterStart, filterEnd)) return true;
+    }
+
+    return false;
+}
+
+function sortedAgendaStartDates(r: any): string[] {
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    const starts = agenda
+        .map((row: any) => parseYmdAgenda(row?.startDate))
+        .filter(Boolean) as string[];
+    return [...new Set(starts)].sort();
+}
+
+function sortedRoomArrivalDates(r: any): string[] {
+    const rooms = Array.isArray(r?.rooms) ? r.rooms : [];
+    const dates = rooms
+        .map((row: any) => parseYmdAgenda(row?.arrival || row?.checkIn || r?.checkIn))
+        .filter(Boolean) as string[];
+    return [...new Set(dates)].sort();
+}
+
+/**
+ * Single anchor for Requests / Status charts and Total Requests KPI (one row per request).
+ * Never uses received / request / created dates.
+ *
+ * - Event only: first agenda start, then group eventStart, then check-in.
+ * - Event + Rooms: first room arrival / check-in (first stay night), then first agenda start, then eventStart.
+ * - Series: earliest room arrival, then group check-in, then eventStart.
+ * - Other accommodation: room arrival, check-in, eventStart, agenda start.
+ */
+export function getRequestChartBucketAnchorDate(r: any): string {
+    const agendaStarts = sortedAgendaStartDates(r);
+    const roomArrivals = sortedRoomArrivalDates(r);
+    const checkIn = parseYmdAgenda(r?.checkIn);
+    const eventStart = parseYmdAgenda(r?.eventStart);
+
+    if (isEventOnlyOperational(r)) {
+        if (agendaStarts.length) return agendaStarts[0];
+        if (eventStart) return eventStart;
+        if (checkIn) return checkIn;
+        return '';
+    }
+
+    if (isEventRoomsOperational(r)) {
+        if (roomArrivals.length) return roomArrivals[0];
+        if (checkIn) return checkIn;
+        if (agendaStarts.length) return agendaStarts[0];
+        if (eventStart) return eventStart;
+        return '';
+    }
+
+    if (isSeriesRequestOperational(r)) {
+        if (roomArrivals.length) return roomArrivals[0];
+        if (checkIn) return checkIn;
+        if (eventStart) return eventStart;
+        return '';
+    }
+
+    if (roomArrivals.length) return roomArrivals[0];
+    if (checkIn) return checkIn;
+    if (eventStart) return eventStart;
+    if (agendaStarts.length) return agendaStarts[0];
+    return '';
+}
+
+/** Chart/KPI anchor placement: anchor date must fall inside [filterStart, filterEnd]. Dashboard Total Requests uses overlap (see requestOperationalDatesOverlapRange). */
+export function requestCountsInChartsPeriod(r: any, filterStart: string, filterEnd: string): boolean {
+    if (!filterStart || !filterEnd) return false;
+    const anchor = getRequestChartBucketAnchorDate(r);
+    return !!anchor && ymdInInclusiveRange(anchor, filterStart, filterEnd);
+}
+
+/** Lowercase status key matching dashboard chart rows (inquiry, accepted, …). */
+export function chartStatusKeyFromRequest(req: any): string {
+    const raw = String(req?.status || '').trim().toLowerCase();
+    if (raw === 'draft') return 'inquiry';
+    if (raw === 'inquiry') return 'inquiry';
+    if (raw === 'accepted') return 'accepted';
+    if (raw === 'tentative') return 'tentative';
+    if (raw === 'definite') return 'definite';
+    if (raw === 'actual') return 'actual';
+    if (raw === 'cancelled') return 'cancelled';
+    return '';
+}
+
+/**
+ * Add exactly +1 Requests bar and +1 Status stack entry for this request (never per room/agenda line).
+ */
+export function incrementUniqueRequestChartCounts(
+    req: any,
+    filterStart: string,
+    filterEnd: string,
+    getRow: (anchorYmd: string) => Record<string, unknown> | undefined,
+    options: { includeInRequestCount?: boolean } = {}
+): void {
+    const anchor = getRequestChartBucketAnchorDate(req);
+    if (!anchor || !ymdInInclusiveRange(anchor, filterStart, filterEnd)) return;
+    const row = getRow(anchor);
+    if (!row) return;
+
+    const includeRequest = options.includeInRequestCount !== false;
+    if (includeRequest) {
+        row.totalRequests = (Number(row.totalRequests) || 0) + 1;
+    }
+
+    const status = chartStatusKeyFromRequest(req);
+    if (status && Object.prototype.hasOwnProperty.call(row, status)) {
+        row[status] = (Number(row[status]) || 0) + 1;
+    }
+}
+
+/** @deprecated Use getRequestChartBucketAnchorDate + requestCountsInChartsPeriod */
+export function getRequestChartBucketDatesInRange(
+    r: any,
+    filterStart: string,
+    filterEnd: string
+): string[] {
+    if (!requestCountsInChartsPeriod(r, filterStart, filterEnd)) return [];
+    const anchor = getRequestChartBucketAnchorDate(r);
+    return anchor ? [anchor] : [];
+}
+
+/** Dashboard / CRM period filter — same rules as request search date filter. */
+export function requestTouchesOperationalRange(
+    r: any,
+    range: { start: string; end: string }
+): boolean {
+    const start = String(range?.start || '').trim();
+    const end = String(range?.end || '').trim();
+    if (!start || !end) return true;
+    return requestOperationalDatesOverlapRange(r, start, end);
 }
 
 export function requestTouchesOperationalDateRange(r: any, filterStart: string, filterEnd: string): boolean {
-    if (!filterStart || !filterEnd) return true;
-    return buildReportSegmentsForRequest(r, filterStart, filterEnd).length > 0;
+    return requestOperationalDatesOverlapRange(r, filterStart, filterEnd);
 }
 
-/** Ex-tax: sum of segment line totals in range (transport on first segment only), same as Reports. */
+/** Ex-tax: sum of segment line totals in range (rooms + event only; transport excluded). */
 export function sumRequestSegmentRevenueExTaxInRange(r: any, filterStart: string, filterEnd: string): number {
     const segs = buildReportSegmentsForRequest(r, filterStart, filterEnd);
     if (!segs.length) return 0;
-    const br0 = computeRequestRevenueBreakdownNoTax(r);
     let t = 0;
     for (let si = 0; si < segs.length; si += 1) {
-        const tPart = si === 0 ? br0.transportRevenue : 0;
-        t += segmentLineTotalExTax(segs[si], tPart);
+        t += segmentLineTotalExTax(segs[si], 0);
     }
     return t;
 }
@@ -478,7 +710,7 @@ export function sumRequestProratedRoomRevenueExTaxInRange(r: any, rangeStart: st
     const sub = room + event;
     let fallbackRoom = 0;
     if (sub <= 0 && br.totalLineNoTax > 0) {
-        const anchor = fallbackOperationalAnchorYmd(r);
+        const anchor = operationalStayAnchorYmd(r);
         if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
             const t = String(r?.requestType || '').toLowerCase();
             const evHeavy =
@@ -506,7 +738,7 @@ export function sumRequestProratedEventRevenueExTaxInRange(r: any, rangeStart: s
     let event = proratedEventRevenueSubtotal(r, rangeStart, rangeEnd);
     const sub = room + event;
     if (sub <= 0 && br.totalLineNoTax > 0) {
-        const anchor = fallbackOperationalAnchorYmd(r);
+        const anchor = operationalStayAnchorYmd(r);
         if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
             const t = String(r?.requestType || '').toLowerCase();
             const evHeavy =
@@ -528,6 +760,19 @@ export function sumRequestProratedEventRevenueExTaxInRange(r: any, rangeStart: s
     return event;
 }
 
+/** Ex-tax rooms + event/agenda in range (no transport). Aligns CRM funnel, Reports, and dashboard KPI revenue. */
+export function sumRequestOperationalRevenueExTaxInRange(
+    r: any,
+    rangeStart: string,
+    rangeEnd: string
+): number {
+    if (!rangeStart || !rangeEnd) return 0;
+    return (
+        sumRequestProratedRoomRevenueExTaxInRange(r, rangeStart, rangeEnd) +
+        sumRequestProratedEventRevenueExTaxInRange(r, rangeStart, rangeEnd)
+    );
+}
+
 /**
  * Ex-tax total for [rangeStart, rangeEnd]: room revenue by occupied nights in range,
  * agenda/event revenue by calendar days in range, transport once if any room/event attributed.
@@ -542,7 +787,7 @@ export function sumRequestProratedRevenueExTaxInRange(r: any, rangeStart: string
     const transport = sub > 0 ? br.transportRevenue : 0;
     let fallback = 0;
     if (sub <= 0 && br.totalLineNoTax > 0) {
-        const anchor = fallbackOperationalAnchorYmd(r);
+        const anchor = operationalStayAnchorYmd(r);
         if (anchor && ymdInInclusiveRange(anchor, rangeStart, rangeEnd)) {
             const t = String(r?.requestType || '').toLowerCase();
             const evHeavy =

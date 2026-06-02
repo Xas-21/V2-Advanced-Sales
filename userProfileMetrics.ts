@@ -235,6 +235,21 @@ export function crmLeadAttributedToUser(lead: any, user: any): boolean {
     return false;
 }
 
+/** Display name for who created / owns a sales call (Activities "Assign to" column). */
+export function resolveCrmCallCreatorName(
+    call: any,
+    userDirectory?: { id: string; name: string }[]
+): string {
+    const cid = String(call?.createdByUserId || call?.ownerUserId || '').trim();
+    if (cid && Array.isArray(userDirectory)) {
+        const hit = userDirectory.find((u) => String(u.id) === cid);
+        if (hit?.name) return hit.name;
+    }
+    const manager = String(call?.accountManager || '').trim();
+    if (manager) return manager;
+    return '—';
+}
+
 /** Include on a property-scoped profile when row has no property, global marker, or same id. */
 export function recordVisibleOnProperty(propertyId: string | undefined, recordPropertyId: any): boolean {
     if (!propertyId) return true;

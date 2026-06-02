@@ -3,8 +3,21 @@
  * (e.g. all requests linked to one CRM account). Logic mirrors AS.tsx `chartData` useMemo.
  */
 import { shouldIncludeRequestInRoomsChart } from './beoShared';
-import { addProratedRequestFinancialsToDashboardBuckets } from './operationalSegmentRevenue';
-import { getPrimaryOperationalDate } from './userProfileMetrics';
+import {
+    addProratedRequestFinancialsToDashboardBuckets,
+    incrementUniqueRequestChartCounts,
+    requestCountsInChartsPeriod,
+    requestTouchesOperationalRange,
+} from './operationalSegmentRevenue';
+
+function isEventsCateringEligibleRequest(req: any): boolean {
+    const t = String(req?.requestType || '').toLowerCase();
+    if (t.includes('series')) return false;
+    if (t === 'event') return true;
+    if (t === 'event_rooms') return true;
+    if (t.includes('event with')) return true;
+    return false;
+}
 
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -37,69 +50,6 @@ const normalizeStatus = (status: any): string => {
 };
 
 const isDashboardExcludedRequest = (req: any) => normalizeStatus(req?.status) === 'Cancelled';
-
-const isSeriesRequest = (req: any) => String(req?.requestType || '').toLowerCase().includes('series');
-
-function isEventsCateringEligibleRequest(req: any): boolean {
-    if (isSeriesRequest(req)) return false;
-    const t = String(req?.requestType || '').toLowerCase();
-    if (t === 'event') return true;
-    if (t === 'event_rooms') return true;
-    if (t.includes('event with')) return true;
-    return false;
-}
-
-const getRequestCountDates = (req: any): string[] => {
-    if (isSeriesRequest(req)) {
-        const rows = Array.isArray(req?.rooms) ? req.rooms : [];
-        const dates = rows.map((r: any) => parseYmd(r?.arrival || r?.checkIn)).filter(Boolean) as string[];
-        if (dates.length) return dates;
-        const primary = getPrimaryOperationalDate(req);
-        return primary ? [primary] : [];
-    }
-    if (isEventsCateringEligibleRequest(req)) {
-        const agenda = Array.isArray(req?.agenda) ? req.agenda : [];
-        const starts = agenda.map((row: any) => parseYmd(row?.startDate || row?.endDate)).filter(Boolean) as string[];
-        if (starts.length) return [...new Set(starts)].sort();
-    }
-    const primary = getPrimaryOperationalDate(req);
-    return primary ? [primary] : [];
-};
-
-const requestTouchesOperationalRange = (req: any, range: { start: string; end: string }): boolean => {
-    for (const d of getRequestCountDates(req)) {
-        if (d && isIsoInRange(d, range)) return true;
-    }
-    const pd = getPrimaryOperationalDate(req);
-    if (pd && isIsoInRange(pd, range)) return true;
-    const rooms = Array.isArray(req?.rooms) ? req.rooms : [];
-    for (const rr of rooms) {
-        const a = parseYmd(rr?.arrival || req?.checkIn);
-        const b = parseYmd(rr?.departure || req?.checkOut);
-        if (a && b) {
-            const cur = new Date(`${a}T00:00:00`);
-            const endMs = new Date(`${b}T00:00:00`).getTime();
-            let c = cur.getTime();
-            while (c < endMs) {
-                const iso = toYmd(new Date(c));
-                if (isIsoInRange(iso, range)) return true;
-                c += 86400000;
-            }
-        } else if (a && isIsoInRange(a, range)) return true;
-    }
-    for (const item of Array.isArray(req?.agenda) ? req.agenda : []) {
-        const s = parseYmd(item?.startDate);
-        const e = parseYmd(item?.endDate || item?.startDate);
-        if (!s) continue;
-        let c = new Date(`${s}T00:00:00`).getTime();
-        const endAt = new Date(`${e || s}T00:00:00`).getTime();
-        while (c <= endAt) {
-            if (isIsoInRange(toYmd(new Date(c)), range)) return true;
-            c += 86400000;
-        }
-    }
-    return false;
-};
 
 function isIsoInRange(iso: string, range: { start: string; end: string }) {
     if (!iso) return false;
@@ -213,12 +163,13 @@ export function buildAccountProfileChartData(
     );
 
     for (const req of requests || []) {
-        if (!requestTouchesOperationalRange(req, range)) continue;
+        const inPeriodCharts = requestCountsInChartsPeriod(req, range.start, range.end);
+        const inOverlap = requestTouchesOperationalRange(req, range);
+        if (!inOverlap && !inPeriodCharts) continue;
 
         const skipPerf = isDashboardExcludedRequest(req);
-        const unitDates = getRequestCountDates(req);
 
-        if (!skipPerf && range.start && range.end) {
+        if (inOverlap && !skipPerf && range.start && range.end) {
             addProratedRequestFinancialsToDashboardBuckets(
                 req,
                 range.start,
@@ -234,46 +185,13 @@ export function buildAccountProfileChartData(
             );
         }
 
-        if (!skipPerf) {
-            let addedRequestUnit = false;
-            for (const unitDate of unitDates) {
-                if (!isIsoInRange(unitDate, range)) continue;
-                const unitRow = byMonth.get(keyFor(unitDate));
-                if (unitRow) {
-                    unitRow.totalRequests += 1;
-                    addedRequestUnit = true;
-                }
-            }
-            if (!addedRequestUnit) {
-                const pd = getPrimaryOperationalDate(req);
-                if (pd && isIsoInRange(pd, range)) {
-                    const unitRow = byMonth.get(keyFor(pd));
-                    if (unitRow) unitRow.totalRequests += 1;
-                }
-            }
-        }
-
-        const status = normalizeStatus(req?.status).toLowerCase();
-        if (status) {
-            let addedStatus = false;
-            for (const unitDate of unitDates) {
-                if (!isIsoInRange(unitDate, range)) continue;
-                const unitRow = byMonth.get(keyFor(unitDate));
-                if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
-                    (unitRow as any)[status] += 1;
-                    addedStatus = true;
-                }
-            }
-            if (!addedStatus) {
-                const pd = getPrimaryOperationalDate(req);
-                if (pd && isIsoInRange(pd, range)) {
-                    const unitRow = byMonth.get(keyFor(pd));
-                    if (unitRow && Object.prototype.hasOwnProperty.call(unitRow, status)) {
-                        (unitRow as any)[status] += 1;
-                    }
-                }
-            }
-        }
+        incrementUniqueRequestChartCounts(
+            req,
+            range.start,
+            range.end,
+            (anchorYmd) => byMonth.get(keyFor(anchorYmd)),
+            { includeInRequestCount: !skipPerf }
+        );
 
     }
 

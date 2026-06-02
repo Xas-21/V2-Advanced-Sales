@@ -77,7 +77,7 @@ export interface CRMProfileViewProps {
 
 const STAGE_LABELS: Record<string, string> = {
     new: 'Upcoming',
-    waiting: 'Waiting list',
+    waiting: 'Leads',
     qualified: 'Qualified',
     proposal: 'Proposal',
     negotiation: 'Negotiation',

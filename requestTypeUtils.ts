@@ -27,3 +27,14 @@ export function bucketRequestDistribution(rawType: string): RequestDistributionB
     // Any other stored label (e.g. legacy "Group Accom.") → accommodation-style bucket
     return 'accommodation';
 }
+
+/** CRM funnel nested tables: Accommodation, Series Group, Event; Event with Rooms → MICE. */
+export function formatCrmFunnelRequestTypeDisplay(rawType: string): string {
+    const k = normalizeRequestTypeKey(rawType);
+    if (k === 'event_rooms') return 'MICE';
+    if (k === 'series') return 'Series Group';
+    if (k === 'event') return 'Event';
+    if (k === 'accommodation') return 'Accommodation';
+    const raw = String(rawType || '').trim();
+    return raw || '—';
+}

@@ -42,6 +42,7 @@ interface ContractsProps {
     canDeleteContractTemplates?: boolean;
     initialAccountId?: string | null;
     onConsumedInitialAccountId?: () => void;
+    onAgreementGenerated?: (templateName: string, accountId: string) => void;
 }
 
 const statusOptions: ContractStatus[] = ['Generated', 'Signed', 'Expired'];
@@ -75,6 +76,7 @@ export default function Contracts({
     canDeleteContractTemplates = false,
     initialAccountId,
     onConsumedInitialAccountId,
+    onAgreementGenerated,
 }: ContractsProps) {
     const colors = theme.colors;
     const accountsSameProperty = useMemo(() => {
@@ -235,6 +237,9 @@ export default function Contracts({
                 parentContractId: parentContractId || undefined,
             });
             triggerBlobDownload(downloadBlob, downloadName);
+            if (selectedTemplate?.name && selectedAccountId) {
+                onAgreementGenerated?.(String(selectedTemplate.name), String(selectedAccountId));
+            }
             setCurrentView('history');
             setWizardStep(1);
             setParentContractId('');

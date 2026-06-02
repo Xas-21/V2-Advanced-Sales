@@ -38,7 +38,7 @@ import {
     computeRequestRevenueBreakdownNoTax,
     inDateRangeYMD,
     segmentLineTotalExTax,
-    requestTouchesOperationalDateRange,
+    requestOperationalDatesOverlapRange,
     type ReportSegment,
 } from './operationalSegmentRevenue';
 
@@ -86,7 +86,12 @@ function requestTypeLabel(raw: string = '') {
 }
 
 function requestPrimaryDate(r: any): string {
-    const d = r.receivedDate || r.requestDate || r.checkIn || (typeof r.createdAt === 'string' ? r.createdAt.split('T')[0] : '');
+    const agenda = Array.isArray(r?.agenda) ? r.agenda : [];
+    for (const row of agenda) {
+        const d = String(row?.startDate || '').trim().slice(0, 10);
+        if (d) return d;
+    }
+    const d = r.checkIn || r.eventStart || r.eventEnd || r.checkOut;
     return String(d || '').slice(0, 10);
 }
 
@@ -95,7 +100,8 @@ function asNumberReport(v: any): number {
 }
 
 function requestTotalValue(r: any): number {
-    return computeRequestRevenueBreakdownNoTax(r).totalLineNoTax;
+    const br = computeRequestRevenueBreakdownNoTax(r);
+    return br.roomsRevenue + br.eventRevenue;
 }
 
 function isEventOrEventRoomsType(r: any): boolean {
@@ -187,12 +193,7 @@ function requestPeriodCodeForReports(req: any): number {
         if (!earliestAgendaCode || code < earliestAgendaCode) earliestAgendaCode = code;
     }
     if (earliestAgendaCode > 0) return earliestAgendaCode;
-    return (
-        parsePeriodCode(req?.receivedDate) ||
-        parsePeriodCode(req?.requestDate) ||
-        parsePeriodCode(typeof req?.createdAt === 'string' ? req.createdAt.split('T')[0] : '') ||
-        0
-    );
+    return parsePeriodCode(req?.eventStart) || parsePeriodCode(req?.eventEnd) || 0;
 }
 
 function csvEscape(v: any): string {
@@ -282,8 +283,9 @@ export default function Reports({
     }, [propertyTaxesFromApi, activeProperty]);
 
     const scopedRequests = useMemo(() => {
+        if (!pid) return sharedRequests || [];
         return (sharedRequests || []).filter(
-            (r: any) => !pid || !r.propertyId || String(r.propertyId) === String(pid)
+            (r: any) => String(r.propertyId || '') === String(pid)
         );
     }, [sharedRequests, pid]);
 
@@ -878,7 +880,7 @@ export default function Reports({
             const amt = requestTotalValue(r);
             if (amt < vmin || amt > vmax) return false;
             if (!start || !end) return true;
-            return requestTouchesOperationalDateRange(r, start, end);
+            return requestOperationalDatesOverlapRange(r, start, end);
         };
 
         const paymentBlock = (r: any) => {
@@ -1001,14 +1003,12 @@ export default function Reports({
                 const status = r.status || '—';
                 const client = r.account || r.accountName || '—';
                 const pay = paymentBlock(r);
-                const br0 = computeRequestRevenueBreakdownNoTax(r);
 
                 for (let si = 0; si < segs.length; si += 1) {
                     const seg = segs[si];
                     lineItemCount += 1;
-                    const tPart = si === 0 ? br0.transportRevenue : 0;
-                    const exNoTax = segmentLineTotalExTax(seg, tPart);
-                    const inclTax = lineAmountsExTaxToWithTax(seg.roomRev, seg.eventRev, tPart, propertyTaxes);
+                    const exNoTax = segmentLineTotalExTax(seg, 0);
+                    const inclTax = lineAmountsExTaxToWithTax(seg.roomRev, seg.eventRev, 0, propertyTaxes);
                     const ddrSeg =
                         seg.pax > 0 && seg.eventRev > 0
                             ? seg.eventRev / seg.pax

@@ -66,6 +66,7 @@ import {
     REQUEST_SECTION_ICON_ADD_BTN_CLASS,
 } from './beoShared';
 import { resolveUserAttributionId, createdByMatchesUser } from './userProfileMetrics';
+import { requestOperationalDatesOverlapRange } from './operationalSegmentRevenue';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
@@ -79,12 +80,55 @@ import {
     type FeedbackQuestion,
 } from './requestFeedbackConfig';
 
+const REQUEST_SEARCH_STATUS_OPTIONS = [
+    'Inquiry',
+    'Accepted',
+    'Tentative',
+    'Definite',
+    'Actual',
+    'Cancelled',
+] as const;
+
+function normalizeSearchStatusKey(status: unknown): string {
+    const raw = String(status ?? '').trim().toLowerCase();
+    if (raw === 'draft') return 'inquiry';
+    return raw;
+}
+
+/** Empty selection = all statuses. Supports legacy `status: 'all' | 'Inquiry'`. */
+function parseSearchStatusSelection(params: any): string[] {
+    if (Array.isArray(params?.statuses)) {
+        return params.statuses.map((s: unknown) => String(s).trim()).filter(Boolean);
+    }
+    const legacy = String(params?.status ?? '').trim();
+    if (!legacy || legacy.toLowerCase() === 'all') return [];
+    return [legacy];
+}
+
+function matchesSearchStatusFilter(req: any, selectedStatuses: string[]): boolean {
+    if (!selectedStatuses.length) return true;
+    const reqKey = normalizeSearchStatusKey(req?.status);
+    return selectedStatuses.some((s) => normalizeSearchStatusKey(s) === reqKey);
+}
+
 interface RequestsManagerProps {
     theme: any;
     subView: string;
     searchParams: any;
     setSearchParams: (val: any) => void;
     initialRequestType?: string | null;
+    /** Pre-select account when opening new request (e.g. from CRM Log Call). */
+    initialAccountId?: string | null;
+    /** Pre-select booker/contact from the logged sales call. */
+    initialContactFromCall?: { name: string; contactId: string } | null;
+    onConsumedInitialContactFromCall?: () => void;
+    onConsumedInitialAccountId?: () => void;
+    /** Fired after a request is saved (new or update). */
+    onRequestSaved?: (request: any) => void;
+    /** Fired after a request is deleted. */
+    onRequestDeleted?: (requestId: string) => void;
+    /** Fired when leaving the new-request wizard (save or navigate away). */
+    onRequestWizardFinished?: () => void;
     activeProperty?: any;
     accounts: any[];
     setAccounts: React.Dispatch<React.SetStateAction<any[]>>;
@@ -225,6 +269,13 @@ export default function RequestsManager({
     searchParams,
     setSearchParams,
     initialRequestType,
+    initialAccountId,
+    initialContactFromCall,
+    onConsumedInitialContactFromCall,
+    onConsumedInitialAccountId,
+    onRequestSaved,
+    onRequestDeleted,
+    onRequestWizardFinished,
     activeProperty,
     accounts,
     setAccounts,
@@ -645,6 +696,18 @@ export default function RequestsManager({
         setSearchParams({ ...getSearchOnlyParams(searchParams), ...patch });
     };
 
+    const selectedSearchStatuses = parseSearchStatusSelection(searchParams);
+
+    const toggleSearchStatusTab = (status: string) => {
+        const key = normalizeSearchStatusKey(status);
+        const current = parseSearchStatusSelection(searchParams);
+        const has = current.some((s) => normalizeSearchStatusKey(s) === key);
+        const next = has
+            ? current.filter((s) => normalizeSearchStatusKey(s) !== key)
+            : [...current, status];
+        updateSearchParams({ statuses: next, status: undefined });
+    };
+
     const matchesAllRequestsListFilter = (req: any, typeFilter: string, statusFilter: string) => {
         const typeFilterNorm = String(typeFilter || 'all').toLowerCase();
         const requestType = String(req.requestType || '').toLowerCase();
@@ -943,14 +1006,51 @@ export default function RequestsManager({
                 promotionId: ''
             });
 
+            const prefillAccountId = String(initialAccountId || '').trim();
+            const prefillAccount = prefillAccountId
+                ? accounts.find((a: any) => String(a.id) === prefillAccountId)
+                : null;
+            if (prefillAccount) {
+                const contacts = getAccountContacts(prefillAccount);
+                const callContactId = String(initialContactFromCall?.contactId || '').trim();
+                const callContactName = String(initialContactFromCall?.name || '').trim();
+                const matched =
+                    (callContactId
+                        ? contacts.find((c: any) => String(c?._id || c?.id || '') === callContactId)
+                        : null) ||
+                    (callContactName
+                        ? contacts.find((c: any) => String(c?._label || '').trim() === callContactName)
+                        : null);
+                const first = matched || contacts[0];
+                setAccForm({
+                    ...initialAccommodation,
+                    id: 'REQ-' + Math.floor(Math.random() * 100000),
+                    rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: primaryOccupancyDefault, count: 1, rate: 0, mealPlan: 'RO' }],
+                    payments: [],
+                    logs: [],
+                    transportation: [],
+                    agenda: [],
+                    requestName: '',
+                    accountName: String(prefillAccount.name || '').trim(),
+                    accountId: prefillAccountId,
+                    bookerName: String(first?._label || callContactName || ''),
+                    bookerContactId: String(first?._id || callContactId || ''),
+                    confirmationNo: '',
+                    segment: '',
+                    promotionId: '',
+                });
+                onConsumedInitialAccountId?.();
+                onConsumedInitialContactFromCall?.();
+            }
+
             setEvtForm({
                 ...initialEvent,
                 confirmationNo: 'EVT-' + Math.floor(Math.random() * 10000),
                 requestName: '',
                 leadId: '',
-                accountId: '',
-                bookerName: '',
-                bookerContactId: '',
+                accountId: prefillAccountId,
+                bookerName: prefillAccount ? String(getAccountContacts(prefillAccount).find((c: any) => String(c?._id || '') === String(initialContactFromCall?.contactId || ''))?._label || getAccountContacts(prefillAccount)[0]?._label || initialContactFromCall?.name || '') : '',
+                bookerContactId: prefillAccount ? String(getAccountContacts(prefillAccount).find((c: any) => String(c?._id || '') === String(initialContactFromCall?.contactId || ''))?._id || getAccountContacts(prefillAccount)[0]?._id || initialContactFromCall?.contactId || '') : '',
                 segment: '',
                 promotionId: '',
                 agenda: [{
@@ -976,7 +1076,19 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, searchParams?.duplicateFromRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault]);
+    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, searchParams?.duplicateFromRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault, initialAccountId, initialContactFromCall, accounts, getAccountContacts, onConsumedInitialAccountId, onConsumedInitialContactFromCall]);
+
+    const prevSubViewRef = useRef(subView);
+    useEffect(() => {
+        if (embedded || optsHeadless) {
+            prevSubViewRef.current = subView;
+            return;
+        }
+        if (prevSubViewRef.current === 'new_request' && subView !== 'new_request') {
+            onRequestWizardFinished?.();
+        }
+        prevSubViewRef.current = subView;
+    }, [subView, embedded, optsHeadless, onRequestWizardFinished]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -1708,6 +1820,7 @@ export default function RequestsManager({
 
             if (res.ok) {
                 await fetchRequests();
+                onRequestSaved?.(payload);
                 onAfterRequestsMutate?.();
                 if (embedded) {
                     onEmbeddedComplete?.();
@@ -1755,6 +1868,7 @@ export default function RequestsManager({
             });
             if (res.ok) {
                 await fetchRequests();
+                onRequestSaved?.(payload);
                 onAfterRequestsMutate?.();
             } else {
                 showSystemNotice('Update failed', 'Failed to update. Status: ' + res.status);
@@ -1874,6 +1988,7 @@ export default function RequestsManager({
             });
             if (res.ok) {
                 await fetchRequests();
+                onRequestDeleted?.(String(id));
                 onAfterRequestsMutate?.();
             } else {
                 showSystemNotice('Delete failed', 'Failed to delete. Status: ' + res.status);
@@ -6252,8 +6367,7 @@ export default function RequestsManager({
             const typeMatch = typeFilter === 'all'
                 || (typeFilter === 'event_rooms' ? requestType === 'event with rooms' : typeFilter === 'series group' ? requestType === 'series' || requestType === 'series group' : requestType === typeFilter);
 
-            const statusFilter = String(params?.status || 'all').toLowerCase();
-            const statusMatch = statusFilter === 'all' || String(req.status || '').toLowerCase() === statusFilter;
+            const statusMatch = matchesSearchStatusFilter(req, parseSearchStatusSelection(params));
 
             const accountFilter = String(params?.account || '').toLowerCase().trim();
             const accountMatch = !accountFilter || String(req.account || req.accountName || '').toLowerCase().includes(accountFilter);
@@ -6266,11 +6380,14 @@ export default function RequestsManager({
 
             const arrivalFilter = String(params?.arrival || '').trim();
             const departureFilter = String(params?.departure || '').trim();
-            const evWindow = getEventDateWindow(req);
-            const reqStart = String(evWindow.start || req.checkIn || req.eventStart || '').trim();
-            const reqEnd = String(evWindow.end || evWindow.start || req.checkOut || req.eventEnd || '').trim();
-            const arrivalMatch = !arrivalFilter || reqStart >= arrivalFilter;
-            const departureMatch = !departureFilter || reqEnd <= departureFilter;
+            let dateMatch = true;
+            if (arrivalFilter && departureFilter) {
+                dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, departureFilter);
+            } else if (arrivalFilter) {
+                dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, '2100-12-31');
+            } else if (departureFilter) {
+                dateMatch = requestOperationalDatesOverlapRange(req, '1900-01-01', departureFilter);
+            }
 
             const createdByFilter = String(params?.createdByUserId || '').trim();
             let createdByMatch = true;
@@ -6286,7 +6403,7 @@ export default function RequestsManager({
             const segmentFilter = String(params?.segment || '').toLowerCase().trim();
             const segmentMatch = !segmentFilter || String(req?.segment || '').toLowerCase() === segmentFilter;
 
-            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && arrivalMatch && departureMatch && createdByMatch && segmentMatch;
+            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && dateMatch && createdByMatch && segmentMatch;
         });
     };
 
@@ -7355,37 +7472,51 @@ export default function RequestsManager({
                             </div>
 
                             <div className={compactSearchForm ? 'space-y-4' : 'space-y-6'}>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto md:max-w-none">
-                                    <div className="col-span-1">
-                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Type</label>
-                                        <select
-                                            value={searchParams?.type || 'all'}
-                                            onChange={(e) => updateSearchParams({ type: e.target.value })}
-                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
-                                            style={{ borderColor: colors.border, color: colors.textMain }}>
-                                            <option value="all">All Request Types</option>
-                                            <option value="accommodation">Accommodation</option>
-                                            <option value="event">Event</option>
-                                            <option value="event_rooms">Event with Rooms</option>
-                                            <option value="series group">Series Group</option>
-                                        </select>
-                                    </div>
-                                    <div className="col-span-1">
-                                        <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Status</label>
-                                        <select
-                                            value={searchParams?.status || 'all'}
-                                            onChange={(e) => updateSearchParams({ status: e.target.value })}
-                                            className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
-                                            style={{ borderColor: colors.border, color: colors.textMain }}
-                                        >
-                                            <option value="all">All Statuses</option>
-                                            <option value="Inquiry">Inquiry</option>
-                                            <option value="Accepted">Accepted</option>
-                                            <option value="Tentative">Tentative</option>
-                                            <option value="Definite">Definite</option>
-                                            <option value="Actual">Actual</option>
-                                            <option value="Cancelled">Cancelled</option>
-                                        </select>
+                                <div className="max-w-2xl mx-auto md:max-w-none">
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block" style={{ color: colors.textMuted }}>Request Type</label>
+                                    <select
+                                        value={searchParams?.type || 'all'}
+                                        onChange={(e) => updateSearchParams({ type: e.target.value })}
+                                        className={`w-full rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors ${compactSearchForm ? 'px-3 py-2 text-sm' : 'px-4 py-3'}`}
+                                        style={{ borderColor: colors.border, color: colors.textMain }}>
+                                        <option value="all">All Request Types</option>
+                                        <option value="accommodation">Accommodation</option>
+                                        <option value="event">Event</option>
+                                        <option value="event_rooms">Event with Rooms</option>
+                                        <option value="series group">Series Group</option>
+                                    </select>
+                                </div>
+
+                                <div className="max-w-4xl mx-auto">
+                                    <label className="text-xs font-bold uppercase tracking-wider mb-1 block text-center" style={{ color: colors.textMuted }}>Request Status</label>
+                                    <p className="text-[10px] text-center mb-2 opacity-60" style={{ color: colors.textMuted }}>
+                                        {selectedSearchStatuses.length === 0
+                                            ? 'No status selected — all statuses'
+                                            : `${selectedSearchStatuses.length} selected`}
+                                    </p>
+                                    <div className="flex flex-wrap justify-center gap-2">
+                                        {REQUEST_SEARCH_STATUS_OPTIONS.map((status) => {
+                                            const active = selectedSearchStatuses.some(
+                                                (s) => normalizeSearchStatusKey(s) === normalizeSearchStatusKey(status)
+                                            );
+                                            const accent = getStatusColor(status);
+                                            return (
+                                                <button
+                                                    key={status}
+                                                    type="button"
+                                                    onClick={() => toggleSearchStatusTab(status)}
+                                                    className={`px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-wide transition-colors ${compactSearchForm ? 'text-[10px] py-1' : ''}`}
+                                                    style={{
+                                                        borderColor: active ? accent : colors.border,
+                                                        color: active ? accent : colors.textMuted,
+                                                        backgroundColor: active ? `${accent}22` : 'transparent',
+                                                        boxShadow: active ? `inset 0 0 0 1px ${accent}55` : undefined,
+                                                    }}
+                                                >
+                                                    {status}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 </div>
 

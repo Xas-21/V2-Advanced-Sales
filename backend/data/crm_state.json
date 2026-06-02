@@ -1,7 +1,8 @@
 {
     "Pxe48nh5lc": {
-        "leads": {
-            "new": [],
+        "salesCalls": [],
+        "pipeline": {
+            "waiting": [],
             "qualified": [],
             "proposal": [],
             "negotiation": [],
@@ -32,7 +33,9 @@
                     "nextStep": "what else",
                     "followUpDate": "",
                     "stage": "qualified",
-                    "propertyId": "Pxe48nh5lc"
+                    "propertyId": "Pxe48nh5lc",
+                    "periodMonth": "2026-04",
+                    "sourceCallIds": []
                 }
             ],
             "notInterested": []
@@ -40,8 +43,9 @@
         "accountActivities": {}
     },
     "P5jj48x718": {
-        "leads": {
-            "new": [],
+        "salesCalls": [],
+        "pipeline": {
+            "waiting": [],
             "qualified": [],
             "proposal": [],
             "negotiation": [],
@@ -51,8 +55,9 @@
         "accountActivities": {}
     },
     "P1xzg03n5m": {
-        "leads": {
-            "new": [],
+        "salesCalls": [],
+        "pipeline": {
+            "waiting": [],
             "qualified": [],
             "proposal": [],
             "negotiation": [],
