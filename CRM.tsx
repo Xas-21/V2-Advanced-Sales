@@ -41,7 +41,7 @@ import {
 import {
     computeRequestRevenueBreakdownNoTax,
     sumRequestOperationalRevenueExTaxInRange,
-    requestTouchesOperationalRange,
+    requestCountsInChartsPeriod,
 } from './operationalSegmentRevenue';
 import { formatCrmFunnelRequestTypeDisplay } from './requestTypeUtils';
 import { apiUrl } from './backendApi';
@@ -788,11 +788,6 @@ export default function CRM({
         return Number(lead?.value ?? 0);
     }, [scopedRequestsAll, dashboardRange]);
 
-    const requestRevenue = useCallback(
-        (req: any): number =>
-            sumRequestOperationalRevenueExTaxInRange(req, dashboardRange.start, dashboardRange.end),
-        [dashboardRange]
-    );
     const requestRevenueForAccountView = useCallback((req: any): number => {
         const total = Number(computeRequestRevenueBreakdownNoTax(req).totalLineNoTax || 0);
         if (total > 0) return total;
@@ -801,6 +796,16 @@ export default function CRM({
         );
         return fallback > 0 ? fallback : 0;
     }, []);
+
+    /** Request view: full request value (not prorated by nights in the selected month). */
+    const requestRevenue = requestRevenueForAccountView;
+
+    /** Request view kanban/funnel: one card per request in the check-in anchor month only. */
+    const requestInDashboardPeriod = useCallback(
+        (req: any) =>
+            requestCountsInChartsPeriod(req, dashboardRange.start, dashboardRange.end),
+        [dashboardRange]
+    );
 
     // --- Request-mode data pipeline ---
     const requestCardsForPeriod = useMemo(() => {
@@ -811,13 +816,13 @@ export default function CRM({
                 const rp = String(req?.propertyId || '').trim();
                 if (rp && rp !== pid && rp !== 'P-GLOBAL') return false;
             }
-            return requestTouchesOperationalRange(req, dashboardRange);
+            return requestInDashboardPeriod(req);
         }).filter((req: any) => {
             const fid = String(createdByUserFilterId || '').trim();
             if (!fid) return true;
             return String(req?.createdByUserId || '') === fid;
         });
-    }, [crmViewMode, scopedRequestsAll, activeProperty?.id, dashboardRange, createdByUserFilterId]);
+    }, [crmViewMode, scopedRequestsAll, activeProperty?.id, requestInDashboardPeriod, createdByUserFilterId]);
 
     const requestCardsByStage = useMemo(() => {
         const buckets: Record<string, any[]> = {};
@@ -839,7 +844,7 @@ export default function CRM({
                 const rp = String(req?.propertyId || '').trim();
                 if (rp && rp !== pid && rp !== 'P-GLOBAL') return false;
             }
-            return requestTouchesOperationalRange(req, yearRange);
+            return requestCountsInChartsPeriod(req, yearRange.start, yearRange.end);
         }).filter((req: any) => {
             const fid = String(createdByUserFilterId || '').trim();
             if (!fid) return true;
@@ -866,9 +871,7 @@ export default function CRM({
             leads.forEach((lead: any) => {
                 const reqs =
                     crmViewMode === 'request'
-                        ? linkedRequestsForLead(lead).filter((req: any) =>
-                              requestTouchesOperationalRange(req, dashboardRange)
-                          )
+                        ? linkedRequestsForLead(lead).filter((req: any) => requestInDashboardPeriod(req))
                         : linkedRequestsForLead(lead);
                 requestsCount += reqs.length;
                 revenue += reqs.reduce(
@@ -917,7 +920,7 @@ export default function CRM({
             totalRequests: allRequestCount,
             preferredBusinessData,
         };
-    }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll, requestRevenue, requestRevenueForAccountView, crmViewMode]);
+    }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll, requestRevenue, requestRevenueForAccountView, crmViewMode, requestInDashboardPeriod]);
     const funnelAccountTypeTotals = useMemo(() => {
         const typeCounts = new Map<string, number>();
         dashboardFilteredLeads.forEach((lead: any) => {
@@ -1110,13 +1113,12 @@ export default function CRM({
         return requestAllTimeForPeriodGoals.filter((r: any) => {
             const s = String(r.status || '').toLowerCase().trim();
             return s === 'definite' || s === 'actual';
-        }).filter((r: any) => requestTouchesOperationalRange(r, ytdOperationalRange))
-            .reduce(
-                (sum: number, r: any) =>
-                    sum + sumRequestOperationalRevenueExTaxInRange(r, ytdOperationalRange.start, ytdOperationalRange.end),
-                0
-            );
-    }, [crmViewMode, requestAllTimeForPeriodGoals, ytdOperationalRange]);
+        })
+            .filter((r: any) =>
+                requestCountsInChartsPeriod(r, ytdOperationalRange.start, ytdOperationalRange.end)
+            )
+            .reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
+    }, [crmViewMode, requestAllTimeForPeriodGoals, ytdOperationalRange, requestRevenue]);
 
     const reqMonthlyGoalPct = reqMonthlyTarget > 0 ? (reqMonthlyActualRevenue / reqMonthlyTarget) * 100 : 0;
     const reqYtdGoalPct = reqYtdTarget > 0 ? (reqYtdActualRevenue / reqYtdTarget) * 100 : 0;
@@ -1153,9 +1155,7 @@ export default function CRM({
                         req?.accountType ||
                         '—'
                     ),
-                    revenue: crmViewMode === 'request'
-                        ? sumRequestOperationalRevenueExTaxInRange(req, dashboardRange.start, dashboardRange.end)
-                        : requestRevenueForAccountView(req),
+                    revenue: requestRevenueForAccountView(req),
                 };
             });
             const totalRevenue = requestRows.reduce((sum, r) => sum + (Number(r.revenue) || 0), 0);

@@ -72,6 +72,11 @@ import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 import { collectRequestFormViolations } from './formConfigurations';
 import {
+    clearNewRequestDraft,
+    readNewRequestDraft,
+    writeNewRequestDraft,
+} from './requestDraftStorage';
+import {
     buildInitialFeedbackAnswers,
     getFeedbackTemplateForRequestType,
     resolveFeedbackTemplatesForProperty,
@@ -437,9 +442,26 @@ export default function RequestsManager({
     // View State
     const [viewMode, setViewMode] = useState<'search' | 'list' | 'kanban'>('list');
 
+    const draftPropertyId = String(activeProperty?.id || '').trim() || 'P-GLOBAL';
+    const restoredNewRequestDraft =
+        subView === 'new_request' &&
+        !initialRequestType &&
+        !searchParams?.editRequestId &&
+        !searchParams?.duplicateFromRequestId
+            ? readNewRequestDraft(draftPropertyId)
+            : null;
+
     // Form Wizard State
-    const [step, setStep] = useState(initialRequestType ? 2 : 1); // Skip to step 2 if type provided
-    const [requestType, setRequestType] = useState<string | null>(initialRequestType || null);
+    const [step, setStep] = useState(() => {
+        if (initialRequestType) return 2;
+        if (restoredNewRequestDraft?.requestType) {
+            return Math.max(2, Number(restoredNewRequestDraft.step) || 2);
+        }
+        return 1;
+    });
+    const [requestType, setRequestType] = useState<string | null>(
+        () => initialRequestType || restoredNewRequestDraft?.requestType || null
+    );
 
     // React to prop changes
     useEffect(() => {
@@ -450,8 +472,16 @@ export default function RequestsManager({
     }, [initialRequestType]);
 
     // Form Data States
-    const [accForm, setAccForm] = useState(initialAccommodation);
-    const [evtForm, setEvtForm] = useState(initialEvent);
+    const [accForm, setAccForm] = useState(() =>
+        restoredNewRequestDraft?.accForm
+            ? { ...initialAccommodation, ...restoredNewRequestDraft.accForm }
+            : initialAccommodation
+    );
+    const [evtForm, setEvtForm] = useState(() =>
+        restoredNewRequestDraft?.evtForm
+            ? { ...initialEvent, ...restoredNewRequestDraft.evtForm }
+            : initialEvent
+    );
 
     useEffect(() => {
         if (!canLinkRequestPromotions) return;
@@ -620,9 +650,12 @@ export default function RequestsManager({
     const [activeOptionsMenu, setActiveOptionsMenu] = useState<number | null>(null);
     const [isEditing, setIsEditing] = useState(false);
     const skipNewRequestResetRef = useRef(false);
+    const prevSubViewForNewRequestResetRef = useRef(subView);
 
     // Search and UI state
-    const [accountSearch, setAccountSearch] = useState('');
+    const [accountSearch, setAccountSearch] = useState(
+        () => restoredNewRequestDraft?.accountSearch || ''
+    );
     const [showAccountDropdown, setShowAccountDropdown] = useState(false);
     const accountComboRef = useRef<HTMLDivElement>(null);
 
@@ -965,13 +998,18 @@ export default function RequestsManager({
         setShowAddContactModal(false);
     };
 
-    // Reset workflow when entering new_request mode (only for fresh new requests)
+    // Reset workflow only when navigating into new_request (not on every accounts/property refresh).
     useEffect(() => {
         if (embedded || optsHeadless) return;
+        const prevSubView = prevSubViewForNewRequestResetRef.current;
+        const enteredNewRequest = subView === 'new_request' && prevSubView !== 'new_request';
+        prevSubViewForNewRequestResetRef.current = subView;
+
         if (readOnlyOperational && subView === 'new_request') {
             setIsEditing(false);
             setRequestType(null);
             setStep(1);
+            clearNewRequestDraft();
             setSearchParams({
                 ...searchParams,
                 subView: 'list',
@@ -979,11 +1017,17 @@ export default function RequestsManager({
             });
             return;
         }
-        if (subView === 'new_request' && !isEditing && !searchParams?.editRequestId && !searchParams?.duplicateFromRequestId) {
+        if (
+            enteredNewRequest &&
+            !isEditing &&
+            !searchParams?.editRequestId &&
+            !searchParams?.duplicateFromRequestId
+        ) {
             if (skipNewRequestResetRef.current) {
                 skipNewRequestResetRef.current = false;
                 return;
             }
+            clearNewRequestDraft();
             setStep(1);
             setRequestType(null);
             
@@ -1076,7 +1120,59 @@ export default function RequestsManager({
             setIsEditing(false);
         }
         setExpandedLog(null);
-    }, [subView, isEditing, selectedRequest, readOnlyOperational, embedded, optsHeadless, searchParams?.editRequestId, searchParams?.duplicateFromRequestId, activeProperty, primaryPropertyRoomType, primaryOccupancyDefault, initialAccountId, initialContactFromCall, accounts, getAccountContacts, onConsumedInitialAccountId, onConsumedInitialContactFromCall]);
+    }, [
+        subView,
+        isEditing,
+        selectedRequest,
+        readOnlyOperational,
+        embedded,
+        optsHeadless,
+        searchParams?.editRequestId,
+        searchParams?.duplicateFromRequestId,
+        activeProperty,
+        primaryPropertyRoomType,
+        primaryOccupancyDefault,
+        initialAccountId,
+        initialContactFromCall,
+        accounts,
+        getAccountContacts,
+        onConsumedInitialAccountId,
+        onConsumedInitialContactFromCall,
+    ]);
+
+    useEffect(() => {
+        if (embedded || optsHeadless) return;
+        if (subView !== 'new_request' || isEditing || searchParams?.editRequestId || searchParams?.duplicateFromRequestId) {
+            return;
+        }
+        if (!requestType) return;
+        const pid = String(activeProperty?.id || '').trim() || 'P-GLOBAL';
+        const handle = window.setTimeout(() => {
+            writeNewRequestDraft({
+                propertyId: pid,
+                step,
+                requestType,
+                accForm,
+                evtForm,
+                accountSearch,
+                updatedAt: Date.now(),
+            });
+        }, 350);
+        return () => window.clearTimeout(handle);
+    }, [
+        subView,
+        isEditing,
+        searchParams?.editRequestId,
+        searchParams?.duplicateFromRequestId,
+        step,
+        requestType,
+        accForm,
+        evtForm,
+        accountSearch,
+        activeProperty?.id,
+        embedded,
+        optsHeadless,
+    ]);
 
     const prevSubViewRef = useRef(subView);
     useEffect(() => {
@@ -1085,6 +1181,7 @@ export default function RequestsManager({
             return;
         }
         if (prevSubViewRef.current === 'new_request' && subView !== 'new_request') {
+            clearNewRequestDraft();
             onRequestWizardFinished?.();
         }
         prevSubViewRef.current = subView;
@@ -1819,6 +1916,7 @@ export default function RequestsManager({
             });
 
             if (res.ok) {
+                clearNewRequestDraft();
                 await fetchRequests();
                 onRequestSaved?.(payload);
                 onAfterRequestsMutate?.();

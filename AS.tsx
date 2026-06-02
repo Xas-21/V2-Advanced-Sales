@@ -4069,9 +4069,13 @@ export default function AdvancedSalesDashboard() {
         createdByUserId: '',
     });
     const navigateRequestsSubView = (nextSubView: string) => {
-        setRequestsSubView(nextSubView);
-        // Force RequestsManager remount so clicking the active tab resets its flow.
-        setRequestsNavNonce((prev) => prev + 1);
+        setRequestsSubView((prev) => {
+            if (prev !== nextSubView) {
+                // Remount only when switching sub-views (preserves in-progress new request on same tab).
+                setRequestsNavNonce((n) => n + 1);
+            }
+            return nextSubView;
+        });
         if (nextSubView === 'new_request') {
             setRequestSearchParams((p: any) => {
                 const next = { ...(p || {}), subView: 'new_request' };
