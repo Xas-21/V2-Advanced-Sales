@@ -2521,24 +2521,39 @@ export default function CRM({
                                 ]
                             ).map((stageCfg) => {
                                 const stageRows = crmViewMode === 'request'
-                                    ? (requestCardsByStage[stageCfg.id] || []).map((req: any) => {
-                                        const acc = accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''));
-                                        return {
-                                            key: String(req.id),
-                                            accountName: String(acc?.name || req?.account || req?.accountName || 'Unknown'),
-                                            requestCount: 1,
-                                            totalRevenue: requestRevenue(req),
-                                            requests: [{
+                                    ? (() => {
+                                        const grouped = new Map<string, any>();
+                                        (requestCardsByStage[stageCfg.id] || []).forEach((req: any) => {
+                                            const acc = accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''));
+                                            const accountId = String(req?.accountId || '').trim();
+                                            const accountName = String(acc?.name || req?.account || req?.accountName || 'Unknown');
+                                            const key = accountId || `name:${accountName.toLowerCase()}`;
+                                            const requestRow = {
                                                 id: req.id,
                                                 requestName: String(req?.requestName || req?.eventName || req?.requestType || 'Request'),
                                                 startDate: String(req?.checkIn || req?.arrivalDate || req?.eventStart || '').slice(0, 10),
                                                 endDate: String(req?.checkOut || req?.departureDate || req?.eventEnd || '').slice(0, 10),
                                                 requestType: formatCrmFunnelRequestTypeDisplay(req?.requestType),
                                                 revenue: requestRevenue(req),
-                                            }],
-                                            stageId: stageCfg.id,
-                                        };
-                                    })
+                                            };
+                                            const existing = grouped.get(key);
+                                            if (!existing) {
+                                                grouped.set(key, {
+                                                    key,
+                                                    accountName,
+                                                    requestCount: 1,
+                                                    totalRevenue: requestRow.revenue,
+                                                    requests: [requestRow],
+                                                    stageId: stageCfg.id,
+                                                });
+                                                return;
+                                            }
+                                            existing.requests.push(requestRow);
+                                            existing.requestCount = existing.requests.length;
+                                            existing.totalRevenue += requestRow.revenue;
+                                        });
+                                        return [...grouped.values()];
+                                    })()
                                     : dashboardAccountRows.filter((r: any) => r.stageId === stageCfg.id);
                                 const stageTone = stageColor(stageCfg.id);
                                 const isTableExpanded = expandedStageTables.includes(stageCfg.id);
