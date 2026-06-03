@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from 'react';
 import {
     Users, Phone, Mail, MapPin, Tag, TrendingUp, DollarSign,
-    Calendar, MessageSquare, FileText, MoreVertical, MoreHorizontal, X, ArrowRight,
+    Calendar, MessageSquare, FileText, MoreVertical, MoreHorizontal, X, ArrowRight, Moon, Bed,
     CheckCircle2, Clock, XCircle, Star, Building, User, Plus,
     Edit, Trash2, Filter, Search, ChevronDown, ChevronLeft, ChevronRight, List, Kanban, Save,
-    PhoneCall, Send, Eye, BarChart3, Award, Check, Copy, UserCircle
+    PhoneCall, Send, Eye, BarChart3, Award, Check, UserCircle
 } from 'lucide-react';
 import AddAccountModal from './AddAccountModal';
 import CRMProfileView from './CRMProfileView';
@@ -49,6 +49,11 @@ import CrmActivitiesView from './CrmActivitiesView';
 import RequestTypePickerModal from './RequestTypePickerModal';
 import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
 import RequestsManager from './RequestsManager';
+import {
+    getPipelineLinkedRequestDisplay,
+    getRequestKanbanCardDetails,
+    resolveLeadLinkedRequest,
+} from './crmPipelineCardRequestDetails';
 import {
     canDeleteRequests,
     canLinkRequestPromotions,
@@ -267,6 +272,9 @@ export default function CRM({
         requestType: string;
     } | null>(null);
     const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
+    const [profileOverlayLead, setProfileOverlayLead] = useState<any | null>(null);
+    const [pipelineOptsRequestId, setPipelineOptsRequestId] = useState<string | null>(null);
+    const [pipelineOptsSearchParams, setPipelineOptsSearchParams] = useState<Record<string, unknown>>({});
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
     const [currentView, setCurrentView] = useState<'activities' | 'pipeline' | 'list' | 'dashboard' | 'profile'>('activities');
 
@@ -1525,6 +1533,12 @@ export default function CRM({
         return nonCancelled > 0 ? ((definiteActual / nonCancelled) * 100).toFixed(0) : '0';
     })();
 
+    const openLeadProfileOverlay = (lead: any) => {
+        setListMenuLeadId(null);
+        const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
+        setProfileOverlayLead(acc ? mergeAccountIntoCrmLead(acc, lead) : lead);
+    };
+
     const openLeadProfile = (lead: any) => {
         setListMenuLeadId(null);
         const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
@@ -1567,6 +1581,9 @@ export default function CRM({
 
     const handleProfileLeadChange = (next: any) => {
         setSelectedLead(next);
+        setProfileOverlayLead((prev: any) =>
+            prev && String(prev.accountId || prev.id) === String(next.accountId || next.id) ? next : prev
+        );
         const aid = next.accountId;
         if (aid) {
             setAccounts((prev: any[]) =>
@@ -3040,21 +3057,43 @@ export default function CRM({
                                     {crmViewMode === 'request' ? (
                                         (requestCardsByStage[stage.id] || []).map((req: any) => {
                                             const acc = accounts.find((a: any) => String(a?.id || '') === String(req?.accountId || ''));
-                                            const reqName = String(req?.requestName || req?.eventName || req?.requestType || 'Request');
                                             const accountName = String(acc?.name || req?.account || req?.accountName || '—');
-                                            const checkInDate = String(req?.checkIn || req?.arrivalDate || req?.eventStart || '').slice(0, 10);
                                             const segment = String(req?.segment || '—');
                                             const rev = requestRevenue(req);
+                                            const details = getRequestKanbanCardDetails(req, crmFilterUsers);
+                                            const ic = 12;
                                             return (
-                                                <div key={req.id}
-                                                    draggable
+                                                <div
+                                                    key={req.id}
+                                                    draggable={!crmReadOnly}
                                                     onDragStart={(e) => {
                                                         e.dataTransfer.setData('text/plain', String(req.id));
                                                     }}
-                                                    className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300"
-                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
-                                                    <h4 className="font-bold text-sm mb-1 truncate" style={{ color: colors.textMain }}>{reqName}</h4>
-                                                    <p className="text-xs mb-2 truncate" style={{ color: colors.textMuted }}>{accountName}</p>
+                                                    className={`p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all group animate-in fade-in slide-in-from-bottom-2 duration-300 relative ${crmReadOnly ? '' : 'cursor-grab active:cursor-grabbing'}`}
+                                                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                                                >
+                                                    <div className="flex justify-between items-start gap-2 mb-2">
+                                                        <div className="min-w-0 flex-1">
+                                                            <h4 className="font-bold text-sm mb-1 truncate" style={{ color: colors.textMain }}>
+                                                                {details?.requestName || String(req?.requestName || 'Request')}
+                                                            </h4>
+                                                            <p className="text-xs truncate" style={{ color: colors.textMuted }}>{accountName}</p>
+                                                        </div>
+                                                        {!crmReadOnly ? (
+                                                            <button
+                                                                type="button"
+                                                                title="Request options (OPTS)"
+                                                                className="shrink-0 p-1.5 rounded-md border opacity-70 hover:opacity-100 hover:bg-white/10 transition-all"
+                                                                style={{ color: colors.textMuted, borderColor: colors.border }}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setPipelineOptsRequestId(String(req.id));
+                                                                }}
+                                                            >
+                                                                <MoreHorizontal size={16} />
+                                                            </button>
+                                                        ) : null}
+                                                    </div>
                                                     <div className="flex flex-wrap gap-1 mb-2">
                                                         <span className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ backgroundColor: `${stage.color}28`, color: stage.color }}>
                                                             {String(req.status || '')}
@@ -3065,9 +3104,50 @@ export default function CRM({
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div className="flex justify-between items-center text-xs">
-                                                        <span style={{ color: colors.textMuted }}>{checkInDate || '—'}</span>
+                                                    {details ? (
+                                                        <>
+                                                            <p className="text-[10px] mb-1" style={{ color: colors.textMuted }}>
+                                                                {details.startLabel}: {details.startDate}
+                                                                {' · '}
+                                                                {details.endLabel}: {details.endDate}
+                                                            </p>
+                                                            <div className="flex flex-wrap items-center gap-3 mb-2 text-[10px]" style={{ color: colors.textMuted }}>
+                                                                {details.isEventOnly ? (
+                                                                    <span className="inline-flex items-center gap-1 opacity-80" style={{ color: colors.textMain }}>
+                                                                        <Calendar size={ic} /> {details.eventDays}
+                                                                    </span>
+                                                                ) : (
+                                                                    <>
+                                                                        <span className="inline-flex items-center gap-1 opacity-80" style={{ color: colors.textMain }}>
+                                                                            <Moon size={ic} /> {details.nights}
+                                                                        </span>
+                                                                        <span className="inline-flex items-center gap-1 opacity-80" style={{ color: colors.textMain }}>
+                                                                            <Bed size={ic} /> {details.rooms}
+                                                                        </span>
+                                                                        {details.isEventWithAccommodation ? (
+                                                                            <span className="inline-flex items-center gap-1 opacity-80" style={{ color: colors.textMain }}>
+                                                                                <Calendar size={ic} /> {details.eventDays}
+                                                                            </span>
+                                                                        ) : null}
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                            <p className="text-[10px] font-mono mb-2" style={{ color: colors.textMuted }}>
+                                                                Confirmation: {details.confirmationNo}
+                                                            </p>
+                                                        </>
+                                                    ) : null}
+                                                    <div className="flex justify-between items-center text-xs mb-2">
+                                                        <span style={{ color: colors.textMuted }}>{details?.startDate || '—'}</span>
                                                         <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(rev)}</span>
+                                                    </div>
+                                                    <div className="pt-2 border-t text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                        <span>
+                                                            Date: {details?.startDate || '—'}
+                                                        </span>
+                                                        <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
+                                                            {details?.creatorName || '—'}
+                                                        </span>
                                                     </div>
                                                 </div>
                                             );
@@ -3095,7 +3175,7 @@ export default function CRM({
                                                         ignoreNextPipelineCardClickIdRef.current = null;
                                                         return;
                                                     }
-                                                    openLeadProfile(lead);
+                                                    openLeadProfileOverlay(lead);
                                                 }}
                                                 className="p-4 rounded-lg border hover:shadow-xl hover:scale-[1.02] hover:-translate-y-1 transition-all cursor-pointer group animate-in fade-in slide-in-from-bottom-2 duration-300 relative"
                                                 style={{ backgroundColor: colors.bg, borderColor: colors.border }}>
@@ -3147,6 +3227,40 @@ export default function CRM({
                                                         </span>
                                                     ) : null}
                                                 </div>
+
+                                                {(() => {
+                                                    const linkedReq = resolveLeadLinkedRequest(lead, scopedRequestsAll);
+                                                    const reqDetails = linkedReq
+                                                        ? getPipelineLinkedRequestDisplay(linkedReq)
+                                                        : null;
+                                                    return reqDetails ? (
+                                                        <div
+                                                            className="mb-3 p-2.5 rounded-lg border space-y-1"
+                                                            style={{
+                                                                borderColor: `${colors.yellow}40`,
+                                                                backgroundColor: `${colors.yellow}10`,
+                                                            }}
+                                                        >
+                                                            <p
+                                                                className="text-[10px] font-bold uppercase tracking-wider"
+                                                                style={{ color: colors.yellow }}
+                                                            >
+                                                                Linked request
+                                                            </p>
+                                                            <p className="text-xs font-bold truncate" style={{ color: colors.textMain }}>
+                                                                {reqDetails.requestName}
+                                                            </p>
+                                                            <p className="text-[10px]" style={{ color: colors.textMuted }}>
+                                                                {reqDetails.startLabel}: {reqDetails.startDate}
+                                                                {' · '}
+                                                                {reqDetails.endLabel}: {reqDetails.endDate}
+                                                            </p>
+                                                            <p className="text-[10px] font-mono" style={{ color: colors.textMuted }}>
+                                                                Confirmation: {reqDetails.confirmationNo}
+                                                            </p>
+                                                        </div>
+                                                    ) : null;
+                                                })()}
 
                                                 {crmLeadHasScheduledFollowUp(lead) ? (
                                                     <div className="flex justify-end mb-2">
@@ -3773,6 +3887,208 @@ export default function CRM({
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
         </div>
+        {profileOverlayLead
+            ? (() => {
+                  const aid = profileOverlayLead.accountId || profileOverlayLead.id;
+                  const aname = profileOverlayLead.company;
+                  const linkedReq = filterRequestsForAccount(sharedRequests, aid, aname);
+                  const salesForAcc = filterSalesCallsForAccount(flatCrmLeads, aid, aname);
+                  const editingRow = accounts.find((a: any) => a.id === aid);
+                  return (
+                      <>
+                          <div
+                              className="fixed inset-0 z-[195] flex flex-col p-2 md:p-4"
+                              style={{ backgroundColor: 'rgba(0,0,0,0.78)' }}
+                          >
+                              <div
+                                  className="flex-1 min-h-0 w-full max-w-[min(96vw,1600px)] mx-auto rounded-2xl border overflow-hidden flex flex-col shadow-2xl"
+                                  style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                              >
+                                  <CRMProfileView
+                                      lead={profileOverlayLead}
+                                      theme={theme}
+                                      onClose={() => setProfileOverlayLead(null)}
+                                      onLeadChange={handleProfileLeadChange}
+                                      linkedRequests={linkedReq}
+                                      salesCalls={salesForAcc}
+                                      currentUser={currentUser}
+                                      onOpenRequest={(rid) => {
+                                          setProfileOverlayLead(null);
+                                          onNavigateToRequest?.(rid);
+                                      }}
+                                      onOpenAddRequestPicker={
+                                          crmReadOnly ? undefined : () => setProfileRequestTypeOpen(true)
+                                      }
+                                      onViewAccountRequests={() => setProfileRequestsListOpen(true)}
+                                      onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
+                                      readOnly={crmReadOnly}
+                                      canDeleteAccount={allowDeleteAccount}
+                                      canManageManualTimeline={allowManualTimeline}
+                                      canManageAccountTags={allowTagAdmin}
+                                      appendAuditLog={(action, details) => appendProfileAudit(action, details, aid)}
+                                      onDeleteAccount={
+                                          allowDeleteAccount
+                                              ? () => openAccountDeleteConfirm(String(aid))
+                                              : undefined
+                                      }
+                                      canMergeAccountsAndAssignOwner={allowAccountMergeAndOwner}
+                                      accountOwnerUserOptions={assignableUsersForAccounts}
+                                      allAccountsForMergeSearch={accountsSameProperty}
+                                      onMergeAccountIntoCurrent={
+                                          allowAccountMergeAndOwner && setSharedRequests
+                                              ? handleCrmMergeAccountIntoCurrent
+                                              : undefined
+                                      }
+                                      onAssignAccountOwner={
+                                          allowAccountMergeAndOwner ? handleCrmAssignAccountOwner : undefined
+                                      }
+                                  />
+                              </div>
+                          </div>
+                          <AddAccountModal
+                              isOpen={showEditAccountModal}
+                              onClose={() => setShowEditAccountModal(false)}
+                              editingAccount={editingRow}
+                              theme={theme}
+                              accountTypeOptions={accountTypeOptions}
+                              configurationProperty={activeProperty || undefined}
+                              configurationPropertyId={
+                                  activeProperty?.id ? String(activeProperty.id) : undefined
+                              }
+                              onSave={(data: any) => {
+                                  if (!data?.id) return;
+                                  const merged = {
+                                      ...(accounts.find((a: any) => a.id === data.id) || {}),
+                                      ...data,
+                                  };
+                                  setAccounts((prev: any[]) =>
+                                      prev.map((a: any) => (a.id === data.id ? merged : a))
+                                  );
+                                  setProfileOverlayLead(
+                                      String(profileOverlayLead.id || '').startsWith('L')
+                                          ? mergeAccountIntoCrmLead(merged, profileOverlayLead)
+                                          : accountToLead(merged)
+                                  );
+                                  appendProfileAudit('Account updated', 'Account details saved from edit modal', data.id);
+                                  setShowEditAccountModal(false);
+                              }}
+                          />
+                          <RequestTypePickerModal
+                              open={profileRequestTypeOpen}
+                              onClose={() => setProfileRequestTypeOpen(false)}
+                              theme={theme}
+                              onSelectType={(type) => {
+                                  setProfileRequestTypeOpen(false);
+                                  setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
+                              }}
+                          />
+                          <AccountLinkedRequestsModal
+                              open={profileRequestsListOpen}
+                              onClose={() => setProfileRequestsListOpen(false)}
+                              theme={theme}
+                              accountId={String(aid)}
+                              accountName={String(aname || 'Account')}
+                              sharedRequests={sharedRequests}
+                              activeProperty={activeProperty}
+                              accounts={accounts}
+                              setAccounts={setAccounts}
+                              onOpenRequest={(requestId) => {
+                                  setProfileRequestsListOpen(false);
+                                  setProfileOverlayLead(null);
+                                  onNavigateToRequest?.(requestId);
+                              }}
+                              onAfterRequestsMutate={onAfterRequestsMutate}
+                              currentUser={currentUser}
+                              currency={currency}
+                              segmentOptions={segmentOptions}
+                              accountTypeOptions={accountTypeOptions}
+                              canDeleteRequest={canDelRequests}
+                              readOnlyOperational={crmReadOnly}
+                              promotionOptions={promotionOptions}
+                              canLinkRequestPromotions={canLinkPromos}
+                          />
+                          {profileEmbeddedRequest ? (
+                              <div
+                                  className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
+                                  style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
+                                  onClick={() => setProfileEmbeddedRequest(null)}
+                              >
+                                  <div
+                                      className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
+                                      onClick={(e) => e.stopPropagation()}
+                                  >
+                                      <button
+                                          type="button"
+                                          onClick={() => setProfileEmbeddedRequest(null)}
+                                          className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
+                                          style={{ borderColor: colors.border, color: colors.textMuted }}
+                                          aria-label="Close"
+                                      >
+                                          <X size={20} />
+                                      </button>
+                                      <RequestsManager
+                                          key={`overlay-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                          embedded
+                                          theme={theme}
+                                          subView="new_request"
+                                          searchParams={profileRequestModalParams}
+                                          setSearchParams={(p: any) =>
+                                              setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
+                                          }
+                                          initialRequestType={profileEmbeddedRequest.requestType}
+                                          initialAccountId={profileEmbeddedRequest.accountId}
+                                          onConsumedInitialAccountId={() => {}}
+                                          activeProperty={activeProperty}
+                                          accounts={accounts}
+                                          setAccounts={setAccounts}
+                                          onAfterRequestsMutate={onAfterRequestsMutate}
+                                          onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
+                                          onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
+                                          segmentOptions={segmentOptions}
+                                          accountTypeOptions={accountTypeOptions}
+                                          canDeleteRequest={canDelRequests}
+                                          readOnlyOperational={crmReadOnly}
+                                          currentUser={currentUser}
+                                          currency={currency}
+                                          promotionOptions={promotionOptions}
+                                          canLinkRequestPromotions={canLinkPromos}
+                                      />
+                                  </div>
+                              </div>
+                          ) : null}
+                      </>
+                  );
+              })()
+            : null}
+        {pipelineOptsRequestId ? (
+            <RequestsManager
+                key={`pipeline-opts-${pipelineOptsRequestId}`}
+                optsHeadless
+                theme={theme}
+                subView="list"
+                searchParams={pipelineOptsSearchParams}
+                setSearchParams={(p: any) => setPipelineOptsSearchParams((prev) => ({ ...prev, ...p }))}
+                activeProperty={activeProperty}
+                accounts={accounts}
+                setAccounts={setAccounts}
+                pendingOpenOptsRequestId={pipelineOptsRequestId}
+                onConsumedPendingOpenOpts={() => setPipelineOptsRequestId(null)}
+                onOptsHeadlessDismiss={() => setPipelineOptsRequestId(null)}
+                onHeadlessModifyDetails={(requestId) => {
+                    setPipelineOptsRequestId(null);
+                    onNavigateToRequest?.(requestId);
+                }}
+                onAfterRequestsMutate={onAfterRequestsMutate}
+                currentUser={currentUser}
+                currency={currency}
+                segmentOptions={segmentOptions}
+                accountTypeOptions={accountTypeOptions}
+                canDeleteRequest={canDelRequests}
+                readOnlyOperational={crmReadOnly}
+                promotionOptions={promotionOptions}
+                canLinkRequestPromotions={canLinkPromos}
+            />
+        ) : null}
         {listMenuLeadId && crmMenuLead && crmMenuDropPos
             ? createPortal(
                   <div
@@ -3787,6 +4103,19 @@ export default function CRM({
                           borderColor: colors.border,
                       }}
                   >
+                      {String(crmMenuLead?.linkedRequestId || '').trim() ? (
+                          <button
+                              type="button"
+                              className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
+                              style={{ color: colors.textMain }}
+                              onClick={() => {
+                                  setListMenuLeadId(null);
+                                  setPipelineOptsRequestId(String(crmMenuLead.linkedRequestId));
+                              }}
+                          >
+                              <FileText size={14} /> View request
+                          </button>
+                      ) : null}
                       {canEditSalesCallsPerm && (
                           <button
                               type="button"
@@ -3794,17 +4123,7 @@ export default function CRM({
                               style={{ color: colors.textMain }}
                               onClick={() => openEditSalesCallModal(crmMenuLead)}
                           >
-                              <Edit size={14} /> Edit sales call
-                          </button>
-                      )}
-                      {!crmReadOnly && (
-                          <button
-                              type="button"
-                              className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
-                              style={{ color: colors.textMain }}
-                              onClick={() => duplicateSalesCallByLead(crmMenuLead)}
-                          >
-                              <Copy size={14} /> Duplicate sales call
+                              <Edit size={14} /> Edit
                           </button>
                       )}
                       <button
@@ -3813,7 +4132,7 @@ export default function CRM({
                           style={{ color: colors.textMain }}
                           onClick={() => {
                               setListMenuLeadId(null);
-                              openLeadProfile(crmMenuLead);
+                              openLeadProfileOverlay(crmMenuLead);
                           }}
                       >
                           <UserCircle size={14} /> Open account profile
