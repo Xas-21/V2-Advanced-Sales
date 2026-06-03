@@ -150,6 +150,12 @@ interface RequestsManagerProps {
     onEmbeddedCancel?: () => void;
     /** Render only request OPTS / related modals (fixed overlay); no list UI. Used from Events & Catering. */
     optsHeadless?: boolean;
+    /** Render request detail view in a fixed overlay (CRM pipeline "View request", etc.). */
+    detailHeadless?: boolean;
+    /** Pre-loaded request row so the detail overlay opens immediately (CRM sharedRequests). */
+    headlessInitialRequest?: any | null;
+    /** Fired when the user closes the detail overlay (back button or backdrop). */
+    onDetailHeadlessDismiss?: () => void;
     /** Fired when the user closes the small Options popover (backdrop or X), not when opening sub-modals. */
     onOptsHeadlessDismiss?: () => void;
     /** From headless OPTS: navigate main app to Requests edit wizard for this request id. */
@@ -296,6 +302,9 @@ export default function RequestsManager({
     onEmbeddedComplete,
     onEmbeddedCancel,
     optsHeadless = false,
+    detailHeadless = false,
+    headlessInitialRequest = null,
+    onDetailHeadlessDismiss,
     onOptsHeadlessDismiss,
     onHeadlessModifyDetails,
     onHeadlessDuplicateRequest,
@@ -1013,7 +1022,7 @@ export default function RequestsManager({
 
     // Reset workflow only when navigating into new_request (not on every accounts/property refresh).
     useEffect(() => {
-        if (embedded || optsHeadless) return;
+        if (embedded || optsHeadless || detailHeadless) return;
         const prevSubView = prevSubViewForNewRequestResetRef.current;
         const enteredNewRequest = subView === 'new_request' && prevSubView !== 'new_request';
         prevSubViewForNewRequestResetRef.current = subView;
@@ -1154,7 +1163,7 @@ export default function RequestsManager({
     ]);
 
     useEffect(() => {
-        if (embedded || optsHeadless) return;
+        if (embedded || optsHeadless || detailHeadless) return;
         if (subView !== 'new_request' || isEditing || searchParams?.editRequestId || searchParams?.duplicateFromRequestId) {
             return;
         }
@@ -1189,7 +1198,7 @@ export default function RequestsManager({
 
     const prevSubViewRef = useRef(subView);
     useEffect(() => {
-        if (embedded || optsHeadless) {
+        if (embedded || optsHeadless || detailHeadless) {
             prevSubViewRef.current = subView;
             return;
         }
@@ -1198,7 +1207,7 @@ export default function RequestsManager({
             onRequestWizardFinished?.();
         }
         prevSubViewRef.current = subView;
-    }, [subView, embedded, optsHeadless, onRequestWizardFinished]);
+    }, [subView, embedded, optsHeadless, detailHeadless, onRequestWizardFinished]);
 
     // Fetch Requests from Backend
     const fetchRequests = async () => {
@@ -1559,6 +1568,17 @@ export default function RequestsManager({
             onConsumedPendingOpenRequest?.();
         }
     }, [pendingOpenRequestId, requests, isLoading, onConsumedPendingOpenRequest]);
+
+    useEffect(() => {
+        if (!detailHeadless || !headlessInitialRequest?.id) return;
+        setSelectedRequest(headlessInitialRequest);
+    }, [detailHeadless, headlessInitialRequest]);
+
+    useEffect(() => {
+        if (!detailHeadless || !headlessInitialRequest?.id || isLoading) return;
+        const fresh = requests.find((x: any) => String(x.id) === String(headlessInitialRequest.id));
+        if (fresh) setSelectedRequest(fresh);
+    }, [detailHeadless, headlessInitialRequest?.id, requests, isLoading]);
 
     useEffect(() => {
         if (!pendingOpenOptsRequestId || isLoading) return;
@@ -1953,12 +1973,12 @@ export default function RequestsManager({
 
     // Reset when subView changes to list
     useEffect(() => {
-        if (embedded || optsHeadless) return;
+        if (embedded || optsHeadless || detailHeadless) return;
         if (subView !== 'new_request') {
             setStep(1);
             setRequestType(null);
         }
-    }, [subView, embedded, optsHeadless]);
+    }, [subView, embedded, optsHeadless, detailHeadless]);
 
     const updateRequest = async (id: string, partialData: any) => {
         setIsLoading(true);
@@ -6245,6 +6265,40 @@ export default function RequestsManager({
             </>
         );
     };
+
+    if (detailHeadless) {
+        const closeDetailOverlay = () => {
+            setSelectedRequest(null);
+            onDetailHeadlessDismiss?.();
+        };
+        const detailRequest = selectedRequest || headlessInitialRequest;
+        return (
+            <>
+                {detailRequest ? (
+                    <div
+                        className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
+                        onClick={closeDetailOverlay}
+                    >
+                        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+                        <div
+                            className="relative w-full max-w-[96rem] max-h-[95vh] min-h-0 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
+                            style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex-1 min-h-0 overflow-y-auto">
+                                {renderRequestDetailView({
+                                    request: detailRequest,
+                                    onClose: closeDetailOverlay,
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
+                {optionsModal}
+                {renderGlobalModals()}
+            </>
+        );
+    }
 
     if (optsHeadless) {
         return (

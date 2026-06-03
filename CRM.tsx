@@ -273,8 +273,17 @@ export default function CRM({
     } | null>(null);
     const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [profileOverlayLead, setProfileOverlayLead] = useState<any | null>(null);
-    const [pipelineOptsRequestId, setPipelineOptsRequestId] = useState<string | null>(null);
+    const [pipelineOptsHostMounted, setPipelineOptsHostMounted] = useState(false);
+    const [pipelineOptsBootstrapId, setPipelineOptsBootstrapId] = useState<string | null>(null);
+    const [pipelineDetailHostMounted, setPipelineDetailHostMounted] = useState(false);
+    const [pipelineDetailRequest, setPipelineDetailRequest] = useState<any | null>(null);
     const [pipelineOptsSearchParams, setPipelineOptsSearchParams] = useState<Record<string, unknown>>({});
+
+    const openPipelineRequestOpts = (requestId: string) => {
+        setPipelineOptsHostMounted(true);
+        setPipelineOptsBootstrapId(String(requestId));
+    };
+
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
     const [currentView, setCurrentView] = useState<'activities' | 'pipeline' | 'list' | 'dashboard' | 'profile'>('activities');
 
@@ -784,6 +793,33 @@ export default function CRM({
             return reqName === company;
         });
     };
+
+    const resolvePipelineLeadRequest = useCallback(
+        (lead: any): any | null => {
+            if (!lead) return null;
+            const directId = String(lead?.linkedRequestId || '').trim();
+            if (directId) {
+                const byId = scopedRequestsAll.find((r: any) => String(r?.id || '') === directId);
+                if (byId) return byId;
+            }
+            const linked = resolveLeadLinkedRequest(lead, scopedRequestsAll);
+            if (linked) return linked;
+            const candidates = linkedRequestsForLead(lead);
+            if (candidates.length === 1) return candidates[0];
+            return null;
+        },
+        [scopedRequestsAll, accounts]
+    );
+
+    const openPipelineRequestDetailFromLead = useCallback(
+        (lead: any) => {
+            const req = resolvePipelineLeadRequest(lead);
+            if (!req?.id) return;
+            setPipelineDetailRequest(req);
+            setPipelineDetailHostMounted(true);
+        },
+        [resolvePipelineLeadRequest]
+    );
 
     const pipelineCardDisplayRevenue = useCallback((lead: any): number => {
         const linkedId = String(lead?.linkedRequestId || '').trim();
@@ -3087,7 +3123,7 @@ export default function CRM({
                                                                 style={{ color: colors.textMuted, borderColor: colors.border }}
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
-                                                                    setPipelineOptsRequestId(String(req.id));
+                                                                    openPipelineRequestOpts(String(req.id));
                                                                 }}
                                                             >
                                                                 <MoreHorizontal size={16} />
@@ -4060,9 +4096,9 @@ export default function CRM({
                   );
               })()
             : null}
-        {pipelineOptsRequestId ? (
+        {pipelineOptsHostMounted ? (
             <RequestsManager
-                key={`pipeline-opts-${pipelineOptsRequestId}`}
+                key="crm-pipeline-opts-headless"
                 optsHeadless
                 theme={theme}
                 subView="list"
@@ -4071,12 +4107,43 @@ export default function CRM({
                 activeProperty={activeProperty}
                 accounts={accounts}
                 setAccounts={setAccounts}
-                pendingOpenOptsRequestId={pipelineOptsRequestId}
-                onConsumedPendingOpenOpts={() => setPipelineOptsRequestId(null)}
-                onOptsHeadlessDismiss={() => setPipelineOptsRequestId(null)}
+                pendingOpenOptsRequestId={pipelineOptsBootstrapId}
+                onConsumedPendingOpenOpts={() => setPipelineOptsBootstrapId(null)}
+                onOptsHeadlessDismiss={() => {
+                    setPipelineOptsHostMounted(false);
+                    setPipelineOptsBootstrapId(null);
+                }}
                 onHeadlessModifyDetails={(requestId) => {
-                    setPipelineOptsRequestId(null);
+                    setPipelineOptsHostMounted(false);
+                    setPipelineOptsBootstrapId(null);
                     onNavigateToRequest?.(requestId);
+                }}
+                onAfterRequestsMutate={onAfterRequestsMutate}
+                currentUser={currentUser}
+                currency={currency}
+                segmentOptions={segmentOptions}
+                accountTypeOptions={accountTypeOptions}
+                canDeleteRequest={canDelRequests}
+                readOnlyOperational={crmReadOnly}
+                promotionOptions={promotionOptions}
+                canLinkRequestPromotions={canLinkPromos}
+            />
+        ) : null}
+        {pipelineDetailHostMounted && pipelineDetailRequest ? (
+            <RequestsManager
+                key="crm-pipeline-detail-headless"
+                detailHeadless
+                headlessInitialRequest={pipelineDetailRequest}
+                theme={theme}
+                subView="list"
+                searchParams={pipelineOptsSearchParams}
+                setSearchParams={(p: any) => setPipelineOptsSearchParams((prev) => ({ ...prev, ...p }))}
+                activeProperty={activeProperty}
+                accounts={accounts}
+                setAccounts={setAccounts}
+                onDetailHeadlessDismiss={() => {
+                    setPipelineDetailHostMounted(false);
+                    setPipelineDetailRequest(null);
                 }}
                 onAfterRequestsMutate={onAfterRequestsMutate}
                 currentUser={currentUser}
@@ -4103,14 +4170,14 @@ export default function CRM({
                           borderColor: colors.border,
                       }}
                   >
-                      {String(crmMenuLead?.linkedRequestId || '').trim() ? (
+                      {resolvePipelineLeadRequest(crmMenuLead) ? (
                           <button
                               type="button"
                               className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-xs font-medium hover:bg-white/5"
                               style={{ color: colors.textMain }}
                               onClick={() => {
                                   setListMenuLeadId(null);
-                                  setPipelineOptsRequestId(String(crmMenuLead.linkedRequestId));
+                                  openPipelineRequestDetailFromLead(crmMenuLead);
                               }}
                           >
                               <FileText size={14} /> View request
