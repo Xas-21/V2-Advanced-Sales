@@ -2,7 +2,9 @@ import {
     CRM_QUARTER_MONTH_BLOCKS,
     type CrmSalesPeriod,
     getCallDueDate,
-    isActivityCompleted,
+    getSalesCallPeriodAnchorDate,
+    isHubCompletedSalesCall,
+    leadMatchesSalesCallPeriodAnchor,
     parseYmdToLocalDate,
 } from './crmActivitiesUtils';
 import { resolveCrmCallCreatorName } from './userProfileMetrics';
@@ -78,19 +80,8 @@ export function dateMatchesCrmSalesPeriod(
     period: CrmSalesPeriod,
     quarterBuckets: Record<string, number[]> = CRM_QUARTER_MONTH_BLOCKS
 ): boolean {
-    const { year: y, month: mo } = parseYearMonth(ymd);
-    if (!y || !mo) return false;
-    if (period.mode === 'month') {
-        return y === period.year && mo === period.month;
-    }
-    if (period.mode === 'year') {
-        return y === period.year;
-    }
-    if (period.mode === 'quarter' && period.quarter) {
-        const months = quarterBuckets[period.quarter];
-        return Boolean(months?.length) && y === period.year && months.includes(mo);
-    }
-    return false;
+    const leadStub = { lastContact: ymd };
+    return leadMatchesSalesCallPeriodAnchor(leadStub, period, quarterBuckets);
 }
 
 export function crmSalesPeriodLabel(period: CrmSalesPeriod): string {
@@ -109,6 +100,35 @@ function scheduledRowDate(lead: any): string {
     if (due) return due.slice(0, 10);
     const entered = String(lead?.enteredFunnelAt || lead?.date || '').trim().slice(0, 10);
     return entered || '';
+}
+
+/** Same anchor as Reports → Sales Calls (`Reports.tsx` lastContact || date). */
+export function getCallReportAnchorDate(lead: any): string {
+    return getSalesCallPeriodAnchorDate(lead);
+}
+
+/** Property scope aligned with Reports `scopedSalesCalls`. */
+export function filterSalesCallsLikeReports(
+    leads: any[],
+    propertyId: string | undefined,
+    accounts: any[] | undefined
+): any[] {
+    const pid = String(propertyId || '').trim();
+    if (!pid) return leads;
+    return leads.filter((call: any) => {
+        if (call?.propertyId && String(call.propertyId) === pid) return true;
+        const aid = String(call?.accountId || '').trim();
+        const acc = aid ? (accounts || []).find((a: any) => String(a?.id || '') === aid) : null;
+        if (acc?.propertyId && String(acc.propertyId) === pid) return true;
+        return false;
+    });
+}
+
+function pickDisplayLogForLead(lead: any, logs: SalesCallLogEntry[], period: CrmSalesPeriod): SalesCallLogEntry | null {
+    if (!logs.length) return null;
+    const inPeriod = logs.filter((log) => dateMatchesCrmSalesPeriod(log.at, period));
+    const pool = inPeriod.length ? inPeriod : logs;
+    return [...pool].sort((a, b) => b.at.localeCompare(a.at))[0] || null;
 }
 
 export function parseLegacyCallLogsFromDescription(lead: any): SalesCallLogEntry[] {
@@ -180,7 +200,7 @@ function buildRowFromParts(
 ): CallReportRow | null {
     const at = String(parts.at || '').slice(0, 10);
     if (!at) return null;
-    const completed = isActivityCompleted(lead);
+    const completed = isHubCompletedSalesCall(lead);
     const assigned =
         parts.loggedByName ||
         resolveCrmCallCreatorName(lead, userDirectory);
@@ -198,7 +218,7 @@ function buildRowFromParts(
         nextStep: parts.nextStep,
         assignedUser: assigned,
         completed,
-        statusLabel: completed ? 'Completed' : 'Not completed',
+        statusLabel: completed ? 'Completed' : 'Active',
         sortKey: `${at}T${parts.id}`,
     };
 }
@@ -208,6 +228,7 @@ export function buildCallReportRows(
     options: {
         crmSalesPeriod: CrmSalesPeriod;
         activePropertyId?: string;
+        accounts?: any[];
         createdByUserFilterId?: string;
         crmFilterUsers?: { id: string; name: string }[];
         statusFilter?: CallReportStatusFilter;
@@ -218,6 +239,7 @@ export function buildCallReportRows(
     const {
         crmSalesPeriod,
         activePropertyId,
+        accounts,
         createdByUserFilterId,
         crmFilterUsers = [],
         statusFilter = 'all',
@@ -225,15 +247,8 @@ export function buildCallReportRows(
         crmLeadAttributedToUser,
     } = options;
 
-    const pid = String(activePropertyId || '').trim();
     let leads = Array.isArray(salesCalls) ? salesCalls : [];
-
-    if (pid) {
-        leads = leads.filter((l: any) => {
-            const p = String(l?.propertyId || '').trim();
-            return !p || p === pid || p === 'P-GLOBAL';
-        });
-    }
+    leads = filterSalesCallsLikeReports(leads, activePropertyId, accounts);
 
     const fid = String(createdByUserFilterId || '').trim();
     if (fid) {
@@ -246,42 +261,30 @@ export function buildCallReportRows(
     const rows: CallReportRow[] = [];
 
     for (const lead of leads) {
-        const logs = getCallLogEntriesForLead(lead);
-        if (logs.length) {
-            for (const log of logs) {
-                const row = buildRowFromParts(
-                    lead,
-                    {
-                        id: log.id,
-                        at: log.at,
-                        description: log.description,
-                        clientFeedback: log.clientFeedback || '',
-                        nextStep: log.nextStep || '',
-                        loggedByName: log.loggedByName,
-                    },
-                    crmFilterUsers
-                );
-                if (row && dateMatchesCrmSalesPeriod(row.at, crmSalesPeriod)) {
-                    rows.push(row);
-                }
-            }
-        } else {
-            const at = scheduledRowDate(lead);
-            const row = buildRowFromParts(
-                lead,
-                {
-                    id: `${lead.id}-scheduled`,
-                    at,
-                    description: String(lead?.description || '').trim(),
-                    clientFeedback: '',
-                    nextStep: String(lead?.nextStep || '').trim(),
-                },
-                crmFilterUsers
-            );
-            if (row && dateMatchesCrmSalesPeriod(row.at, crmSalesPeriod)) {
-                rows.push(row);
-            }
+        const anchorAt = getCallReportAnchorDate(lead);
+        if (!anchorAt || !dateMatchesCrmSalesPeriod(anchorAt, crmSalesPeriod)) {
+            continue;
         }
+
+        const logs = getCallLogEntriesForLead(lead);
+        const logsInPeriod = logs.filter((log) => dateMatchesCrmSalesPeriod(log.at, crmSalesPeriod));
+        const displayLog =
+            (logsInPeriod.length
+                ? [...logsInPeriod].sort((a, b) => b.at.localeCompare(a.at))[0]
+                : null) || pickDisplayLogForLead(lead, logs, crmSalesPeriod);
+        const row = buildRowFromParts(
+            lead,
+            {
+                id: `${lead.id}-call`,
+                at: anchorAt,
+                description: displayLog?.description || String(lead?.description || '').trim(),
+                clientFeedback: displayLog?.clientFeedback || '',
+                nextStep: displayLog?.nextStep || String(lead?.nextStep || '').trim(),
+                loggedByName: displayLog?.loggedByName,
+            },
+            crmFilterUsers
+        );
+        if (row) rows.push(row);
     }
 
     let filtered = rows;

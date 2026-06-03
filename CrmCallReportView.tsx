@@ -31,6 +31,7 @@ export type CrmCallReportViewProps = {
     createdByUserFilterId: string;
     crmFilterUsers?: { id: string; name: string }[];
     activePropertyId?: string;
+    accounts?: any[];
 };
 
 function chartTooltipTheme(colors: any) {
@@ -53,6 +54,7 @@ export default function CrmCallReportView({
     createdByUserFilterId,
     crmFilterUsers,
     activePropertyId,
+    accounts,
 }: CrmCallReportViewProps) {
     const colors = theme.colors;
     const [statusFilter, setStatusFilter] = useState<CallReportStatusFilter>('all');
@@ -63,13 +65,14 @@ export default function CrmCallReportView({
             buildCallReportRows(salesCalls, {
                 crmSalesPeriod,
                 activePropertyId,
+                accounts,
                 createdByUserFilterId,
                 crmFilterUsers,
                 statusFilter,
                 sort,
                 crmLeadAttributedToUser,
             }),
-        [salesCalls, crmSalesPeriod, activePropertyId, createdByUserFilterId, crmFilterUsers, statusFilter, sort]
+        [salesCalls, crmSalesPeriod, activePropertyId, accounts, createdByUserFilterId, crmFilterUsers, statusFilter, sort]
     );
 
     const chartBuckets = useMemo(
@@ -128,7 +131,7 @@ export default function CrmCallReportView({
                     >
                         <option value="all">All calls</option>
                         <option value="completed">Completed</option>
-                        <option value="not_completed">Not completed</option>
+                        <option value="not_completed">Active</option>
                     </select>
                     <select
                         value={sort}

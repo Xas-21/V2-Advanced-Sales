@@ -4,12 +4,16 @@ import { CRM_QUARTER_MONTH_BLOCKS, type CrmSalesPeriod } from './crmActivitiesUt
 import { crmLeadAttributedToUser, resolveCrmCallCreatorName } from './userProfileMetrics';
 import {
     formatCallDueDate,
-    isActivityCompleted,
     isCallDueToday,
-    leadMatchesDueDatePeriod,
+    isHighPotentialPipelineLead,
+    isHubCompletedSalesCall,
+    isHubUpcomingSalesCall,
+    isNotInterestedPipelineLead,
+    leadMatchesSalesCallPeriodAnchor,
     toLocalYmd,
     accountHasCallHistory,
 } from './crmActivitiesUtils';
+import { filterSalesCallsLikeReports } from './crmCallReportUtils';
 import { getTagColor } from './tagColorSettings';
 import LogCallModal, { type LogCallFormData } from './LogCallModal';
 import CallDetailsModal from './CallDetailsModal';
@@ -18,6 +22,9 @@ import CrmCallReportView from './CrmCallReportView';
 export type CrmActivitiesViewProps = {
     theme: any;
     salesCalls: any[];
+    /** All CRM call records (salesCalls + pipeline stages), same pool as Reports → Sales Calls. */
+    salesCallsForReport?: any[];
+    accounts?: any[];
     crmSalesPeriod: CrmSalesPeriod;
     createdByUserFilterId: string;
     crmFilterUsers?: { id: string; name: string }[];
@@ -36,6 +43,8 @@ export type CrmActivitiesViewProps = {
 export default function CrmActivitiesView({
     theme,
     salesCalls,
+    salesCallsForReport,
+    accounts,
     crmSalesPeriod,
     createdByUserFilterId,
     crmFilterUsers,
@@ -57,16 +66,25 @@ export default function CrmActivitiesView({
     const [detailsLead, setDetailsLead] = useState<any | null>(null);
     const [followUpHint, setFollowUpHint] = useState<string | null>(null);
 
-    const flatAll = useMemo(() => salesCalls || [], [salesCalls]);
+    const flatAll = useMemo(() => {
+        const pool = salesCallsForReport ?? salesCalls ?? [];
+        return Array.isArray(pool) ? pool : [];
+    }, [salesCalls, salesCallsForReport]);
 
-    const propertyFiltered = useMemo(() => {
-        const pid = String(activePropertyId || '').trim();
-        if (!pid) return flatAll;
-        return flatAll.filter((l: any) => {
-            const p = String(l?.propertyId || '').trim();
-            return !p || p === pid || p === 'P-GLOBAL';
-        });
-    }, [flatAll, activePropertyId]);
+    const crmLeadsForHistory = useMemo(() => {
+        const grouped: Record<string, any[]> = {};
+        for (const lead of flatAll) {
+            const stage = String(lead?.stage || 'new').trim() || 'new';
+            if (!grouped[stage]) grouped[stage] = [];
+            grouped[stage].push(lead);
+        }
+        return grouped;
+    }, [flatAll]);
+
+    const propertyFiltered = useMemo(
+        () => filterSalesCallsLikeReports(flatAll, activePropertyId, accounts),
+        [flatAll, activePropertyId, accounts]
+    );
 
     const userFiltered = useMemo(() => {
         const fid = String(createdByUserFilterId || '').trim();
@@ -82,37 +100,26 @@ export default function CrmActivitiesView({
             return userFiltered.filter((l: any) => isCallDueToday(l, today));
         }
         return userFiltered.filter((l: any) =>
-            leadMatchesDueDatePeriod(l, crmSalesPeriod, CRM_QUARTER_MONTH_BLOCKS)
+            leadMatchesSalesCallPeriodAnchor(l, crmSalesPeriod, CRM_QUARTER_MONTH_BLOCKS)
         );
     }, [userFiltered, todayOnly, crmSalesPeriod]);
 
     const activeCalls = useMemo(
-        () => periodFiltered.filter((l: any) => !isActivityCompleted(l)),
+        () => periodFiltered.filter((l: any) => isHubUpcomingSalesCall(l)),
         [periodFiltered]
     );
     const completedCalls = useMemo(
-        () => periodFiltered.filter((l: any) => isActivityCompleted(l)),
+        () => periodFiltered.filter((l: any) => isHubCompletedSalesCall(l)),
         [periodFiltered]
     );
     const visibleCalls = listTab === 'active' ? activeCalls : completedCalls;
     const totalCallsCount = periodFiltered.length;
-    const highPotentialClientCount = useMemo(() => {
-        const accountKeys = new Set<string>();
-        periodFiltered.forEach((l: any) => {
-            const interest = String(l?.interestStatus || '').trim().toLowerCase();
-            if (interest !== 'interested' && interest !== 'waiting') return;
-            const aid = String(l?.accountId || '').trim();
-            const aname = String(l?.company || '').trim().toLowerCase();
-            if (aid) accountKeys.add(`id:${aid}`);
-            else if (aname) accountKeys.add(`name:${aname}`);
-        });
-        return accountKeys.size;
-    }, [periodFiltered]);
+    const highPotentialClientCount = useMemo(
+        () => periodFiltered.filter((l: any) => isHighPotentialPipelineLead(l)).length,
+        [periodFiltered]
+    );
     const notInterestedCallsCount = useMemo(
-        () =>
-            periodFiltered.filter(
-                (l: any) => String(l?.interestStatus || '').trim().toLowerCase() === 'not_interested'
-            ).length,
+        () => periodFiltered.filter((l: any) => isNotInterestedPipelineLead(l)).length,
         [periodFiltered]
     );
     const deadlineCallsCount = useMemo(
@@ -223,11 +230,12 @@ export default function CrmActivitiesView({
             {listTab === 'report' ? (
                 <CrmCallReportView
                     theme={theme}
-                    salesCalls={salesCalls}
+                    salesCalls={salesCallsForReport ?? salesCalls}
                     crmSalesPeriod={crmSalesPeriod}
                     createdByUserFilterId={createdByUserFilterId}
                     crmFilterUsers={crmFilterUsers}
                     activePropertyId={activePropertyId}
+                    accounts={accounts}
                 />
             ) : null}
 
@@ -349,7 +357,7 @@ export default function CrmActivitiesView({
                                     </td>
                                     <td className="p-3">
                                         <div className="flex justify-end gap-1">
-                                            {accountHasCallHistory(lead, { new: salesCalls }) ? (
+                                            {accountHasCallHistory(lead, crmLeadsForHistory) ? (
                                                 <button type="button" title="Details" className="p-2 rounded-lg border" style={{ borderColor: colors.border, color: colors.textMuted }} onClick={() => setDetailsLead(lead)}>
                                                     <ScrollText size={14} />
                                                 </button>
@@ -430,8 +438,8 @@ export default function CrmActivitiesView({
                 open={!!detailsLead}
                 onClose={() => setDetailsLead(null)}
                 lead={detailsLead}
-                salesCalls={salesCalls}
-                crmLeads={{ new: salesCalls }}
+                salesCalls={flatAll}
+                crmLeads={crmLeadsForHistory}
                 theme={theme}
             />
         </div>

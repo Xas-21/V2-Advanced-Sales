@@ -9,9 +9,11 @@ import {
 import {
     computeAccountMetrics,
     buildAccountTimeline,
-    filterOpenBookingRequests,
+    filterInquiryToTentativeRequests,
+    formatRequestStatusLabel,
     type TimelineItem
 } from './accountProfileData';
+import { computeRequestRevenueBreakdownNoTax } from './operationalSegmentRevenue';
 import { formatSarCompact } from './formatSar';
 import { getTagColor, setTagColorForName, TAG_COLORS_EVENT, readTagColors, writeTagColors } from './tagColorSettings';
 import type { ContractRecord, ContractStatus } from './contractsStore';
@@ -39,10 +41,10 @@ export interface CRMProfileViewProps {
     onLeadChange: (next: any) => void;
     linkedRequests?: any[];
     salesCalls?: any[];
-    opportunityLeads?: any[];
     currentUser?: any;
     onOpenRequest?: (requestId: string) => void;
-    onAddOpportunity?: () => void;
+    onOpenAddRequestPicker?: () => void;
+    onViewAccountRequests?: () => void;
     onEditAccount?: () => void;
     /** View-only profile: hide all create/edit/delete controls. */
     readOnly?: boolean;
@@ -75,16 +77,6 @@ export interface CRMProfileViewProps {
     onScanContactCard?: (file: File) => Promise<any> | void;
 }
 
-const STAGE_LABELS: Record<string, string> = {
-    new: 'Upcoming',
-    waiting: 'Leads',
-    qualified: 'Qualified',
-    proposal: 'Proposal',
-    negotiation: 'Negotiation',
-    won: 'Won',
-    notInterested: 'Not interested'
-};
-
 function timelineIcon(item: TimelineItem, colors: any) {
     const wrap = (child: React.ReactNode, bg: string) => (
         <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ backgroundColor: `${bg}20` }}>
@@ -110,10 +102,10 @@ export default function CRMProfileView({
     onLeadChange,
     linkedRequests = [],
     salesCalls = [],
-    opportunityLeads = [],
     currentUser,
     onOpenRequest,
-    onAddOpportunity,
+    onOpenAddRequestPicker,
+    onViewAccountRequests,
     onEditAccount,
     readOnly = false,
     canDeleteAccount = false,
@@ -268,7 +260,10 @@ export default function CRMProfileView({
 
     const tags = lead.tags || [];
     const metrics = useMemo(() => computeAccountMetrics(performanceLinkedRequests), [performanceLinkedRequests]);
-    const openBookingRequests = useMemo(() => filterOpenBookingRequests(performanceLinkedRequests), [performanceLinkedRequests]);
+    const activeOpportunityRequests = useMemo(
+        () => filterInquiryToTentativeRequests(performanceLinkedRequests),
+        [performanceLinkedRequests]
+    );
     const timelineItems = useMemo(
         () =>
             buildAccountTimeline({
@@ -620,6 +615,26 @@ export default function CRMProfileView({
                             <Trash2 size={16} /> Delete account
                         </button>
                     )}
+                    {onViewAccountRequests ? (
+                        <button
+                            type="button"
+                            onClick={onViewAccountRequests}
+                            className="px-3 py-2 rounded border hover:bg-white/5 flex items-center gap-2 text-sm font-bold"
+                            style={{ borderColor: colors.border, color: colors.textMain }}
+                        >
+                            View Requests
+                        </button>
+                    ) : null}
+                    {onOpenAddRequestPicker ? (
+                        <button
+                            type="button"
+                            onClick={onOpenAddRequestPicker}
+                            className="px-3 py-2 rounded border flex items-center gap-2 text-sm font-bold"
+                            style={{ borderColor: colors.primary, color: colors.primary }}
+                        >
+                            <Plus size={16} /> Add Opportunity
+                        </button>
+                    ) : null}
                     {!readOnly && (
                         <button
                             type="button"
@@ -1217,74 +1232,79 @@ export default function CRMProfileView({
 
                     <div className="col-span-2 space-y-6">
                         <div className="p-6 rounded-xl border" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
-                            <div className="flex justify-between items-center mb-4">
+                            <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
                                 <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: colors.textMuted }}>Active Opportunities</h3>
-                                {onAddOpportunity && (
-                                    <button
-                                        type="button"
-                                        onClick={onAddOpportunity}
-                                        className="text-xs flex items-center gap-1 hover:opacity-70"
-                                        style={{ color: colors.primary }}
-                                    >
-                                        + Add Opportunity
-                                    </button>
-                                )}
+                                <div className="flex flex-wrap items-center gap-3">
+                                    {onViewAccountRequests ? (
+                                        <button
+                                            type="button"
+                                            onClick={onViewAccountRequests}
+                                            className="text-xs font-bold hover:opacity-70"
+                                            style={{ color: colors.textMain }}
+                                        >
+                                            View Requests
+                                        </button>
+                                    ) : null}
+                                    {onOpenAddRequestPicker ? (
+                                        <button
+                                            type="button"
+                                            onClick={onOpenAddRequestPicker}
+                                            className="text-xs flex items-center gap-1 hover:opacity-70"
+                                            style={{ color: colors.primary }}
+                                        >
+                                            + Add Opportunity
+                                        </button>
+                                    ) : null}
+                                </div>
                             </div>
                             <div className="space-y-3">
-                                {opportunityLeads.length === 0 && openBookingRequests.length === 0 && (
+                                {activeOpportunityRequests.length === 0 ? (
                                     <p className="text-sm italic py-6 text-center" style={{ color: colors.textMuted }}>
-                                        No open pipeline items or booking opportunities for this account.
+                                        No requests in Inquiry or Tentative for this account.
                                     </p>
+                                ) : (
+                                    activeOpportunityRequests.map((req: any) => {
+                                        const total = Number(
+                                            computeRequestRevenueBreakdownNoTax(req).totalLineNoTax || 0
+                                        );
+                                        return (
+                                            <div key={req.id} className="p-4 rounded-lg border" style={{ borderColor: colors.border }}>
+                                                <div className="flex justify-between items-start gap-3">
+                                                    <div className="min-w-0">
+                                                        <h4 className="font-bold mb-1 truncate" style={{ color: colors.textMain }}>
+                                                            {req.requestName || req.id || 'Request'}
+                                                        </h4>
+                                                        <p className="text-xs" style={{ color: colors.textMuted }}>
+                                                            {String(req.requestType || 'Request').trim()} ·{' '}
+                                                            {formatRequestStatusLabel(req.status)}
+                                                        </p>
+                                                    </div>
+                                                    <div className="text-right shrink-0">
+                                                        <span
+                                                            className="px-2 py-1 rounded text-xs font-medium"
+                                                            style={{ backgroundColor: `${colors.orange}20`, color: colors.orange }}
+                                                        >
+                                                            {formatRequestStatusLabel(req.status)}
+                                                        </span>
+                                                        <p className="text-sm font-bold font-mono mt-1" style={{ color: colors.primary }}>
+                                                            {formatSarCompact(total)}
+                                                        </p>
+                                                        {onOpenRequest ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => onOpenRequest(String(req.id))}
+                                                                className="text-xs font-bold underline mt-1 block ml-auto"
+                                                                style={{ color: colors.primary }}
+                                                            >
+                                                                Open request
+                                                            </button>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
                                 )}
-                                {opportunityLeads.map((ol: any) => (
-                                    <div key={ol.id} className="p-4 rounded-lg border" style={{ borderColor: colors.border }}>
-                                        <div className="flex justify-between items-start mb-2">
-                                            <div>
-                                                <h4 className="font-bold mb-1" style={{ color: colors.textMain }}>
-                                                    {ol.subject || ol.company || 'Sales opportunity'}
-                                                </h4>
-                                                <p className="text-xs" style={{ color: colors.textMuted }}>
-                                                    Last contact: {ol.lastContact || '—'} · {ol.accountManager || currentUser?.name || '—'}
-                                                </p>
-                                            </div>
-                                            <div className="text-right">
-                                                <span
-                                                    className="px-2 py-1 rounded text-xs font-medium"
-                                                    style={{ backgroundColor: `${colors.orange}20`, color: colors.orange }}
-                                                >
-                                                    {STAGE_LABELS[String(ol.stage || '').toLowerCase()] || ol.stage || '—'}
-                                                </span>
-                                                <p className="text-sm font-bold font-mono mt-1" style={{ color: colors.primary }}>
-                                                    {formatSarCompact(ol.value)}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                                {openBookingRequests.map((req: any) => (
-                                    <div key={req.id} className="p-4 rounded-lg border border-dashed" style={{ borderColor: colors.border }}>
-                                        <div className="flex justify-between items-start mb-2">
-                                            <div>
-                                                <h4 className="font-bold mb-1" style={{ color: colors.textMain }}>
-                                                    {req.requestName || req.id || 'Request'}
-                                                </h4>
-                                                <p className="text-xs" style={{ color: colors.textMuted }}>Booking · {req.status || '—'}</p>
-                                            </div>
-                                            <div className="text-right">
-                                                {onOpenRequest && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => onOpenRequest(String(req.id))}
-                                                        className="text-xs font-bold underline"
-                                                        style={{ color: colors.primary }}
-                                                    >
-                                                        Open request
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
                             </div>
                         </div>
 

@@ -7097,6 +7097,9 @@ export default function AdvancedSalesDashboard() {
                             setCrmLeads={setCrmLeads}
                             setSharedRequests={setSharedRequests}
                             assignableUsersForAccounts={taskAssignableUsers}
+                            segmentOptions={propertySegmentLabels}
+                            promotionOptions={promotions}
+                            onAfterRequestsMutate={refreshSharedRequests}
                         />
                     ) : currentView === 'promotions' ? (
                         <PromotionsPage
@@ -7197,6 +7200,9 @@ export default function AdvancedSalesDashboard() {
                                 setCurrentView('contracts');
                             }}
                             onPatchRequestStatus={patchRequestStatus}
+                            segmentOptions={propertySegmentLabels}
+                            promotionOptions={promotions}
+                            onAfterRequestsMutate={refreshSharedRequests}
                         />
                     ) : currentView === 'contracts' ? (
                         <Contracts

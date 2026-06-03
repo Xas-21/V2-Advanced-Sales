@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Plus, Building2, Camera, GitMerge } from 'lucide-react';
+import { Search, Plus, Building2, Camera, GitMerge, X } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
@@ -20,7 +20,6 @@ import {
     flattenCrmLeads,
     filterRequestsForAccount,
     filterSalesCallsForAccount,
-    filterOpenOpportunityLeads,
 } from './accountProfileData';
 import { computeRequestRevenueBreakdownNoTax } from './operationalSegmentRevenue';
 import { formatCompactCurrency } from './formatCompactCurrency';
@@ -37,6 +36,14 @@ import type { CurrencyCode } from './currency';
 export type AccountPerfDateRange = { from: string; to: string };
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
+import RequestTypePickerModal from './RequestTypePickerModal';
+import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
+import RequestsManager from './RequestsManager';
+import {
+    canDeleteRequests,
+    canLinkRequestPromotions,
+    canMutateOperational,
+} from './userPermissions';
 import { resolveUserAttributionId } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { repointContractRecordsForAccountMerge } from './contractsStore';
@@ -73,6 +80,9 @@ interface AccountsPageProps {
     onAccountProfileShellStateChange?: (state: { open: boolean; leadKey: string | null }) => void;
     setSharedRequests: React.Dispatch<React.SetStateAction<any[]>>;
     assignableUsersForAccounts?: { id: string; name: string }[];
+    segmentOptions?: string[];
+    promotionOptions?: any[];
+    onAfterRequestsMutate?: () => void;
 }
 
 export default function AccountsPage({
@@ -94,6 +104,9 @@ export default function AccountsPage({
     onAccountProfileShellStateChange,
     setSharedRequests,
     assignableUsersForAccounts = [],
+    segmentOptions = [],
+    promotionOptions = [],
+    onAfterRequestsMutate,
 }: AccountsPageProps) {
     const colors = theme.colors;
     const profileReadOnly = isAccountsPageReadOnly(currentUser);
@@ -102,6 +115,16 @@ export default function AccountsPage({
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
+    const canDelRequests = canDeleteRequests(currentUser);
+    const canLinkPromos = canLinkRequestPromotions(currentUser);
+    const canMutate = canMutateOperational(currentUser);
+    const [profileRequestTypeOpen, setProfileRequestTypeOpen] = useState(false);
+    const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
+    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{
+        accountId: string;
+        requestType: string;
+    } | null>(null);
+    const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [search, setSearch] = useState('');
     const [listSort, setListSort] = useState<AccountsListSort>('name_az');
     const [cityFilter, setCityFilter] = useState('');
@@ -694,7 +717,6 @@ export default function AccountsPage({
         const aname = profileLead.company;
         const linkedReq = filterRequestsForAccount(sharedRequests, aid, aname);
         const salesForAcc = filterSalesCallsForAccount(flatCrmLeads, aid, aname);
-        const oppLeads = filterOpenOpportunityLeads(flatCrmLeads, aid, aname);
         const contractsForAccount = accountContracts.filter((c) => String(c.accountId || '') === String(aid));
         return (
             <>
@@ -708,12 +730,12 @@ export default function AccountsPage({
                     }}
                     linkedRequests={linkedReq}
                     salesCalls={salesForAcc}
-                    opportunityLeads={oppLeads}
                     currentUser={currentUser}
                     onOpenRequest={onOpenRequest}
-                    onAddOpportunity={
-                        profileReadOnly ? undefined : () => onNavigateToCrmWithAccount(String(aid))
+                    onOpenAddRequestPicker={
+                        profileReadOnly ? undefined : () => setProfileRequestTypeOpen(true)
                     }
+                    onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={
                         profileReadOnly
                             ? undefined
@@ -801,6 +823,88 @@ export default function AccountsPage({
                         setDeleteImpactMessage('');
                     }}
                 />
+                <RequestTypePickerModal
+                    open={profileRequestTypeOpen}
+                    onClose={() => setProfileRequestTypeOpen(false)}
+                    theme={theme}
+                    onSelectType={(type) => {
+                        setProfileRequestTypeOpen(false);
+                        setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
+                    }}
+                />
+                <AccountLinkedRequestsModal
+                    open={profileRequestsListOpen}
+                    onClose={() => setProfileRequestsListOpen(false)}
+                    theme={theme}
+                    accountId={String(aid)}
+                    accountName={String(aname || 'Account')}
+                    sharedRequests={sharedRequests}
+                    activeProperty={activeProperty}
+                    accounts={accounts}
+                    setAccounts={setAccounts}
+                    onOpenRequest={(requestId) => {
+                        setProfileRequestsListOpen(false);
+                        onOpenRequest(requestId);
+                    }}
+                    onAfterRequestsMutate={onAfterRequestsMutate}
+                    currentUser={currentUser}
+                    currency={currency}
+                    segmentOptions={segmentOptions}
+                    accountTypeOptions={accountTypeOptions}
+                    canDeleteRequest={canDelRequests}
+                    readOnlyOperational={!canMutate}
+                    promotionOptions={promotionOptions}
+                    canLinkRequestPromotions={canLinkPromos}
+                />
+                {profileEmbeddedRequest ? (
+                    <div
+                        className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
+                        onClick={() => setProfileEmbeddedRequest(null)}
+                    >
+                        <div
+                            className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => setProfileEmbeddedRequest(null)}
+                                className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
+                                style={{ borderColor: colors.border, color: colors.textMuted }}
+                                aria-label="Close"
+                            >
+                                <X size={20} />
+                            </button>
+                            <RequestsManager
+                                key={`acct-prof-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                embedded
+                                theme={theme}
+                                subView="new_request"
+                                searchParams={profileRequestModalParams}
+                                setSearchParams={(p: any) =>
+                                    setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
+                                }
+                                initialRequestType={profileEmbeddedRequest.requestType}
+                                initialAccountId={profileEmbeddedRequest.accountId}
+                                onConsumedInitialAccountId={() => {}}
+                                activeProperty={activeProperty}
+                                accounts={accounts}
+                                setAccounts={setAccounts}
+                                onAfterRequestsMutate={onAfterRequestsMutate}
+                                onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
+                                onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
+                                segmentOptions={segmentOptions}
+                                accountTypeOptions={accountTypeOptions}
+                                canDeleteRequest={canDelRequests}
+                                readOnlyOperational={!canMutate}
+                                currentUser={currentUser}
+                                currency={currency}
+                                promotionOptions={promotionOptions}
+                                canLinkRequestPromotions={canLinkPromos}
+                            />
+                        </div>
+                    </div>
+                ) : null}
             </>
         );
     }

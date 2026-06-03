@@ -15,10 +15,23 @@ export function filterRequestsForAccount(requests: any[], accountId: string | un
 
 const WON = new Set(['definite', 'actual']);
 const OPEN = new Set(['inquiry', 'tentative', 'accepted']);
+const INQUIRY_TENTATIVE = new Set(['inquiry', 'tentative']);
 
 export function filterOpenBookingRequests(requestsForAccount: any[]): any[] {
     if (!requestsForAccount?.length) return [];
     return requestsForAccount.filter((r) => OPEN.has(String(r.status || '').toLowerCase()));
+}
+
+/** Active Opportunities: Inquiry through Tentative only. */
+export function filterInquiryToTentativeRequests(requestsForAccount: any[]): any[] {
+    if (!requestsForAccount?.length) return [];
+    return requestsForAccount.filter((r) => INQUIRY_TENTATIVE.has(String(r.status || '').toLowerCase()));
+}
+
+export function formatRequestStatusLabel(status: string): string {
+    const s = String(status || '').trim();
+    if (!s) return '—';
+    return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function computeAccountMetrics(requestsForAccount: any[]): {

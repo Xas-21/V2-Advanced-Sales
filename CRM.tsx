@@ -26,7 +26,6 @@ import {
     flattenCrmLeads,
     filterRequestsForAccount,
     filterSalesCallsForAccount,
-    filterOpenOpportunityLeads
 } from './accountProfileData';
 import {
     flattenPipeline,
@@ -47,6 +46,13 @@ import { formatCrmFunnelRequestTypeDisplay } from './requestTypeUtils';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import CrmActivitiesView from './CrmActivitiesView';
+import RequestTypePickerModal from './RequestTypePickerModal';
+import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
+import RequestsManager from './RequestsManager';
+import {
+    canDeleteRequests,
+    canLinkRequestPromotions,
+} from './userPermissions';
 import type { LogCallFormData } from './LogCallModal';
 import { appendCallDescription, getCallDueDate } from './crmActivitiesUtils';
 import type { SalesCallLogEntry } from './crmCallReportUtils';
@@ -199,6 +205,9 @@ interface CRMProps {
     /** Persist request status when dragging cards in Request View kanban. */
     onPatchRequestStatus?: (requestId: string, status: string) => void | Promise<void>;
     crmViewMode?: 'account' | 'request';
+    segmentOptions?: string[];
+    promotionOptions?: any[];
+    onAfterRequestsMutate?: () => void;
 }
 
 export default function CRM({
@@ -234,6 +243,9 @@ export default function CRM({
     onNavigateToNewAgreement,
     onPatchRequestStatus,
     crmViewMode = 'account',
+    segmentOptions = [],
+    promotionOptions = [],
+    onAfterRequestsMutate,
 }: CRMProps) {
     const colors = theme.colors;
     const selectedCurrency = resolveCurrencyCode(currency);
@@ -245,6 +257,16 @@ export default function CRM({
     const allowDeleteAccount = canDeleteAccounts(currentUser);
     const allowManualTimeline = canManageManualTimeline(currentUser);
     const allowTagAdmin = isSystemAdmin(currentUser);
+    const canDelRequests = canDeleteRequests(currentUser);
+    const canLinkPromos = canLinkRequestPromotions(currentUser);
+
+    const [profileRequestTypeOpen, setProfileRequestTypeOpen] = useState(false);
+    const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
+    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{
+        accountId: string;
+        requestType: string;
+    } | null>(null);
+    const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const allowAccountMergeAndOwner = canMergeAccountsAndAssignOwner(currentUser);
     const [currentView, setCurrentView] = useState<'activities' | 'pipeline' | 'list' | 'dashboard' | 'profile'>('activities');
 
@@ -1316,7 +1338,12 @@ export default function CRM({
     };
 
     /** Auto-log CRM events onto the linked account timeline (account.activities). */
-    const appendCrmActivityToAccount = (accountId: string | undefined, title: string, body: string) => {
+    const appendCrmActivityToAccount = (
+        accountId: string | undefined,
+        title: string,
+        body: string,
+        crmLeadId?: string
+    ) => {
         if (!accountId) return;
         const u = currentUser?.name || currentUser?.email || 'Staff';
         const act = {
@@ -1324,7 +1351,8 @@ export default function CRM({
             at: new Date().toISOString(),
             title,
             body,
-            user: u
+            user: u,
+            crmLeadId: crmLeadId ? String(crmLeadId) : undefined,
         };
         setAccounts((prev: any[]) =>
             prev.map((a: any) =>
@@ -1333,6 +1361,41 @@ export default function CRM({
         );
         setSelectedLead((prev: any) =>
             prev && prev.accountId === accountId ? { ...prev, activities: [...(prev.activities || []), act] } : prev
+        );
+    };
+
+    const stripCrmActivitiesForDeletedCall = (accountId: string | undefined, lead: any) => {
+        if (!accountId || !lead) return;
+        const leadId = String(lead.id || '').trim();
+        const company = String(lead.company || '').trim().toLowerCase();
+        const subject = String(lead.subject || '').trim().toLowerCase();
+        const shouldRemove = (act: any) => {
+            if (leadId && String(act?.crmLeadId || '') === leadId) return true;
+            const title = String(act?.title || '').trim().toLowerCase();
+            const body = String(act?.body || '').trim().toLowerCase();
+            if (
+                title === 'sales call deleted' ||
+                title === 'call logged' ||
+                title === 'follow-up call scheduled' ||
+                title === 'sales call created' ||
+                title === 'sales call duplicated'
+            ) {
+                if (leadId && body.includes(leadId.toLowerCase())) return true;
+                if (company && body.includes(company)) return true;
+                if (subject && body.includes(subject)) return true;
+            }
+            return false;
+        };
+        const prune = (acts: any[]) => (Array.isArray(acts) ? acts.filter((a) => !shouldRemove(a)) : []);
+        setAccounts((prev: any[]) =>
+            prev.map((a: any) =>
+                a.id === accountId ? { ...a, activities: prune(a.activities) } : a
+            )
+        );
+        setSelectedLead((prev: any) =>
+            prev && String(prev.accountId || prev.id) === String(accountId)
+                ? { ...prev, activities: prune(prev.activities) }
+                : prev
         );
     };
 
@@ -2035,7 +2098,8 @@ export default function CRM({
                     lead.accountId,
                     'Follow-up call scheduled',
                     `${currentUser?.name || currentUser?.username || 'User'} scheduled a follow-up on ${data.followUpDate}.\n` +
-                        `Subject: ${followUpLead.subject}`
+                        `Subject: ${followUpLead.subject}`,
+                    String(lead.id)
                 );
             }
         }
@@ -2048,7 +2112,8 @@ export default function CRM({
             appendCrmActivityToAccount(
                 lead.accountId,
                 'Call logged',
-                `${currentUser?.name || currentUser?.username || 'User'} logged a call.\n${data.description.trim()}${followNote}${stageNote}`
+                `${currentUser?.name || currentUser?.username || 'User'} logged a call.\n${data.description.trim()}${followNote}${stageNote}`,
+                String(lead.id)
             );
         }
 
@@ -2094,11 +2159,7 @@ export default function CRM({
                 return out;
             });
         }
-        appendCrmActivityToAccount(
-            lead.accountId,
-            'Sales call deleted',
-            `${currentUser?.name || currentUser?.username || 'User'} removed the sales opportunity for ${lead.company} (subject: ${lead.subject || '—'}).`
-        );
+        stripCrmActivitiesForDeletedCall(lead.accountId, lead);
         setListMenuLeadId(null);
     };
 
@@ -2261,8 +2322,7 @@ export default function CRM({
         const aid = selectedLead.accountId || selectedLead.id;
         const aname = selectedLead.company;
         const linkedReq = filterRequestsForAccount(sharedRequests, aid, aname);
-        const salesForAcc = filterSalesCallsForAccount(salesCalls, aid, aname);
-        const oppLeads = filterOpenOpportunityLeads(flatCrmLeads, aid, aname);
+        const salesForAcc = filterSalesCallsForAccount(flatCrmLeads, aid, aname);
         const editingRow = accounts.find((a: any) => a.id === aid);
         return (
             <>
@@ -2273,26 +2333,10 @@ export default function CRM({
                     onLeadChange={handleProfileLeadChange}
                     linkedRequests={linkedReq}
                     salesCalls={salesForAcc}
-                    opportunityLeads={oppLeads}
                     currentUser={currentUser}
                     onOpenRequest={onNavigateToRequest}
-                    onAddOpportunity={
-                        crmReadOnly
-                            ? undefined
-                            : () => {
-                                  setCurrentView(externalView || 'pipeline');
-                                  const acc = accounts.find((a: any) => a.id === aid);
-                                  if (acc) {
-                                      setNewCallData((prev) => ({
-                                          ...prev,
-                                          accountId: acc.id,
-                                          accountName: acc.name
-                                      }));
-                                      setAccountSearch(acc.name);
-                                  }
-                                  setShowAddCallModal(true);
-                              }
-                    }
+                    onOpenAddRequestPicker={crmReadOnly ? undefined : () => setProfileRequestTypeOpen(true)}
+                    onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
                     readOnly={crmReadOnly}
                     canDeleteAccount={allowDeleteAccount}
@@ -2348,6 +2392,88 @@ export default function CRM({
                         setDeleteImpactMessage('');
                     }}
                 />
+                <RequestTypePickerModal
+                    open={profileRequestTypeOpen}
+                    onClose={() => setProfileRequestTypeOpen(false)}
+                    theme={theme}
+                    onSelectType={(type) => {
+                        setProfileRequestTypeOpen(false);
+                        setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
+                    }}
+                />
+                <AccountLinkedRequestsModal
+                    open={profileRequestsListOpen}
+                    onClose={() => setProfileRequestsListOpen(false)}
+                    theme={theme}
+                    accountId={String(aid)}
+                    accountName={String(aname || 'Account')}
+                    sharedRequests={sharedRequests}
+                    activeProperty={activeProperty}
+                    accounts={accounts}
+                    setAccounts={setAccounts}
+                    onOpenRequest={(requestId) => {
+                        setProfileRequestsListOpen(false);
+                        onNavigateToRequest?.(requestId);
+                    }}
+                    onAfterRequestsMutate={onAfterRequestsMutate}
+                    currentUser={currentUser}
+                    currency={currency}
+                    segmentOptions={segmentOptions}
+                    accountTypeOptions={accountTypeOptions}
+                    canDeleteRequest={canDelRequests}
+                    readOnlyOperational={crmReadOnly}
+                    promotionOptions={promotionOptions}
+                    canLinkRequestPromotions={canLinkPromos}
+                />
+                {profileEmbeddedRequest ? (
+                    <div
+                        className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
+                        onClick={() => setProfileEmbeddedRequest(null)}
+                    >
+                        <div
+                            className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => setProfileEmbeddedRequest(null)}
+                                className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
+                                style={{ borderColor: colors.border, color: colors.textMuted }}
+                                aria-label="Close"
+                            >
+                                <X size={20} />
+                            </button>
+                            <RequestsManager
+                                key={`profile-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                embedded
+                                theme={theme}
+                                subView="new_request"
+                                searchParams={profileRequestModalParams}
+                                setSearchParams={(p: any) =>
+                                    setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
+                                }
+                                initialRequestType={profileEmbeddedRequest.requestType}
+                                initialAccountId={profileEmbeddedRequest.accountId}
+                                onConsumedInitialAccountId={() => {}}
+                                activeProperty={activeProperty}
+                                accounts={accounts}
+                                setAccounts={setAccounts}
+                                onAfterRequestsMutate={onAfterRequestsMutate}
+                                onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
+                                onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
+                                segmentOptions={segmentOptions}
+                                accountTypeOptions={accountTypeOptions}
+                                canDeleteRequest={canDelRequests}
+                                readOnlyOperational={crmReadOnly}
+                                currentUser={currentUser}
+                                currency={currency}
+                                promotionOptions={promotionOptions}
+                                canLinkRequestPromotions={canLinkPromos}
+                            />
+                        </div>
+                    </div>
+                ) : null}
             </>
         );
     }
@@ -2385,6 +2511,8 @@ export default function CRM({
                     <CrmActivitiesView
                         theme={theme}
                         salesCalls={salesCalls}
+                        salesCallsForReport={flatCrmLeads}
+                        accounts={accounts}
                         crmSalesPeriod={crmSalesPeriod}
                         createdByUserFilterId={createdByUserFilterId}
                         crmFilterUsers={crmFilterUsers}

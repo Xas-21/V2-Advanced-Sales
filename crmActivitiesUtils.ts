@@ -71,6 +71,68 @@ export function isActivityCompleted(lead: any): boolean {
     return v === true || v === 1 || String(v).toLowerCase() === 'true';
 }
 
+/** Reports / CRM Report period anchor (`lastContact || date`). */
+export function getSalesCallPeriodAnchorDate(lead: any): string {
+    return String(lead?.lastContact || lead?.date || '').trim().slice(0, 10);
+}
+
+function leadYearMonthMatchesPeriod(
+    ymd: string,
+    period: CrmSalesPeriod,
+    quarterBuckets: Record<string, number[]>
+): boolean {
+    const { year: y, month: mo } = parseLeadYearMonth(ymd);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || y <= 0 || mo <= 0) return false;
+    if (period.mode === 'month') {
+        return y === period.year && mo === period.month;
+    }
+    if (period.mode === 'year') {
+        return y === period.year;
+    }
+    if (period.mode === 'quarter' && period.quarter) {
+        const months = quarterBuckets[period.quarter];
+        return Boolean(months?.length) && y === period.year && months.includes(mo);
+    }
+    return false;
+}
+
+/** Period filter aligned with Reports → Sales Calls and CRM Report tab. */
+export function leadMatchesSalesCallPeriodAnchor(
+    lead: any,
+    period: CrmSalesPeriod,
+    quarterBuckets: Record<string, number[]> = CRM_QUARTER_MONTH_BLOCKS
+): boolean {
+    return leadYearMonthMatchesPeriod(getSalesCallPeriodAnchorDate(lead), period, quarterBuckets);
+}
+
+export function normalizeCrmLeadStageKey(lead: any): string {
+    return String(lead?.stage || 'new')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]/g, '');
+}
+
+/** Upcoming bucket only — pipeline / won / not interested cards are treated as completed in Activities. */
+export function isHubUpcomingSalesCall(lead: any): boolean {
+    if (isActivityCompleted(lead)) return false;
+    const st = normalizeCrmLeadStageKey(lead);
+    return st === 'new' || st === '';
+}
+
+export function isHubCompletedSalesCall(lead: any): boolean {
+    return !isHubUpcomingSalesCall(lead);
+}
+
+/** Same KPI as CRM pipeline header: proposal + negotiation stage cards. */
+export function isHighPotentialPipelineLead(lead: any): boolean {
+    const st = normalizeCrmLeadStageKey(lead);
+    return st === 'proposal' || st === 'negotiation';
+}
+
+export function isNotInterestedPipelineLead(lead: any): boolean {
+    return normalizeCrmLeadStageKey(lead) === 'notinterested';
+}
+
 export function appendCallDescription(existing: string | undefined, note: string, at: Date = new Date()): string {
     const stamp = at.toISOString().slice(0, 10);
     const line = `[${stamp}] ${note.trim()}`;

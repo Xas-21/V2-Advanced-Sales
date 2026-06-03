@@ -68,6 +68,7 @@ import {
 import { resolveUserAttributionId, createdByMatchesUser } from './userProfileMetrics';
 import { requestOperationalDatesOverlapRange } from './operationalSegmentRevenue';
 import { refreshRequestsWithDefiniteToActual } from './requestStatusAutomation';
+import { requestMatchesAccount } from './accountProfileData';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { deleteFileFromCloudinary, uploadFileToCloudinary } from './cloudinaryUpload';
 import { collectRequestFormViolations } from './formConfigurations';
@@ -170,6 +171,8 @@ interface RequestsManagerProps {
     assignableUsersForProperty?: { id: string; name: string }[];
     promotionOptions?: any[];
     canLinkRequestPromotions?: boolean;
+    /** When set, All Requests list shows only rows linked to this account. */
+    scopedAccountFilter?: { accountId?: string; accountName?: string };
 }
 
 const GRID_WEEKDAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
@@ -306,6 +309,7 @@ export default function RequestsManager({
     assignableUsersForProperty = [],
     promotionOptions = [],
     canLinkRequestPromotions = false,
+    scopedAccountFilter,
 }: RequestsManagerProps) {
     const colors = theme.colors;
     /** Saturated status row fills only when the shell is a dark theme (luxury / colorful). */
@@ -796,6 +800,15 @@ export default function RequestsManager({
     const listPageRequests = useMemo(() => {
         const quick = (searchTerm || '').toLowerCase().trim();
         let list: any[] = requests;
+        if (scopedAccountFilter) {
+            list = list.filter((req: any) =>
+                requestMatchesAccount(
+                    req,
+                    scopedAccountFilter.accountId,
+                    scopedAccountFilter.accountName
+                )
+            );
+        }
         if (quick) {
             list = list.filter((req: any) =>
                 String(req.id || '').toLowerCase().includes(quick) ||
@@ -816,7 +829,7 @@ export default function RequestsManager({
             if (tb == null) return -1;
             return listSortOrder === 'start_newest' ? tb - ta : ta - tb;
         });
-    }, [requests, searchTerm, listFilterType, listFilterStatus, listSortOrder]);
+    }, [requests, searchTerm, listFilterType, listFilterStatus, listSortOrder, scopedAccountFilter]);
 
     const [listPageSize, setListPageSize] = useState<20 | 50 | 100>(20);
     const [listCurrentPage, setListCurrentPage] = useState(1);
@@ -7754,13 +7767,22 @@ export default function RequestsManager({
     }
 
     // Show All Requests Table when subView = 'list' (or default)
+    const accountScopedList = Boolean(scopedAccountFilter?.accountId || scopedAccountFilter?.accountName);
+    const listTableScrollMode: TableBlockScrollMode = accountScopedList ? 'flow' : 'fixed';
     return (
-        <div className="h-full flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: colors.bg }}>
+        <div
+            className={
+                accountScopedList
+                    ? 'w-full min-h-0'
+                    : 'h-full flex flex-col min-h-0 overflow-hidden'
+            }
+            style={{ backgroundColor: colors.bg }}
+        >
             {renderRequestsTableBlock(
                 listPagedRequests,
-                'All Requests',
+                accountScopedList ? `Requests — ${scopedAccountFilter?.accountName || 'Account'}` : 'All Requests',
                 `${listPageRequests.length} total requests found`,
-                'fixed',
+                listTableScrollMode,
                 {
                     page: listCurrentPage,
                     pageSize: listPageSize,
