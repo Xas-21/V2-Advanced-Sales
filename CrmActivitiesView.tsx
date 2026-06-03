@@ -13,6 +13,7 @@ import {
 import { getTagColor } from './tagColorSettings';
 import LogCallModal, { type LogCallFormData } from './LogCallModal';
 import CallDetailsModal from './CallDetailsModal';
+import CrmCallReportView from './CrmCallReportView';
 
 export type CrmActivitiesViewProps = {
     theme: any;
@@ -51,7 +52,7 @@ export default function CrmActivitiesView({
 }: CrmActivitiesViewProps) {
     const colors = theme.colors;
     const [todayOnly, setTodayOnly] = useState(true);
-    const [listTab, setListTab] = useState<'active' | 'completed'>('active');
+    const [listTab, setListTab] = useState<'active' | 'completed' | 'report'>('active');
     const [logCallLead, setLogCallLead] = useState<any | null>(null);
     const [detailsLead, setDetailsLead] = useState<any | null>(null);
     const [followUpHint, setFollowUpHint] = useState<string | null>(null);
@@ -176,16 +177,30 @@ export default function CrmActivitiesView({
                     </button>
                     <button
                         type="button"
-                        onClick={handleToggleToday}
+                        onClick={() => setListTab('report')}
                         className="px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
                         style={{
-                            backgroundColor: todayOnly ? `${colors.orange}20` : colors.bg,
-                            borderColor: todayOnly ? colors.orange : colors.border,
-                            color: todayOnly ? colors.orange : colors.textMuted,
+                            backgroundColor: listTab === 'report' ? `${colors.cyan}20` : colors.bg,
+                            borderColor: listTab === 'report' ? colors.cyan : colors.border,
+                            color: listTab === 'report' ? colors.cyan : colors.textMuted,
                         }}
                     >
-                        {todayOnly ? 'Today' : 'All in period'}
+                        Report
                     </button>
+                    {listTab !== 'report' ? (
+                        <button
+                            type="button"
+                            onClick={handleToggleToday}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+                            style={{
+                                backgroundColor: todayOnly ? `${colors.orange}20` : colors.bg,
+                                borderColor: todayOnly ? colors.orange : colors.border,
+                                color: todayOnly ? colors.orange : colors.textMuted,
+                            }}
+                        >
+                            {todayOnly ? 'Today' : 'All in period'}
+                        </button>
+                    ) : null}
                 </div>
                 {!readOnly && onAddSalesCall ? (
                     <button
@@ -205,6 +220,19 @@ export default function CrmActivitiesView({
                 </p>
             ) : null}
 
+            {listTab === 'report' ? (
+                <CrmCallReportView
+                    theme={theme}
+                    salesCalls={salesCalls}
+                    crmSalesPeriod={crmSalesPeriod}
+                    createdByUserFilterId={createdByUserFilterId}
+                    crmFilterUsers={crmFilterUsers}
+                    activePropertyId={activePropertyId}
+                />
+            ) : null}
+
+            {listTab !== 'report' ? (
+            <>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
                 <div className="rounded-lg border px-3 py-2" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
                     <div className="text-[10px] uppercase font-bold tracking-wide" style={{ color: colors.textMuted }}>
@@ -383,6 +411,8 @@ export default function CrmActivitiesView({
                     </table>
                 )}
             </div>
+            </>
+            ) : null}
 
             <LogCallModal
                 open={!!logCallLead}

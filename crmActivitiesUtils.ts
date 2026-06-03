@@ -221,25 +221,66 @@ export function buildAccountCallTimeline(
             });
         }
 
-        const desc = String(lead?.description || '').trim();
         const nextStep = String(lead?.nextStep || '').trim();
         const logEntries: CallTimelineEntry[] = [];
+        const structuredLogs = Array.isArray(lead?.callLogs) ? lead.callLogs : [];
 
-        if (desc) {
-            const lines = desc.split('\n').filter(Boolean);
-            let parsedAny = false;
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const m = line.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
-                if (m) {
-                    parsedAny = true;
+        if (structuredLogs.length) {
+            for (let i = 0; i < structuredLogs.length; i++) {
+                const row = structuredLogs[i];
+                const at = String(row?.at || '').trim().slice(0, 10);
+                if (!at) continue;
+                const feedback = String(row?.clientFeedback || '').trim();
+                const bodyParts = [
+                    feedback ? `Client feedback: ${feedback}` : '',
+                ].filter(Boolean);
+                logEntries.push({
+                    id: String(row?.id || `${lead.id}-log-${i}`),
+                    at,
+                    atLabel: formatTimelineDate(at),
+                    title: 'Call logged',
+                    body: bodyParts.join('\n'),
+                    description: String(row?.description || '').trim(),
+                    nextStep: String(row?.nextStep || '').trim(),
+                    kind: 'log',
+                    leadId: lead.id,
+                    subject,
+                    stage,
+                });
+            }
+        } else {
+            const desc = String(lead?.description || '').trim();
+            if (desc) {
+                const lines = desc.split('\n').filter(Boolean);
+                let parsedAny = false;
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    const m = line.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
+                    if (m) {
+                        parsedAny = true;
+                        logEntries.push({
+                            id: `${lead.id}-log-${i}`,
+                            at: m[1],
+                            atLabel: formatTimelineDate(m[1]),
+                            title: 'Call logged',
+                            body: '',
+                            description: m[2] || '',
+                            kind: 'log',
+                            leadId: lead.id,
+                            subject,
+                            stage,
+                        });
+                    }
+                }
+                if (!parsedAny) {
+                    const at = String(lead?.callLoggedAt || scheduled || '').slice(0, 10) || scheduled;
                     logEntries.push({
-                        id: `${lead.id}-log-${i}`,
-                        at: m[1],
-                        atLabel: formatTimelineDate(m[1]),
+                        id: `${lead.id}-desc`,
+                        at: at || '1970-01-01',
+                        atLabel: at ? formatTimelineDate(at) : '—',
                         title: 'Call logged',
                         body: '',
-                        description: m[2] || '',
+                        description: desc,
                         kind: 'log',
                         leadId: lead.id,
                         subject,
@@ -247,26 +288,10 @@ export function buildAccountCallTimeline(
                     });
                 }
             }
-            if (!parsedAny) {
-                const at = String(lead?.callLoggedAt || scheduled || '').slice(0, 10) || scheduled;
-                logEntries.push({
-                    id: `${lead.id}-desc`,
-                    at: at || '1970-01-01',
-                    atLabel: at ? formatTimelineDate(at) : '—',
-                    title: 'Call logged',
-                    body: '',
-                    description: desc,
-                    kind: 'log',
-                    leadId: lead.id,
-                    subject,
-                    stage,
-                });
+            if (logEntries.length && nextStep) {
+                const latest = logEntries.reduce((best, cur) => (cur.at >= best.at ? cur : best));
+                latest.nextStep = nextStep;
             }
-        }
-
-        if (logEntries.length && nextStep) {
-            const latest = logEntries.reduce((best, cur) => (cur.at >= best.at ? cur : best));
-            latest.nextStep = nextStep;
         }
 
         entries.push(...logEntries);

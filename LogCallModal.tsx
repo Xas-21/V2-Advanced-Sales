@@ -7,6 +7,7 @@ export type LogCallInterest = 'waiting' | 'interested' | 'not_interested' | '';
 export type LogCallFormData = {
     description: string;
     nextStep: string;
+    clientFeedback: string;
     interest: LogCallInterest;
     followUpRequired: boolean;
     followUpDate: string;
@@ -18,6 +19,7 @@ export type LogCallFormData = {
 const emptyForm = (lead?: any): LogCallFormData => ({
     description: '',
     nextStep: '',
+    clientFeedback: '',
     interest: '',
     followUpRequired: false,
     followUpDate: '',
@@ -115,20 +117,6 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                     </div>
                     <div>
                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
-                            Description *
-                        </label>
-                        <textarea
-                            value={form.description}
-                            onChange={(e) => setForm({ ...form, description: e.target.value })}
-                            rows={4}
-                            disabled={readOnly}
-                            className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
-                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
-                            placeholder="Call notes…"
-                        />
-                    </div>
-                    <div>
-                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
                             Next Step
                         </label>
                         <textarea
@@ -139,6 +127,34 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                             className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                             placeholder="What's the next action…"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
+                            Client Feedback & Concerns
+                        </label>
+                        <textarea
+                            value={form.clientFeedback}
+                            onChange={(e) => setForm({ ...form, clientFeedback: e.target.value })}
+                            rows={3}
+                            disabled={readOnly}
+                            className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
+                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            placeholder="Client feedback, concerns, objections…"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
+                            Description *
+                        </label>
+                        <textarea
+                            value={form.description}
+                            onChange={(e) => setForm({ ...form, description: e.target.value })}
+                            rows={4}
+                            disabled={readOnly}
+                            className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
+                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            placeholder="Call notes…"
                         />
                     </div>
                     <div>

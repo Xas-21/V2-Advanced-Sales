@@ -49,6 +49,7 @@ import ConfirmDialog from './ConfirmDialog';
 import CrmActivitiesView from './CrmActivitiesView';
 import type { LogCallFormData } from './LogCallModal';
 import { appendCallDescription, getCallDueDate } from './crmActivitiesUtils';
+import type { SalesCallLogEntry } from './crmCallReportUtils';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { collectSalesCallFormViolations } from './formConfigurations';
@@ -1562,11 +1563,28 @@ export default function CRM({
                     ? [account.type]
                     : ['Corporate'];
 
+        const callDate = String(newCallData.date || '').trim().slice(0, 10) || new Date().toISOString().slice(0, 10);
+        const creatorId = resolveUserAttributionId(currentUser) || undefined;
+        const creatorName = currentUser?.name || currentUser?.username || 'Staff';
+        const initialCallLogs: SalesCallLogEntry[] = [];
+        const initialDesc = String(newCallData.description || '').trim();
+        if (initialDesc) {
+            initialCallLogs.push({
+                id: `log-${Date.now()}`,
+                at: callDate,
+                description: initialDesc,
+                clientFeedback: '',
+                nextStep: '',
+                loggedByUserId: creatorId,
+                loggedByName: creatorName,
+            });
+        }
+
         const newLead = {
             id: `L${Date.now()}`,
             propertyId: activeProperty?.id || undefined,
-            ownerUserId: resolveUserAttributionId(currentUser) || undefined,
-            createdByUserId: resolveUserAttributionId(currentUser) || undefined,
+            ownerUserId: creatorId,
+            createdByUserId: creatorId,
             accountId: account.id,
             company: newCallData.accountName,
             subject: normalizedSubject,
@@ -1578,16 +1596,17 @@ export default function CRM({
             country: account.country || primaryContact.country || '',
             value: expected,
             tags: tagList,
-            enteredFunnelAt: newCallData.date,
-            date: newCallData.date,
-            dueDate: newCallData.date,
-            lastContact: newCallData.date,
-            accountManager: currentUser?.name || currentUser?.email || 'Staff',
+            enteredFunnelAt: callDate,
+            date: callDate,
+            dueDate: callDate,
+            lastContact: callDate,
+            accountManager: creatorName,
             totalRequests: 0,
             totalSpend: 0,
             winRate: 0,
             description: newCallData.description,
             nextStep: '',
+            callLogs: initialCallLogs,
             followUpRequired: !!newCallData.followUpRequired,
             followUpDate: newCallData.followUpRequired ? newCallData.followUpDate : '',
             activityCompleted: false,
@@ -1931,10 +1950,21 @@ export default function CRM({
         }
 
         const toNotInterested = targetStage === 'notInterested';
+        const logEntry: SalesCallLogEntry = {
+            id: `log-${Date.now()}`,
+            at: nowIso.slice(0, 10),
+            description: data.description.trim(),
+            clientFeedback: String(data.clientFeedback || '').trim(),
+            nextStep: String(data.nextStep || '').trim(),
+            loggedByUserId: resolveUserAttributionId(currentUser) || undefined,
+            loggedByName: currentUser?.name || currentUser?.username || 'Staff',
+        };
+        const priorCallLogs = Array.isArray(lead?.callLogs) ? lead.callLogs : [];
         const updatedLead = {
             ...lead,
             description: loggedDescription,
             nextStep: data.nextStep || lead.nextStep || '',
+            callLogs: [...priorCallLogs, logEntry],
             tags: data.tags && data.tags.length ? data.tags : lead.tags,
             interestStatus: String(data.interest || '').trim(),
             callLoggedAt: nowIso,
