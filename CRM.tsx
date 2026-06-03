@@ -2025,6 +2025,7 @@ export default function CRM({
         const priorCallLogs = Array.isArray(lead?.callLogs) ? lead.callLogs : [];
         const updatedLead = {
             ...lead,
+            subject: String(data.subject || '').trim() || lead.subject || '',
             description: loggedDescription,
             nextStep: data.nextStep || lead.nextStep || '',
             callLogs: [...priorCallLogs, logEntry],

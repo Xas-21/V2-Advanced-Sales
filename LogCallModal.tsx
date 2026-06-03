@@ -5,6 +5,7 @@ import { getTagColor, setTagColorForName } from './tagColorSettings';
 export type LogCallInterest = 'waiting' | 'interested' | 'not_interested' | '';
 
 export type LogCallFormData = {
+    subject: string;
     description: string;
     nextStep: string;
     clientFeedback: string;
@@ -17,6 +18,7 @@ export type LogCallFormData = {
 };
 
 const emptyForm = (lead?: any): LogCallFormData => ({
+    subject: String(lead?.subject || '').trim(),
     description: '',
     nextStep: '',
     clientFeedback: '',
@@ -117,16 +119,30 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                     </div>
                     <div>
                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
-                            Next Step
+                            Subject
                         </label>
                         <textarea
-                            value={form.nextStep}
-                            onChange={(e) => setForm({ ...form, nextStep: e.target.value })}
+                            value={form.subject}
+                            onChange={(e) => setForm({ ...form, subject: e.target.value })}
                             rows={2}
                             disabled={readOnly}
                             className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
-                            placeholder="What's the next action…"
+                            placeholder="Call subject…"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
+                            Description *
+                        </label>
+                        <textarea
+                            value={form.description}
+                            onChange={(e) => setForm({ ...form, description: e.target.value })}
+                            rows={4}
+                            disabled={readOnly}
+                            className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
+                            style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
+                            placeholder="Call notes…"
                         />
                     </div>
                     <div>
@@ -145,16 +161,16 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                     </div>
                     <div>
                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
-                            Description *
+                            Next Step
                         </label>
                         <textarea
-                            value={form.description}
-                            onChange={(e) => setForm({ ...form, description: e.target.value })}
-                            rows={4}
+                            value={form.nextStep}
+                            onChange={(e) => setForm({ ...form, nextStep: e.target.value })}
+                            rows={2}
                             disabled={readOnly}
                             className="w-full px-3 py-2 rounded-lg border text-sm resize-y"
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
-                            placeholder="Call notes…"
+                            placeholder="What's the next action…"
                         />
                     </div>
                     <div>
