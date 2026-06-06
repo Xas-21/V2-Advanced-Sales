@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -547,14 +548,20 @@ def list_requests_rows(property_id: str | None = None) -> list[dict]:
     with pool.connection() as conn:
         with conn.cursor() as cur:
             if property_id:
+                pid = str(property_id)
                 cur.execute(
                     """
                     SELECT payload
                     FROM requests_rows
                     WHERE property_id = %s
+                       OR (payload->>'propertyId') = %s
+                       OR (
+                            (property_id = '' OR property_id IS NULL OR property_id = 'P-GLOBAL')
+                            AND (payload->>'propertyId') = %s
+                       )
                     ORDER BY updated_at DESC, id ASC;
                     """,
-                    (str(property_id),),
+                    (pid, pid, pid),
                 )
             else:
                 cur.execute(
@@ -573,7 +580,9 @@ def upsert_request_row(data: dict) -> dict:
     item = {**data}
     item_id = str(item.get("id") or f"R{uuid.uuid4().hex[:8]}")
     item["id"] = item_id
-    property_id = str(item.get("propertyId") or "")
+    property_id = str(item.get("propertyId") or "").strip()
+    item["propertyId"] = property_id
+    item["updatedAt"] = datetime.now(timezone.utc).isoformat()
     pool = _get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:

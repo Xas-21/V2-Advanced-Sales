@@ -7265,7 +7265,7 @@ export default function AdvancedSalesDashboard() {
                             if (p && p.subView) {
                                 setRequestsSubView(p.subView);
                             }
-                            setRequestSearchParams(p);
+                            setRequestSearchParams((prev: any) => (typeof p === 'function' ? p(prev) : { ...(prev || {}), ...p }));
                         }} initialRequestType={pendingRequestType} initialAccountId={pendingRequestAccountId} initialContactFromCall={pendingRequestContactFromCall} onConsumedInitialAccountId={() => setPendingRequestAccountId(null)} onConsumedInitialContactFromCall={() => setPendingRequestContactFromCall(null)} onRequestSaved={handleCrmRequestSaved} onRequestDeleted={handleCrmRequestDeleted} onRequestWizardFinished={() => {
                             const aid = pendingAgreementAfterRequestAccountId;
                             if (aid) {
@@ -7273,7 +7273,7 @@ export default function AdvancedSalesDashboard() {
                                 setPendingContractsAccountId(aid);
                                 setCurrentView('contracts');
                             }
-                        }} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} promotionOptions={promotions} canLinkRequestPromotions={canLinkRequestPromotions(currentUser)} />
+                        }} activeProperty={activeProperty} accounts={accounts} setAccounts={setAccounts} sharedRequestsSeed={sharedRequests} pendingOpenRequestId={pendingOpenRequestId} onConsumedPendingOpenRequest={() => setPendingOpenRequestId(null)} onAfterRequestsMutate={refreshSharedRequests} segmentOptions={propertySegmentLabels} accountTypeOptions={propertyAccountTypeLabels} canDeleteRequest={canDeleteRequests(currentUser)} canDeleteRequestPayments={canDeleteRequestPayments(currentUser)} readOnlyOperational={!canMutateOperational(currentUser)} currentUser={currentUser} currency={currentCurrency} assignableUsersForProperty={taskAssignableUsers} promotionOptions={promotions} canLinkRequestPromotions={canLinkRequestPromotions(currentUser)} />
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">

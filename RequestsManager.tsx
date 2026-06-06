@@ -144,6 +144,8 @@ interface RequestsManagerProps {
     pendingOpenOptsRequestId?: string | null;
     onConsumedPendingOpenOpts?: () => void;
     onAfterRequestsMutate?: () => void;
+    /** Parent-held requests (AS sharedRequests) — merged after fetch so saves are not lost on remount. */
+    sharedRequestsSeed?: any[];
     /** When true, only the new-request wizard is shown (for modal overlay from Events page). */
     embedded?: boolean;
     onEmbeddedComplete?: () => void;
@@ -197,6 +199,14 @@ function screenLuminanceFromHex(hex: string): number {
 }
 
 const REQUEST_FORM_STATUS_OPTIONS = ['Inquiry', 'Accepted', 'Tentative', 'Definite', 'Actual', 'Cancelled'] as const;
+
+function generateRequestId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `REQ-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+    }
+    return `REQ-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+}
+
 const DEFAULT_CXL_REASONS = ['Price too high', 'Changed dates', 'Destination change', 'Budget issues', 'Group cancelled', 'Competitor offer', 'Other'];
 const cxlStorageKey = (propertyId: string) => `visatour_cxl_reasons::${String(propertyId || '').trim()}`;
 const REQUEST_DOC_IDS = ['inv1', 'inv2', 'inv3', 'agreement'] as const;
@@ -298,6 +308,7 @@ export default function RequestsManager({
     pendingOpenOptsRequestId,
     onConsumedPendingOpenOpts,
     onAfterRequestsMutate,
+    sharedRequestsSeed = [],
     embedded = false,
     onEmbeddedComplete,
     onEmbeddedCancel,
@@ -1213,14 +1224,28 @@ export default function RequestsManager({
     const fetchRequests = async () => {
         setIsLoading(true);
         try {
-            const url = activeProperty 
+            const url = activeProperty?.id
                 ? apiUrl(`/api/requests?propertyId=${activeProperty.id}`)
                 : apiUrl('/api/requests');
             const data = await refreshRequestsWithDefiniteToActual(url, {
                 readOnly: readOnlyOperational,
                 requestLogUser,
             });
-            if (Array.isArray(data)) setRequests(data);
+            if (Array.isArray(data)) {
+                let next = data;
+                if (Array.isArray(sharedRequestsSeed) && sharedRequestsSeed.length > 0) {
+                    const pid = String(activeProperty?.id || '').trim();
+                    const ids = new Set(next.map((r: any) => String(r?.id || '')));
+                    const extras = sharedRequestsSeed.filter((r: any) => {
+                        const id = String(r?.id || '');
+                        if (!id || ids.has(id)) return false;
+                        const rp = String(r?.propertyId || '').trim();
+                        return !pid || !rp || rp === pid;
+                    });
+                    if (extras.length) next = [...extras, ...next];
+                }
+                setRequests(next);
+            }
         } catch (err) {
             console.error("Error fetching requests:", err);
         } finally {
@@ -1244,7 +1269,15 @@ export default function RequestsManager({
     useEffect(() => {
         fetchRequests();
         fetchTaxes();
-    }, [subView, activeProperty]);
+    }, [subView, activeProperty?.id]);
+
+    useEffect(() => {
+        const onVis = () => {
+            if (document.visibilityState === 'visible') fetchRequests();
+        };
+        document.addEventListener('visibilitychange', onVis);
+        return () => document.removeEventListener('visibilitychange', onVis);
+    }, [activeProperty?.id]);
 
     useEffect(() => {
         const loadVenuesRooms = async () => {
@@ -1659,6 +1692,11 @@ export default function RequestsManager({
 
     const handleSaveRequest = async (formData: any, type: string) => {
         if (readOnlyOperational) return;
+        const propertyId = String(activeProperty?.id || '').trim();
+        if (!propertyId || propertyId === 'P-GLOBAL') {
+            showSystemNotice('Cannot save request', 'Select an active property before saving. Requests saved without a property will not appear in your list.');
+            return;
+        }
         setIsLoading(true);
         try {
             // Always recalculate financial metrics to ensure they match current form state (handle updates)
@@ -1903,7 +1941,7 @@ export default function RequestsManager({
                 ...formData,
                 rooms: savedRooms,
                 mealPlan: mealPlanForPayload || String(formData.mealPlan ?? '').trim() || '—',
-                id: formData.id || `REQ-${Math.floor(Math.random() * 100000)}`,
+                id: formData.id || generateRequestId(),
                 requestName: formData.requestName || 'Unnamed Request',
                 account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
                 accountId: resolvedAccountId,
@@ -1914,8 +1952,9 @@ export default function RequestsManager({
                     ? 'Event with Rooms'
                     : normalizedType.charAt(0).toUpperCase() + normalizedType.slice(1),
                 status: resolvedStatus,
-                propertyId: activeProperty?.id || 'P-GLOBAL',
+                propertyId,
                 createdAt: formData.createdAt || new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
                 totalCost: resolvedTotalCost.toFixed(2),
                 grandTotalNoTax: resolvedGrandTotalNoTax,
                 nights: resolvedNights,
@@ -1949,14 +1988,30 @@ export default function RequestsManager({
             });
 
             if (res.ok) {
+                let saved: any = payload;
+                try {
+                    saved = await res.json();
+                } catch {
+                    /* use payload fallback */
+                }
+                setRequests((prev) => {
+                    const id = String(saved?.id || payload.id);
+                    const idx = prev.findIndex((r: any) => String(r?.id) === id);
+                    if (idx >= 0) {
+                        const next = [...prev];
+                        next[idx] = saved;
+                        return next;
+                    }
+                    return [saved, ...prev];
+                });
                 clearNewRequestDraft();
                 await fetchRequests();
-                onRequestSaved?.(payload);
+                onRequestSaved?.(saved);
                 onAfterRequestsMutate?.();
                 if (embedded) {
                     onEmbeddedComplete?.();
                 } else {
-                    setSearchParams({ subView: 'list' });
+                    setSearchParams({ ...getSearchOnlyParams(searchParams), subView: 'list' });
                     setStep(1);
                     setRequestType(null);
                 }
@@ -6577,6 +6632,11 @@ export default function RequestsManager({
         setSearchResults(filterRequestsByAdvancedSearch(requests, params));
         setSearchFormExpanded(false);
     };
+
+    useEffect(() => {
+        if (searchResults === null) return;
+        setSearchResults(filterRequestsByAdvancedSearch(requests, getSearchOnlyParams(searchParams)));
+    }, [requests]);
 
     const accountLabel = (req: any) => String(req.account || req.accountName || '').trim();
 
