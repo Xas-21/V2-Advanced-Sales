@@ -16,6 +16,10 @@ export const CRM_QUARTER_MONTH_BLOCKS: Record<'Q1' | 'Q2' | 'Q3' | 'Q4', number[
 
 /** Due date for Activities list: follow-up date, else explicit due date, else scheduled call date. */
 export function getCallDueDate(lead: any): string {
+    if (isPermanentCallRecord(lead)) {
+        const loggedAt = latestCallLogDate(lead);
+        if (loggedAt) return loggedAt;
+    }
     const fu = String(lead?.followUpDate ?? '').trim();
     if (fu) return fu;
     const due = String(lead?.dueDate ?? '').trim();
@@ -71,8 +75,32 @@ export function isActivityCompleted(lead: any): boolean {
     return v === true || v === 1 || String(v).toLowerCase() === 'true';
 }
 
-/** Reports / CRM Report period anchor (`lastContact || date`). */
+function latestCallLogDate(lead: any): string {
+    const logs = Array.isArray(lead?.callLogs) ? lead.callLogs : [];
+    if (logs.length) {
+        const sorted = [...logs].sort((a: any, b: any) =>
+            String(b?.at || '').localeCompare(String(a?.at || ''))
+        );
+        const at = String(sorted[0]?.at || '').trim().slice(0, 10);
+        if (at) return at;
+    }
+    return String(lead?.callLoggedAt || '').trim().slice(0, 10);
+}
+
+/** Logged/completed calls are permanent CRM records — never hide from Activities or Report. */
+export function isPermanentCallRecord(lead: any): boolean {
+    if (isActivityCompleted(lead)) return true;
+    if (Array.isArray(lead?.callLogs) && lead.callLogs.length > 0) return true;
+    if (String(lead?.callLoggedAt || '').trim()) return true;
+    return false;
+}
+
+/** Reports / CRM Report period anchor (`lastContact || date`; logged calls use log date). */
 export function getSalesCallPeriodAnchorDate(lead: any): string {
+    if (isPermanentCallRecord(lead)) {
+        const loggedAt = latestCallLogDate(lead);
+        if (loggedAt) return loggedAt;
+    }
     return String(lead?.lastContact || lead?.date || '').trim().slice(0, 10);
 }
 
