@@ -194,20 +194,18 @@ export default function CrmActivitiesView({
                     >
                         Report
                     </button>
-                    {listTab !== 'report' ? (
-                        <button
-                            type="button"
-                            onClick={handleToggleToday}
-                            className="px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
-                            style={{
-                                backgroundColor: todayOnly ? `${colors.orange}20` : colors.bg,
-                                borderColor: todayOnly ? colors.orange : colors.border,
-                                color: todayOnly ? colors.orange : colors.textMuted,
-                            }}
-                        >
-                            {todayOnly ? 'Today' : 'All in period'}
-                        </button>
-                    ) : null}
+                    <button
+                        type="button"
+                        onClick={handleToggleToday}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+                        style={{
+                            backgroundColor: todayOnly ? `${colors.orange}20` : colors.bg,
+                            borderColor: todayOnly ? colors.orange : colors.border,
+                            color: todayOnly ? colors.orange : colors.textMuted,
+                        }}
+                    >
+                        {todayOnly ? 'Today' : 'All in period'}
+                    </button>
                 </div>
                 {!readOnly && onAddSalesCall ? (
                     <button
@@ -236,6 +234,7 @@ export default function CrmActivitiesView({
                     crmFilterUsers={crmFilterUsers}
                     activePropertyId={activePropertyId}
                     accounts={accounts}
+                    todayOnly={todayOnly}
                 />
             ) : null}
 

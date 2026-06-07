@@ -117,6 +117,57 @@ function matchesSearchStatusFilter(req: any, selectedStatuses: string[]): boolea
     return selectedStatuses.some((s) => normalizeSearchStatusKey(s) === reqKey);
 }
 
+function filterRequestsByAdvancedSearch(
+    reqList: any[],
+    params: any,
+    assignableUsersForProperty: { id?: string }[] = []
+) {
+    return reqList.filter((req: any) => {
+        const typeFilter = String(params?.type || 'all').toLowerCase();
+        const requestType = String(req.requestType || '').toLowerCase();
+        const typeMatch = typeFilter === 'all'
+            || (typeFilter === 'event_rooms' ? requestType === 'event with rooms' : typeFilter === 'series group' ? requestType === 'series' || requestType === 'series group' : requestType === typeFilter);
+
+        const statusMatch = matchesSearchStatusFilter(req, parseSearchStatusSelection(params));
+
+        const accountFilter = String(params?.account || '').toLowerCase().trim();
+        const accountMatch = !accountFilter || String(req.account || req.accountName || '').toLowerCase().includes(accountFilter);
+
+        const requestNameFilter = String(params?.requestName || '').toLowerCase().trim();
+        const requestNameMatch = !requestNameFilter || String(req.requestName || '').toLowerCase().includes(requestNameFilter);
+
+        const confFilter = String(params?.confNumber || '').toLowerCase().trim();
+        const confMatch = !confFilter || String(req.confirmationNo || '').toLowerCase().includes(confFilter);
+
+        const arrivalFilter = String(params?.arrival || '').trim();
+        const departureFilter = String(params?.departure || '').trim();
+        let dateMatch = true;
+        if (arrivalFilter && departureFilter) {
+            dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, departureFilter);
+        } else if (arrivalFilter) {
+            dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, '2100-12-31');
+        } else if (departureFilter) {
+            dateMatch = requestOperationalDatesOverlapRange(req, '1900-01-01', departureFilter);
+        }
+
+        const createdByFilter = String(params?.createdByUserId || '').trim();
+        let createdByMatch = true;
+        if (createdByFilter) {
+            const creatorRow = assignableUsersForProperty.find((u) => String(u.id) === createdByFilter);
+            if (creatorRow) {
+                createdByMatch = createdByMatchesUser(req?.createdByUserId, creatorRow);
+            } else {
+                createdByMatch = String(req?.createdByUserId || '').trim() === createdByFilter;
+            }
+        }
+
+        const segmentFilter = String(params?.segment || '').toLowerCase().trim();
+        const segmentMatch = !segmentFilter || String(req?.segment || '').toLowerCase() === segmentFilter;
+
+        return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && dateMatch && createdByMatch && segmentMatch;
+    });
+}
+
 interface RequestsManagerProps {
     theme: any;
     subView: string;
@@ -1278,6 +1329,13 @@ export default function RequestsManager({
         document.addEventListener('visibilitychange', onVis);
         return () => document.removeEventListener('visibilitychange', onVis);
     }, [activeProperty?.id]);
+
+    useEffect(() => {
+        if (searchResults === null) return;
+        setSearchResults(
+            filterRequestsByAdvancedSearch(requests, getSearchOnlyParams(searchParams), assignableUsersForProperty)
+        );
+    }, [requests]);
 
     useEffect(() => {
         const loadVenuesRooms = async () => {
@@ -6580,63 +6638,11 @@ export default function RequestsManager({
         setDraggedColumn(null);
     };
 
-    const filterRequestsByAdvancedSearch = (reqList: any[], params: any) => {
-        return reqList.filter((req: any) => {
-            const typeFilter = String(params?.type || 'all').toLowerCase();
-            const requestType = String(req.requestType || '').toLowerCase();
-            const typeMatch = typeFilter === 'all'
-                || (typeFilter === 'event_rooms' ? requestType === 'event with rooms' : typeFilter === 'series group' ? requestType === 'series' || requestType === 'series group' : requestType === typeFilter);
-
-            const statusMatch = matchesSearchStatusFilter(req, parseSearchStatusSelection(params));
-
-            const accountFilter = String(params?.account || '').toLowerCase().trim();
-            const accountMatch = !accountFilter || String(req.account || req.accountName || '').toLowerCase().includes(accountFilter);
-
-            const requestNameFilter = String(params?.requestName || '').toLowerCase().trim();
-            const requestNameMatch = !requestNameFilter || String(req.requestName || '').toLowerCase().includes(requestNameFilter);
-
-            const confFilter = String(params?.confNumber || '').toLowerCase().trim();
-            const confMatch = !confFilter || String(req.confirmationNo || '').toLowerCase().includes(confFilter);
-
-            const arrivalFilter = String(params?.arrival || '').trim();
-            const departureFilter = String(params?.departure || '').trim();
-            let dateMatch = true;
-            if (arrivalFilter && departureFilter) {
-                dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, departureFilter);
-            } else if (arrivalFilter) {
-                dateMatch = requestOperationalDatesOverlapRange(req, arrivalFilter, '2100-12-31');
-            } else if (departureFilter) {
-                dateMatch = requestOperationalDatesOverlapRange(req, '1900-01-01', departureFilter);
-            }
-
-            const createdByFilter = String(params?.createdByUserId || '').trim();
-            let createdByMatch = true;
-            if (createdByFilter) {
-                const creatorRow = assignableUsersForProperty.find((u) => String(u.id) === createdByFilter);
-                if (creatorRow) {
-                    createdByMatch = createdByMatchesUser(req?.createdByUserId, creatorRow);
-                } else {
-                    createdByMatch = String(req?.createdByUserId || '').trim() === createdByFilter;
-                }
-            }
-
-            const segmentFilter = String(params?.segment || '').toLowerCase().trim();
-            const segmentMatch = !segmentFilter || String(req?.segment || '').toLowerCase() === segmentFilter;
-
-            return typeMatch && statusMatch && accountMatch && requestNameMatch && confMatch && dateMatch && createdByMatch && segmentMatch;
-        });
-    };
-
     const handleSearchRequests = () => {
         const params = getSearchOnlyParams(searchParams);
-        setSearchResults(filterRequestsByAdvancedSearch(requests, params));
+        setSearchResults(filterRequestsByAdvancedSearch(requests, params, assignableUsersForProperty));
         setSearchFormExpanded(false);
     };
-
-    useEffect(() => {
-        if (searchResults === null) return;
-        setSearchResults(filterRequestsByAdvancedSearch(requests, getSearchOnlyParams(searchParams)));
-    }, [requests]);
 
     const accountLabel = (req: any) => String(req.account || req.accountName || '').trim();
 

@@ -11,6 +11,7 @@ import {
     YAxis,
 } from 'recharts';
 import type { CrmSalesPeriod } from './crmActivitiesUtils';
+import { toLocalYmd } from './crmActivitiesUtils';
 import { crmLeadAttributedToUser } from './userProfileMetrics';
 import {
     buildCallReportChartBuckets,
@@ -20,6 +21,7 @@ import {
     downloadCallReportFile,
     exportCallReportCsv,
     exportCallReportExcelHtml,
+    formatCallReportDateLabel,
     type CallReportSort,
     type CallReportStatusFilter,
 } from './crmCallReportUtils';
@@ -32,6 +34,7 @@ export type CrmCallReportViewProps = {
     crmFilterUsers?: { id: string; name: string }[];
     activePropertyId?: string;
     accounts?: any[];
+    todayOnly?: boolean;
 };
 
 function chartTooltipTheme(colors: any) {
@@ -55,6 +58,7 @@ export default function CrmCallReportView({
     crmFilterUsers,
     activePropertyId,
     accounts,
+    todayOnly = false,
 }: CrmCallReportViewProps) {
     const colors = theme.colors;
     const [statusFilter, setStatusFilter] = useState<CallReportStatusFilter>('all');
@@ -70,14 +74,15 @@ export default function CrmCallReportView({
                 crmFilterUsers,
                 statusFilter,
                 sort,
+                todayOnly,
                 crmLeadAttributedToUser,
             }),
-        [salesCalls, crmSalesPeriod, activePropertyId, accounts, createdByUserFilterId, crmFilterUsers, statusFilter, sort]
+        [salesCalls, crmSalesPeriod, activePropertyId, accounts, createdByUserFilterId, crmFilterUsers, statusFilter, sort, todayOnly]
     );
 
     const chartBuckets = useMemo(
-        () => buildCallReportChartBuckets(rows, crmSalesPeriod),
-        [rows, crmSalesPeriod]
+        () => buildCallReportChartBuckets(rows, crmSalesPeriod, todayOnly),
+        [rows, crmSalesPeriod, todayOnly]
     );
 
     const chartData = useMemo(
@@ -91,7 +96,9 @@ export default function CrmCallReportView({
     );
 
     const totalRecords = rows.length;
-    const periodLabel = crmSalesPeriodLabel(crmSalesPeriod);
+    const periodLabel = todayOnly
+        ? `Today (${formatCallReportDateLabel(toLocalYmd())})`
+        : crmSalesPeriodLabel(crmSalesPeriod);
     const highlightKey =
         crmSalesPeriod.mode === 'month'
             ? `${crmSalesPeriod.year}-${String(crmSalesPeriod.month).padStart(2, '0')}`
@@ -102,7 +109,7 @@ export default function CrmCallReportView({
         const csv = exportCallReportCsv(rows);
         downloadCallReportFile(
             csv,
-            buildCallReportExportFilename(crmSalesPeriod, 'csv'),
+            buildCallReportExportFilename(crmSalesPeriod, 'csv', todayOnly),
             'text/csv;charset=utf-8;'
         );
     };
@@ -113,7 +120,7 @@ export default function CrmCallReportView({
         const html = exportCallReportExcelHtml(rows, title);
         downloadCallReportFile(
             html,
-            buildCallReportExportFilename(crmSalesPeriod, 'xls'),
+            buildCallReportExportFilename(crmSalesPeriod, 'xls', todayOnly),
             'application/vnd.ms-excel'
         );
     };
@@ -278,8 +285,7 @@ export default function CrmCallReportView({
                                         className="px-3 py-8 text-center text-xs"
                                         style={{ color: colors.textMuted }}
                                     >
-                                        No call records for {periodLabel}. Try another month, year, or quarter in the CRM
-                                        header filter.
+                                        No call records for {periodLabel}. Try another date filter or switch to &quot;All in period&quot;.
                                     </td>
                                 </tr>
                             ) : (

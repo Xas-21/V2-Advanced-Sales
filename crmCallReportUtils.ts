@@ -3,9 +3,11 @@ import {
     type CrmSalesPeriod,
     getCallDueDate,
     getSalesCallPeriodAnchorDate,
+    isCallDueToday,
     isHubCompletedSalesCall,
     leadMatchesSalesCallPeriodAnchor,
     parseYmdToLocalDate,
+    toLocalYmd,
 } from './crmActivitiesUtils';
 import { resolveCrmCallCreatorName } from './userProfileMetrics';
 
@@ -233,6 +235,7 @@ export function buildCallReportRows(
         crmFilterUsers?: { id: string; name: string }[];
         statusFilter?: CallReportStatusFilter;
         sort?: CallReportSort;
+        todayOnly?: boolean;
         crmLeadAttributedToUser?: (lead: any, user: { id: string; name: string }) => boolean;
     }
 ): CallReportRow[] {
@@ -244,8 +247,11 @@ export function buildCallReportRows(
         crmFilterUsers = [],
         statusFilter = 'all',
         sort = 'newest',
+        todayOnly = false,
         crmLeadAttributedToUser,
     } = options;
+
+    const todayYmd = toLocalYmd();
 
     let leads = Array.isArray(salesCalls) ? salesCalls : [];
     leads = filterSalesCallsLikeReports(leads, activePropertyId, accounts);
@@ -261,13 +267,22 @@ export function buildCallReportRows(
     const rows: CallReportRow[] = [];
 
     for (const lead of leads) {
+        if (todayOnly && !isCallDueToday(lead, todayYmd)) {
+            continue;
+        }
+
         const anchorAt = getCallReportAnchorDate(lead);
-        if (!anchorAt || !dateMatchesCrmSalesPeriod(anchorAt, crmSalesPeriod)) {
+        if (!anchorAt) {
+            continue;
+        }
+        if (!todayOnly && !dateMatchesCrmSalesPeriod(anchorAt, crmSalesPeriod)) {
             continue;
         }
 
         const logs = getCallLogEntriesForLead(lead);
-        const logsInPeriod = logs.filter((log) => dateMatchesCrmSalesPeriod(log.at, crmSalesPeriod));
+        const logsInPeriod = todayOnly
+            ? logs.filter((log) => String(log.at || '').trim().slice(0, 10) === todayYmd)
+            : logs.filter((log) => dateMatchesCrmSalesPeriod(log.at, crmSalesPeriod));
         const displayLog =
             (logsInPeriod.length
                 ? [...logsInPeriod].sort((a, b) => b.at.localeCompare(a.at))[0]
@@ -317,7 +332,8 @@ export type CallReportChartBucket = {
 
 export function buildCallReportChartBuckets(
     rows: CallReportRow[],
-    period: CrmSalesPeriod
+    period: CrmSalesPeriod,
+    todayOnly = false
 ): CallReportChartBucket[] {
     const countByKey = new Map<string, number>();
 
@@ -326,6 +342,21 @@ export function buildCallReportChartBuckets(
         if (!year || !month) continue;
         const key = `${year}-${String(month).padStart(2, '0')}`;
         countByKey.set(key, (countByKey.get(key) || 0) + 1);
+    }
+
+    if (todayOnly) {
+        const today = toLocalYmd();
+        const { year, month } = parseYearMonth(today);
+        const key = `${year}-${String(month).padStart(2, '0')}`;
+        return [
+            {
+                key,
+                label: formatCallReportDateLabel(today),
+                count: rows.length,
+                year,
+                month,
+            },
+        ];
     }
 
     const buckets: CallReportChartBucket[] = [];
@@ -429,7 +460,14 @@ export function exportCallReportExcelHtml(rows: CallReportRow[], title: string):
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${title.replace(/</g, '&lt;')}</title></head><body><h3>${title.replace(/</g, '&lt;')}</h3><table border="1"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></body></html>`;
 }
 
-export function buildCallReportExportFilename(period: CrmSalesPeriod, format: 'csv' | 'xls'): string {
+export function buildCallReportExportFilename(
+    period: CrmSalesPeriod,
+    format: 'csv' | 'xls',
+    todayOnly = false
+): string {
+    if (todayOnly) {
+        return `crm-call-report-today-${toLocalYmd()}.${format}`;
+    }
     const ext = format === 'csv' ? 'csv' : 'xls';
     if (period.mode === 'month') {
         return `crm_call_report_${period.year}-${String(period.month).padStart(2, '0')}.${ext}`;

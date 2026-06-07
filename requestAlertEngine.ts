@@ -70,6 +70,23 @@ function isExcludedStatus(req: any): boolean {
     return s === 'Cancelled' || s === 'Lost';
 }
 
+/** CRM auto-call `requestDeadlineType` → request status that owns that deadline (matches alert engine). */
+export function requestStatusForDeadlineType(deadlineType: string): string | null {
+    const t = String(deadlineType || '').trim();
+    if (t === 'offer_acceptance' || t === 'offer') return 'Inquiry';
+    if (t === 'deposit') return 'Accepted';
+    if (t === 'full_payment' || t === 'payment') return 'Tentative';
+    return null;
+}
+
+/** Whether a request deadline call/alert tier applies to this request's current status. */
+export function requestDeadlineAppliesToRequest(deadlineType: string, req: any): boolean {
+    if (isExcludedStatus(req)) return false;
+    const required = requestStatusForDeadlineType(deadlineType);
+    if (!required) return false;
+    return normStatus(req) === required;
+}
+
 function requestNameAccount(req: any): { name: string; account: string } {
     const name = String(req?.requestName || req?.confirmationNo || req?.id || '—').trim() || '—';
     const account = String(req?.account || req?.accountName || '—').trim() || '—';
@@ -142,7 +159,7 @@ function pushDeadlineAlerts(
     const base = { requestId: String(req.id), creatorName };
 
     // Offer — Inquiry only
-    if (isAlertKindActive(settings, 'offer') && !isExcludedStatus(req) && normStatus(req) === 'Inquiry') {
+    if (isAlertKindActive(settings, 'offer') && requestDeadlineAppliesToRequest('offer_acceptance', req)) {
         const d = daysUntilLocal(req?.offerDeadline, today);
         if (d === null) {
             /* skip */
@@ -180,7 +197,7 @@ function pushDeadlineAlerts(
     }
 
     // Deposit — Accepted
-    if (isAlertKindActive(settings, 'deposit') && !isExcludedStatus(req) && normStatus(req) === 'Accepted') {
+    if (isAlertKindActive(settings, 'deposit') && requestDeadlineAppliesToRequest('deposit', req)) {
         const d = daysUntilLocal(req?.depositDeadline, today);
         if (d === null) {
             /* skip */
@@ -218,7 +235,7 @@ function pushDeadlineAlerts(
     }
 
     // Full payment — Tentative, tiers 3 / 2 / 1 (green for 3 & 2, red urgent at 1 or overdue)
-    if (isAlertKindActive(settings, 'payment') && !isExcludedStatus(req) && normStatus(req) === 'Tentative') {
+    if (isAlertKindActive(settings, 'payment') && requestDeadlineAppliesToRequest('full_payment', req)) {
         const d = daysUntilLocal(req?.paymentDeadline, today);
         if (d === null) {
             /* skip */
