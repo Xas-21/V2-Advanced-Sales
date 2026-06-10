@@ -6,6 +6,7 @@ import {
     formatCallDueDate,
     isCallDueToday,
     isHighPotentialPipelineLead,
+    dedupePipelineMirrorCalls,
     isHubCompletedSalesCall,
     isHubUpcomingSalesCall,
     isNotInterestedPipelineLead,
@@ -33,6 +34,7 @@ export type CrmActivitiesViewProps = {
     canEditSalesCalls?: boolean;
     canDeleteSalesCalls?: boolean;
     onOpenLeadProfile: (lead: any) => void;
+    onOpenAccountProfile?: (accountId: string, accountName?: string) => void;
     onLogCallSave: (lead: any, data: LogCallFormData) => void;
     onToggleActivityCompleted: (lead: any, completed: boolean) => void;
     onEditCall?: (lead: any) => void;
@@ -53,6 +55,7 @@ export default function CrmActivitiesView({
     canEditSalesCalls = false,
     canDeleteSalesCalls = false,
     onOpenLeadProfile,
+    onOpenAccountProfile,
     onLogCallSave,
     onToggleActivityCompleted,
     onEditCall,
@@ -68,7 +71,7 @@ export default function CrmActivitiesView({
 
     const flatAll = useMemo(() => {
         const pool = salesCallsForReport ?? salesCalls ?? [];
-        return Array.isArray(pool) ? pool : [];
+        return dedupePipelineMirrorCalls(Array.isArray(pool) ? pool : []);
     }, [salesCalls, salesCallsForReport]);
 
     const crmLeadsForHistory = useMemo(() => {
@@ -235,6 +238,7 @@ export default function CrmActivitiesView({
                     activePropertyId={activePropertyId}
                     accounts={accounts}
                     todayOnly={todayOnly}
+                    onOpenAccountProfile={onOpenAccountProfile}
                 />
             ) : null}
 

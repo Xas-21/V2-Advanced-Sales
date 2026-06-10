@@ -137,7 +137,95 @@ export function migrateLegacyLeads(raw: Record<string, any[]> | null | undefined
         state.pipeline[key] = arr.map(pipelineCardFromLegacyLead);
     });
 
-    return state;
+    return mirrorOrphanPipelineCardsToSalesCalls(state);
+}
+
+/** Build a hub sales-call record from a pipeline-only card (pre-split legacy data). */
+function buildMirrorSalesCallFromPipelineCard(
+    card: any,
+    stage: PipelineStageKey,
+    mirrorId: string,
+    pipelineCardId: string
+): any {
+    const due =
+        String(card?.dueDate || '').trim() ||
+        String(card?.date || '').trim() ||
+        String(card?.lastContact || '').trim() ||
+        String(card?.enteredFunnelAt || '').trim() ||
+        new Date().toISOString().slice(0, 10);
+    const terminal = stage === 'won' || stage === 'notInterested';
+    const logged = Boolean(card?.callLoggedAt || card?.activityCompleted);
+    return salesCallFromLegacyLead({
+        ...card,
+        id: mirrorId,
+        pipelineCardId,
+        subject: String(card?.subject || card?.company || 'Sales call').trim() || 'Sales call',
+        dueDate: due,
+        date: due,
+        lastContact: due,
+        enteredFunnelAt: card?.enteredFunnelAt || due,
+        activityCompleted: terminal || logged,
+        followUpRequired: false,
+        followUpDate: '',
+        mirroredFromPipeline: true,
+        hubPipelineStage: stage,
+    });
+}
+
+/**
+ * Ensure every pipeline card has a matching Activities hub sales call.
+ * Legacy pipeline-only cards are mirrored into `salesCalls`; the pipeline card keeps
+ * `sourceCallIds` pointing at the hub record so Report/Completed dedupe correctly.
+ */
+export function mirrorOrphanPipelineCardsToSalesCalls(state: CrmStatePayload): CrmStatePayload {
+    const salesCalls = [...(state.salesCalls || [])];
+    const hubIds = new Set(salesCalls.map((c) => String(c?.id || '').trim()).filter(Boolean));
+    const hubByPipelineCardId = new Map<string, string>();
+    for (const c of salesCalls) {
+        const pid = String(c?.pipelineCardId || '').trim();
+        if (pid) hubByPipelineCardId.set(pid, String(c.id));
+    }
+
+    const pipeline = clonePipeline(state.pipeline);
+    const additions: any[] = [];
+    let pipelineTouched = false;
+
+    for (const stage of PIPELINE_STAGE_KEYS) {
+        pipeline[stage] = (pipeline[stage] || []).map((card) => {
+            const cardId = String(card?.id || '').trim();
+            if (!cardId) return card;
+
+            const sources = Array.isArray(card.sourceCallIds)
+                ? card.sourceCallIds.map((s: any) => String(s || '').trim()).filter(Boolean)
+                : [];
+            const linkedHub =
+                sources.find((sid) => hubIds.has(sid)) || hubByPipelineCardId.get(cardId);
+
+            if (linkedHub) {
+                const nextSources = Array.from(new Set([...sources, linkedHub]));
+                if (nextSources.length !== sources.length || nextSources.some((s, i) => s !== sources[i])) {
+                    pipelineTouched = true;
+                    return { ...card, sourceCallIds: nextSources };
+                }
+                return card;
+            }
+
+            const mirrorId =
+                cardId.startsWith('L') && !hubIds.has(cardId) ? cardId : `L-mirror-${cardId}`;
+            if (hubIds.has(mirrorId)) return card;
+
+            const mirror = buildMirrorSalesCallFromPipelineCard(card, stage, mirrorId, cardId);
+            additions.push(mirror);
+            hubIds.add(mirrorId);
+            hubByPipelineCardId.set(cardId, mirrorId);
+            pipelineTouched = true;
+
+            return { ...card, sourceCallIds: Array.from(new Set([...sources, mirrorId])) };
+        });
+    }
+
+    if (!additions.length && !pipelineTouched) return state;
+    return { salesCalls: [...additions, ...salesCalls], pipeline };
 }
 
 export function mergeCrmStateFromApi(block: any): CrmStatePayload {
@@ -167,7 +255,7 @@ export function mergeCrmStateFromApi(block: any): CrmStatePayload {
                 }
             });
         }
-        return state;
+        return mirrorOrphanPipelineCardsToSalesCalls(state);
     }
 
     if (block.leads && typeof block.leads === 'object') {
@@ -629,8 +717,12 @@ export function upsertPipelineCardFromLogCall(
         id: cardId,
         accountId,
         periodMonth,
+        subject: String(lead?.subject || existingCard?.subject || '').trim() || existingCard?.company || lead?.company || '',
         company: lead?.company || existingCard?.company || '',
         contact: lead?.contact || existingCard?.contact || '',
+        description: lead?.description ?? existingCard?.description ?? '',
+        callLogs: Array.isArray(lead?.callLogs) && lead.callLogs.length ? lead.callLogs : existingCard?.callLogs || [],
+        nextStep: lead?.nextStep ?? existingCard?.nextStep ?? '',
         position: lead?.position || existingCard?.position,
         email: lead?.email || existingCard?.email,
         phone: lead?.phone || existingCard?.phone,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Check, X } from 'lucide-react';
+import { Search, Plus, X } from 'lucide-react';
 import {
     collectSalesCallFormViolations,
     getSectionOrderForForm,
@@ -48,8 +48,6 @@ export default function AddSalesCallModal({
         tags: [] as string[],
         description: '',
         status: 'new',
-        followUpRequired: false,
-        followUpDate: '',
     });
 
     useEffect(() => {
@@ -64,8 +62,6 @@ export default function AddSalesCallModal({
                 tags: [],
                 description: '',
                 status: 'new',
-                followUpRequired: false,
-                followUpDate: '',
             });
             setAccountSearch('');
             setShowAccountDropdown(false);
@@ -322,26 +318,6 @@ export default function AddSalesCallModal({
                                         </select>
                                     </div>
                                 </>
-                            ) : null}
-                            {sectionId === 'followup' ? (
-                                <div className="flex items-center gap-6 p-3 rounded-xl border bg-white/5" style={{ borderColor: colors.border }}>
-                                    <div className="flex items-center gap-2 cursor-pointer select-none" onClick={() => setNewCallData({ ...newCallData, followUpRequired: !newCallData.followUpRequired })}>
-                                        <div className={`w-5 h-5 rounded border-2 transition-all flex items-center justify-center ${newCallData.followUpRequired ? 'bg-primary' : ''}`} style={{ borderColor: newCallData.followUpRequired ? colors.primary : colors.border, backgroundColor: newCallData.followUpRequired ? colors.primary : 'transparent' }}>
-                                            {newCallData.followUpRequired && <Check size={14} color="#000" strokeWidth={4} />}
-                                        </div>
-                                        <span className="text-xs font-bold" style={{ color: colors.textMain }}>
-                                            Follow up Required{rq('follow_up_required') ? ' *' : ''}
-                                        </span>
-                                    </div>
-                                    {newCallData.followUpRequired && (
-                                        <div className="flex-1 animate-in slide-in-from-left-2 duration-200">
-                                            <label className="text-[9px] uppercase font-bold block mb-0.5 opacity-70" style={{ color: colors.textMuted }}>
-                                                Follow-up date{rq('follow_up_date') ? ' *' : ''}
-                                            </label>
-                                            <input type="date" value={newCallData.followUpDate} onChange={e => setNewCallData({ ...newCallData, followUpDate: e.target.value })} className="w-full px-3 py-1.5 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }} />
-                                        </div>
-                                    )}
-                                </div>
                             ) : null}
                         </React.Fragment>
                     ))}

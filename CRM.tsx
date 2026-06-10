@@ -51,6 +51,7 @@ import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
 import RequestsManager from './RequestsManager';
 import {
     getPipelineLinkedRequestDisplay,
+    getRequestCardDeadlines,
     getRequestKanbanCardDetails,
     resolveLeadLinkedRequest,
 } from './crmPipelineCardRequestDetails';
@@ -59,8 +60,9 @@ import {
     canLinkRequestPromotions,
 } from './userPermissions';
 import type { LogCallFormData } from './LogCallModal';
-import { appendCallDescription, getCallDueDate, isPermanentCallRecord } from './crmActivitiesUtils';
-import { requestDeadlineAppliesToRequest } from './requestAlertEngine';
+import { appendCallDescription, getCallDueDate, isPermanentCallRecord, isRequestDeadlineAutoCall } from './crmActivitiesUtils';
+import { deadlineKindForType, requestDeadlineAppliesToRequest } from './requestAlertEngine';
+import { getCallRule, resolveCallSettingsForProperty } from './propertyCallSettings';
 import type { SalesCallLogEntry } from './crmCallReportUtils';
 import { resolveUserAttributionId, crmLeadAttributedToUser } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
@@ -339,6 +341,11 @@ export default function CRM({
         return m;
     }, [sharedRequests]);
 
+    const callSettings = useMemo(
+        () => resolveCallSettingsForProperty(String(activeProperty?.id || ''), activeProperty),
+        [activeProperty?.id, (activeProperty as any)?.callSettings]
+    );
+
     /** Hide active auto deadline calls that no longer match request status; keep logged records forever. */
     const salesCallsMatchingDeadlineStatus = useMemo(
         () =>
@@ -347,9 +354,12 @@ export default function CRM({
                 if (isPermanentCallRecord(c)) return true;
                 const req = requestByIdForDeadlines.get(String(c?.requestId || '').trim());
                 if (!req) return true;
-                return requestDeadlineAppliesToRequest(String(c?.requestDeadlineType || ''), req);
+                const dType = String(c?.requestDeadlineType || '');
+                const kind = deadlineKindForType(dType);
+                const rule = kind ? getCallRule(callSettings, kind) : undefined;
+                return requestDeadlineAppliesToRequest(dType, req, rule?.linkedStatuses);
             }),
-        [salesCalls, requestByIdForDeadlines]
+        [salesCalls, requestByIdForDeadlines, callSettings]
     );
 
     const flatCrmLeads = useMemo(
@@ -556,10 +566,43 @@ export default function CRM({
         if (Number.isNaN(d.getTime())) return '';
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
+    const subtractDaysYmd = (raw: any, days: number): string => {
+        const s = normalizeYmd(raw);
+        if (!s) return '';
+        const [y, m, dd] = s.split('-').map(Number);
+        const dt = new Date(y, m - 1, dd);
+        dt.setDate(dt.getDate() - days);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    };
+    const applyCallDescriptionTokens = (
+        template: string,
+        t: { title: string; reqId: string; request: string; account: string; contact: string; date: string }
+    ): string =>
+        String(template || '')
+            .replace(/\{title\}/g, t.title)
+            .replace(/\{reqId\}/g, t.reqId)
+            .replace(/\{request\}/g, t.request)
+            .replace(/\{account\}/g, t.account)
+            .replace(/\{contact\}/g, t.contact)
+            .replace(/\{date\}/g, t.date);
+    const resolveBookerContact = (req: any, account: any): any => {
+        const contacts = Array.isArray(account?.contacts) ? account.contacts : [];
+        const bid = String(req?.bookerContactId || '').trim();
+        if (bid) {
+            const byId = contacts.find((c: any) => String(c?.id || c?._id || '').trim() === bid);
+            if (byId) return byId;
+        }
+        const bname = String(req?.bookerName || '').trim().toLowerCase();
+        if (bname) {
+            const byName = contacts.find((c: any) => String(contactDisplayName(c) || '').trim().toLowerCase() === bname);
+            if (byName) return byName;
+        }
+        return null;
+    };
     const deadlineCallTypes = [
-        { key: 'offerDeadline', type: 'offer_acceptance', title: 'Offer Acceptance Deadline' },
-        { key: 'depositDeadline', type: 'deposit', title: 'Deposit Deadline' },
-        { key: 'paymentDeadline', type: 'full_payment', title: 'Full Payment Deadline' },
+        { key: 'offerDeadline', type: 'offer_acceptance', kind: 'offer', title: 'Offer Acceptance Deadline' },
+        { key: 'depositDeadline', type: 'deposit', kind: 'deposit', title: 'Deposit Deadline' },
+        { key: 'paymentDeadline', type: 'full_payment', kind: 'payment', title: 'Full Payment Deadline' },
     ] as const;
 
     useEffect(() => {
@@ -574,6 +617,7 @@ export default function CRM({
             const reqPid = String(req?.propertyId || '').trim();
             if (activePid && reqPid && reqPid !== activePid && reqPid !== 'P-GLOBAL') return;
             const parts = deadlineCallTypes.map((d) => `${d.type}:${normalizeYmd(req?.[d.key]) || ''}`);
+            parts.push(`status:${String(req?.status || '').trim()}`);
             snapshots.set(reqId, parts.join('|'));
         });
 
@@ -618,7 +662,10 @@ export default function CRM({
                 (accountId && accounts.find((a: any) => String(a?.id || '').trim() === accountId)) ||
                 (accountName && accounts.find((a: any) => String(a?.name || '').trim().toLowerCase() === accountName.toLowerCase())) ||
                 null;
-            const firstContact = Array.isArray(account?.contacts) ? account.contacts.find((c: any) => String(contactDisplayName(c) || '').trim()) : null;
+            const bookerContact = resolveBookerContact(req, account);
+            const bookerDisplayName = bookerContact
+                ? contactDisplayName(bookerContact)
+                : String(req?.bookerName || '').trim();
             const assignedUserName =
                 requestCreatorId && Array.isArray(crmFilterUsers)
                     ? String(crmFilterUsers.find((u) => String(u.id) === requestCreatorId)?.name || '').trim()
@@ -635,44 +682,60 @@ export default function CRM({
             ).trim();
 
             deadlineCallTypes.forEach((d) => {
-                if (!requestDeadlineAppliesToRequest(d.type, req)) return;
-                const dueDate = normalizeYmd(req?.[d.key]);
-                if (!dueDate) return;
-                if (isBootstrap && dueDate !== todayYmd) return;
-                const dedupeKey = `${reqId}::${d.type}::${dueDate}`;
-                if (existingAutoKeys.has(dedupeKey)) return;
-                existingAutoKeys.add(dedupeKey);
-                generatedCalls.push({
-                    id: `L-DL-${reqId}-${d.type}-${dueDate}-${Math.random().toString(36).slice(2, 7)}`,
-                    propertyId: activePid || String(req?.propertyId || '').trim() || undefined,
-                    ownerUserId: requestCreatorId || undefined,
-                    createdByUserId: requestCreatorId || undefined,
-                    ownerUserName: assignedUserName || rawCreatorName || undefined,
-                    createdByUserName: assignedUserName || rawCreatorName || undefined,
-                    accountId: String(account?.id || accountId || '').trim(),
-                    company: String(account?.name || accountName || '').trim(),
-                    subject: requestDisplayName || 'Request',
-                    contact: firstContact ? contactDisplayName(firstContact) : String(req?.bookerName || '').trim(),
-                    position: firstContact?.position || '',
-                    email: firstContact?.email || '',
-                    phone: firstContact?.phone || '',
-                    city: String(account?.city || firstContact?.city || '').trim(),
-                    country: String(account?.country || firstContact?.country || '').trim(),
-                    value: Number(req?.estimatedValue || req?.revenue || 0) || 0,
-                    tags: ['Request Deadline', d.title],
-                    enteredFunnelAt: dueDate,
-                    date: dueDate,
-                    dueDate,
-                    lastContact: dueDate,
-                    accountManager: assignedUserName || String(req?.createdByUserName || currentUser?.name || 'Staff'),
-                    description: `Auto-created from request deadline (${d.title}). Request ID: ${reqId}`,
-                    nextStep: '',
-                    followUpRequired: false,
-                    followUpDate: '',
-                    activityCompleted: false,
-                    autoGeneratedType: 'request_deadline',
-                    requestId: reqId,
-                    requestDeadlineType: d.type,
+                const rule = getCallRule(callSettings, d.kind);
+                if (!rule.enabled) return;
+                if (!requestDeadlineAppliesToRequest(d.type, req, rule.linkedStatuses)) return;
+                const deadlineDate = normalizeYmd(req?.[d.key]);
+                if (!deadlineDate) return;
+                const offsets = rule.offsets && rule.offsets.length ? rule.offsets : [0];
+                offsets.forEach((offset) => {
+                    const dueDate = subtractDaysYmd(deadlineDate, offset);
+                    if (!dueDate) return;
+                    if (isBootstrap && dueDate !== todayYmd) return;
+                    const dedupeKey = `${reqId}::${d.type}::${dueDate}`;
+                    if (existingAutoKeys.has(dedupeKey)) return;
+                    existingAutoKeys.add(dedupeKey);
+                    const description = applyCallDescriptionTokens(rule.description, {
+                        title: d.title,
+                        reqId,
+                        request: requestDisplayName || 'Request',
+                        account: String(account?.name || accountName || '').trim(),
+                        contact: bookerDisplayName,
+                        date: deadlineDate,
+                    });
+                    generatedCalls.push({
+                        id: `L-DL-${reqId}-${d.type}-${dueDate}-${Math.random().toString(36).slice(2, 7)}`,
+                        propertyId: activePid || String(req?.propertyId || '').trim() || undefined,
+                        ownerUserId: requestCreatorId || undefined,
+                        createdByUserId: requestCreatorId || undefined,
+                        ownerUserName: assignedUserName || rawCreatorName || undefined,
+                        createdByUserName: assignedUserName || rawCreatorName || undefined,
+                        accountId: String(account?.id || accountId || '').trim(),
+                        company: String(account?.name || accountName || '').trim(),
+                        subject: requestDisplayName || 'Request',
+                        contact: bookerDisplayName,
+                        position: bookerContact?.position || '',
+                        email: bookerContact?.email || '',
+                        phone: bookerContact?.phone || '',
+                        city: String(account?.city || bookerContact?.city || '').trim(),
+                        country: String(account?.country || bookerContact?.country || '').trim(),
+                        value: Number(req?.estimatedValue || req?.revenue || 0) || 0,
+                        tags: ['Request Deadline', d.title],
+                        enteredFunnelAt: dueDate,
+                        date: dueDate,
+                        dueDate,
+                        lastContact: dueDate,
+                        accountManager: assignedUserName || String(req?.createdByUserName || currentUser?.name || 'Staff'),
+                        description,
+                        nextStep: '',
+                        followUpRequired: false,
+                        followUpDate: '',
+                        activityCompleted: false,
+                        autoGeneratedType: 'request_deadline',
+                        requestId: reqId,
+                        linkedRequestId: reqId,
+                        requestDeadlineType: d.type,
+                    });
                 });
             });
         });
@@ -680,7 +743,7 @@ export default function CRM({
         requestDeadlineSnapshotRef.current = snapshots;
         if (!generatedCalls.length) return;
         setSalesCalls((prev) => [...generatedCalls, ...prev]);
-    }, [sharedRequests, salesCalls, accounts, crmFilterUsers, activeProperty?.id, currentUser?.name, setSalesCalls]);
+    }, [sharedRequests, salesCalls, accounts, crmFilterUsers, activeProperty?.id, callSettings, currentUser?.name, setSalesCalls]);
     const leadPeriodYmd = (lead: any): string =>
         toYmd(lead?.enteredFunnelAt || lead?.date || lead?.createdAt || lead?.lastContact);
     const parseYearMonth = (raw: any): { year: number; month: number } => {
@@ -1599,6 +1662,19 @@ export default function CRM({
         setProfileOverlayLead(acc ? mergeAccountIntoCrmLead(acc, lead) : lead);
     };
 
+    /** Open an account profile as an overlay popup from its id/name (used by the Report tab). */
+    const openAccountProfileById = (accountId: string, accountName?: string) => {
+        setListMenuLeadId(null);
+        const idKey = String(accountId || '').trim();
+        const nameKey = String(accountName || '').trim().toLowerCase();
+        const acc =
+            (idKey && accounts.find((a: any) => String(a?.id || '').trim() === idKey)) ||
+            (nameKey && accounts.find((a: any) => String(a?.name || '').trim().toLowerCase() === nameKey)) ||
+            null;
+        if (!acc) return;
+        setProfileOverlayLead(accountToLead(acc));
+    };
+
     const openLeadProfile = (lead: any) => {
         setListMenuLeadId(null);
         const acc = accounts.find((a: any) => a.id === lead.accountId || a.name === lead.company);
@@ -1747,8 +1823,8 @@ export default function CRM({
             description: newCallData.description,
             nextStep: '',
             callLogs: initialCallLogs,
-            followUpRequired: !!newCallData.followUpRequired,
-            followUpDate: newCallData.followUpRequired ? newCallData.followUpDate : '',
+            followUpRequired: false,
+            followUpDate: '',
             activityCompleted: false,
         };
 
@@ -2071,9 +2147,10 @@ export default function CRM({
 
     const handleLogCallSave = (lead: any, data: LogCallFormData) => {
         if (crmReadOnly) return;
+        const deadlineAutoCall = isRequestDeadlineAutoCall(lead);
         const nowIso = new Date().toISOString();
         const loggedDescription = appendCallDescription(lead.description, data.description);
-        const clearFollowUpOnSource = data.followUpRequired && data.followUpDate;
+        const clearFollowUpOnSource = !deadlineAutoCall && data.followUpRequired && data.followUpDate;
         const priorDueDate = getCallDueDate(lead);
         const effectiveDueDate =
             data.followUpRequired && data.followUpDate
@@ -2081,12 +2158,14 @@ export default function CRM({
                 : priorDueDate || nowIso.slice(0, 10);
 
         let targetStage: PipelineStageKey | null = null;
-        if (data.interest === 'not_interested') {
-            targetStage = 'notInterested';
-        } else if (data.interest === 'waiting') {
-            targetStage = 'waiting';
-        } else if (data.interest === 'interested') {
-            targetStage = data.newRequest || data.newAgreement ? 'qualified' : 'qualified';
+        if (!deadlineAutoCall) {
+            if (data.interest === 'not_interested') {
+                targetStage = 'notInterested';
+            } else if (data.interest === 'waiting') {
+                targetStage = 'waiting';
+            } else if (data.interest === 'interested') {
+                targetStage = data.newRequest || data.newAgreement ? 'qualified' : 'qualified';
+            }
         }
 
         const toNotInterested = targetStage === 'notInterested';
@@ -2115,7 +2194,7 @@ export default function CRM({
         };
 
         const followUpLead =
-            data.followUpRequired && data.followUpDate && !toNotInterested
+            !deadlineAutoCall && data.followUpRequired && data.followUpDate && !toNotInterested
                 ? buildFollowUpLead(lead, data.followUpDate)
                 : null;
 
@@ -2214,9 +2293,9 @@ export default function CRM({
             propertyId: activeProperty?.id,
         };
 
-        if (data.newRequest && accountId) {
+        if (!deadlineAutoCall && data.newRequest && accountId) {
             onNavigateToNewRequest?.(accountId, data.newAgreement, navigateMeta);
-        } else if (data.newAgreement && accountId) {
+        } else if (!deadlineAutoCall && data.newAgreement && accountId) {
             onNavigateToNewAgreement?.(accountId, navigateMeta);
         }
     };
@@ -2589,7 +2668,6 @@ export default function CRM({
                     <CrmActivitiesView
                         theme={theme}
                         salesCalls={salesCallsMatchingDeadlineStatus}
-                        salesCallsForReport={flatCrmLeads}
                         accounts={accounts}
                         crmSalesPeriod={crmSalesPeriod}
                         createdByUserFilterId={createdByUserFilterId}
@@ -2599,6 +2677,7 @@ export default function CRM({
                         canEditSalesCalls={canEditSalesCallsPerm}
                         canDeleteSalesCalls={canDelSalesCalls}
                         onOpenLeadProfile={openLeadProfile}
+                        onOpenAccountProfile={openAccountProfileById}
                         onLogCallSave={handleLogCallSave}
                         onToggleActivityCompleted={handleToggleActivityCompleted}
                         onEditCall={openEditSalesCallModal}
@@ -3121,6 +3200,7 @@ export default function CRM({
                                             const segment = String(req?.segment || '—');
                                             const rev = requestRevenue(req);
                                             const details = getRequestKanbanCardDetails(req, crmFilterUsers);
+                                            const cardDeadlines = getRequestCardDeadlines(req);
                                             const ic = 12;
                                             return (
                                                 <div
@@ -3197,17 +3277,26 @@ export default function CRM({
                                                             </p>
                                                         </>
                                                     ) : null}
-                                                    <div className="flex justify-between items-center text-xs mb-2">
-                                                        <span style={{ color: colors.textMuted }}>{details?.startDate || '—'}</span>
+                                                    <div className="flex justify-end items-center text-xs mb-2">
                                                         <span className="font-bold font-mono" style={{ color: colors.primary }}>{formatSarCompact(rev)}</span>
                                                     </div>
-                                                    <div className="pt-2 border-t text-xs flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5" style={{ borderColor: colors.border, color: colors.textMuted }}>
-                                                        <span>
-                                                            Date: {details?.startDate || '—'}
-                                                        </span>
-                                                        <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
-                                                            {details?.creatorName || '—'}
-                                                        </span>
+                                                    <div className="pt-2 border-t text-xs space-y-1" style={{ borderColor: colors.border, color: colors.textMuted }}>
+                                                        {cardDeadlines.length > 0 ? (
+                                                            <div className="space-y-0.5">
+                                                                {cardDeadlines.map((dl) => (
+                                                                    <div key={dl.label} className="flex items-center justify-between gap-2">
+                                                                        <span>{dl.label} deadline</span>
+                                                                        <span className="font-medium" style={{ color: colors.textMain }}>{dl.date}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : null}
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <span className="opacity-70">Created by</span>
+                                                            <span className="truncate text-right max-w-[55%]" style={{ color: colors.textMain }}>
+                                                                {details?.creatorName || '—'}
+                                                            </span>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             );
@@ -3614,19 +3703,6 @@ export default function CRM({
                                 </div>
                             </div>
 
-                            <div className="flex items-center gap-6 p-3 rounded-xl border bg-white/5" style={{ borderColor: colors.border }}>
-                                <div className="flex items-center gap-2 cursor-pointer select-none" onClick={() => setNewCallData({ ...newCallData, followUpRequired: !newCallData.followUpRequired })}>
-                                    <div className={`w-5 h-5 rounded border-2 transition-all flex items-center justify-center ${newCallData.followUpRequired ? 'bg-primary' : ''}`} style={{ borderColor: newCallData.followUpRequired ? colors.primary : colors.border, backgroundColor: newCallData.followUpRequired ? colors.primary : 'transparent' }}>
-                                        {newCallData.followUpRequired && <Check size={14} color="#000" strokeWidth={4} />}
-                                    </div>
-                                    <span className="text-xs font-bold" style={{ color: colors.textMain }}>Follow up Required</span>
-                                </div>
-                                {newCallData.followUpRequired && (
-                                    <div className="flex-1 animate-in slide-in-from-left-2 duration-200">
-                                        <input type="date" value={newCallData.followUpDate} onChange={e => setNewCallData({ ...newCallData, followUpDate: e.target.value })} className="w-full px-3 py-1.5 rounded-lg border text-sm" style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }} />
-                                    </div>
-                                )}
-                            </div>
                         </div>
                         <div className="p-4 border-t flex gap-3" style={{ borderColor: colors.border }}>
                             <button

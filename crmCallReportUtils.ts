@@ -4,6 +4,7 @@ import {
     getCallDueDate,
     getSalesCallPeriodAnchorDate,
     isCallDueToday,
+    dedupePipelineMirrorCalls,
     isHubCompletedSalesCall,
     leadMatchesSalesCallPeriodAnchor,
     parseYmdToLocalDate,
@@ -29,6 +30,7 @@ export type CallReportRow = {
     monthLabel: string;
     subject: string;
     account: string;
+    accountId: string;
     contactPerson: string;
     callDescription: string;
     clientFeedback: string;
@@ -214,6 +216,7 @@ function buildRowFromParts(
         monthLabel: formatMonthLabelFromYmd(at),
         subject: String(lead?.subject || 'Sales call'),
         account: String(lead?.company || '—'),
+        accountId: String(lead?.accountId || ''),
         contactPerson: String(lead?.contact || '—'),
         callDescription: parts.description,
         clientFeedback: parts.clientFeedback,
@@ -253,7 +256,7 @@ export function buildCallReportRows(
 
     const todayYmd = toLocalYmd();
 
-    let leads = Array.isArray(salesCalls) ? salesCalls : [];
+    let leads = dedupePipelineMirrorCalls(Array.isArray(salesCalls) ? salesCalls : []);
     leads = filterSalesCallsLikeReports(leads, activePropertyId, accounts);
 
     const fid = String(createdByUserFilterId || '').trim();

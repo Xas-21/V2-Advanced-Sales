@@ -3,10 +3,15 @@ import {
     getEventDateWindow,
     normalizeRequestTypeKey,
 } from './beoShared';
-import type { PropertyAlertSettingsMap, SystemAlertKind } from './propertyAlertSettings';
+import type {
+    DeadlineAlertKind,
+    PropertyAlertSettingsMap,
+    SystemAlertKind,
+} from './propertyAlertSettings';
 import {
     CLIENT_FEEDBACK_LOOKBACK_DAYS,
     CLIENT_FEEDBACK_URGENT_LAST_DAYS,
+    getDeadlineAlertRule,
     isAlertKindActive,
     mergePropertyAlertSettings,
 } from './propertyAlertSettings';
@@ -70,31 +75,75 @@ function isExcludedStatus(req: any): boolean {
     return s === 'Cancelled' || s === 'Lost';
 }
 
-/** CRM auto-call `requestDeadlineType` → request status that owns that deadline (matches alert engine). */
-export function requestStatusForDeadlineType(deadlineType: string): string | null {
+/** Normalize a `requestDeadlineType` token to the configurable deadline kind. */
+export function deadlineKindForType(deadlineType: string): DeadlineAlertKind | null {
     const t = String(deadlineType || '').trim();
-    if (t === 'offer_acceptance' || t === 'offer') return 'Inquiry';
-    if (t === 'deposit') return 'Accepted';
-    if (t === 'full_payment' || t === 'payment') return 'Tentative';
+    if (t === 'offer_acceptance' || t === 'offer') return 'offer';
+    if (t === 'deposit') return 'deposit';
+    if (t === 'full_payment' || t === 'payment') return 'payment';
     return null;
 }
 
-/** Whether a request deadline call/alert tier applies to this request's current status. */
-export function requestDeadlineAppliesToRequest(deadlineType: string, req: any): boolean {
-    if (isExcludedStatus(req)) return false;
-    const required = requestStatusForDeadlineType(deadlineType);
-    if (!required) return false;
-    return normStatus(req) === required;
+/** Default linked status for a deadline type (legacy hardcoded mapping). */
+export function requestStatusForDeadlineType(deadlineType: string): string | null {
+    const kind = deadlineKindForType(deadlineType);
+    if (kind === 'offer') return 'Inquiry';
+    if (kind === 'deposit') return 'Accepted';
+    if (kind === 'payment') return 'Tentative';
+    return null;
 }
+
+/**
+ * Whether a request deadline call/alert applies to this request's current status.
+ * Pass `linkedStatuses` (from alert/call settings) to use configurable statuses; otherwise the
+ * legacy default mapping is used so existing callers keep current behavior.
+ */
+export function requestDeadlineAppliesToRequest(
+    deadlineType: string,
+    req: any,
+    linkedStatuses?: string[]
+): boolean {
+    if (isExcludedStatus(req)) return false;
+    const statuses =
+        Array.isArray(linkedStatuses) && linkedStatuses.length
+            ? linkedStatuses
+            : (() => {
+                  const def = requestStatusForDeadlineType(deadlineType);
+                  return def ? [def] : [];
+              })();
+    if (!statuses.length) return false;
+    const cur = normStatus(req).toLowerCase();
+    return statuses.some((s) => String(s || '').trim().toLowerCase() === cur);
+}
+
+function applyMessageTokens(
+    template: string,
+    tokens: { contact: string; request: string; account: string; days: number }
+): string {
+    return String(template || '')
+        .replace(/\{contact\}/g, tokens.contact)
+        .replace(/\{request\}/g, tokens.request)
+        .replace(/\{account\}/g, tokens.account)
+        .replace(/\{days\}/g, String(Math.max(tokens.days, 0)));
+}
+
+/** Definition table linking each deadline kind to its request date field + display labels. */
+const DEADLINE_ALERT_DEFS: {
+    kind: DeadlineAlertKind;
+    dateKey: string;
+    deadlineType: string;
+    title: string;
+    pastLabel: string;
+}[] = [
+    { kind: 'offer', dateKey: 'offerDeadline', deadlineType: 'offer_acceptance', title: 'Acceptance', pastLabel: 'Offer acceptance' },
+    { kind: 'deposit', dateKey: 'depositDeadline', deadlineType: 'deposit', title: 'Deposit', pastLabel: 'Deposit' },
+    { kind: 'payment', dateKey: 'paymentDeadline', deadlineType: 'full_payment', title: 'Full Payment', pastLabel: 'Full payment' },
+];
 
 function requestNameAccount(req: any): { name: string; account: string } {
     const name = String(req?.requestName || req?.confirmationNo || req?.id || '—').trim() || '—';
     const account = String(req?.account || req?.accountName || '—').trim() || '—';
     return { name, account };
-}
-
-function contactLine(contactName: string, reqName: string, account: string): string {
-    return `Please contact ${contactName} — ${reqName} (${account})`;
 }
 
 /** GIS: Definite for most types; series also allows Actual (per product spec). */
@@ -158,118 +207,51 @@ function pushDeadlineAlerts(
     const { name: reqName, account } = requestNameAccount(req);
     const base = { requestId: String(req.id), creatorName };
 
-    // Offer — Inquiry only
-    if (isAlertKindActive(settings, 'offer') && requestDeadlineAppliesToRequest('offer_acceptance', req)) {
-        const d = daysUntilLocal(req?.offerDeadline, today);
-        if (d === null) {
-            /* skip */
-        } else if (d > 3) {
-            /* not in window */
-        } else {
-            const dk = `offer:${req.id}`;
-            let body: string;
-            let accent: RequestAlertAccent = 'yellow';
-            let urgent = false;
-            if (d <= 0) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} Offer acceptance deadline has passed.`;
-            } else if (d === 1) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} 1 day left.`;
-            } else if (d === 2) {
-                body = `${contactLine(contactName, reqName, account)} 2 days left.`;
-            } else {
-                body = contactLine(contactName, reqName, account);
-            }
-            out.push({
-                ...base,
-                dismissKey: dk,
-                kind: 'offer',
-                title: 'Acceptance',
-                body,
-                accent,
-                urgent,
-                anchorDate: normalizeAlertDate(req?.offerDeadline) || undefined,
-            });
-        }
-    }
+    for (const def of DEADLINE_ALERT_DEFS) {
+        const rule = getDeadlineAlertRule(settings, def.kind);
+        if (!rule.enabled) continue;
+        if (!requestDeadlineAppliesToRequest(def.deadlineType, req, rule.linkedStatuses)) continue;
 
-    // Deposit — Accepted
-    if (isAlertKindActive(settings, 'deposit') && requestDeadlineAppliesToRequest('deposit', req)) {
-        const d = daysUntilLocal(req?.depositDeadline, today);
-        if (d === null) {
-            /* skip */
-        } else if (d > 3) {
-            /* skip */
-        } else {
-            const dk = `deposit:${req.id}`;
-            let body: string;
-            let accent: RequestAlertAccent = 'blue';
-            let urgent = false;
-            if (d <= 0) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} Deposit deadline has passed.`;
-            } else if (d === 1) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} 1 day left.`;
-            } else if (d === 2) {
-                body = `${contactLine(contactName, reqName, account)} 2 days left.`;
-            } else {
-                body = contactLine(contactName, reqName, account);
-            }
-            out.push({
-                ...base,
-                dismissKey: dk,
-                kind: 'deposit',
-                title: 'Deposit',
-                body,
-                accent,
-                urgent,
-                anchorDate: normalizeAlertDate(req?.depositDeadline) || undefined,
-            });
-        }
-    }
+        const d = daysUntilLocal(req?.[def.dateKey], today);
+        if (d === null) continue;
 
-    // Full payment — Tentative, tiers 3 / 2 / 1 (green for 3 & 2, red urgent at 1 or overdue)
-    if (isAlertKindActive(settings, 'payment') && requestDeadlineAppliesToRequest('full_payment', req)) {
-        const d = daysUntilLocal(req?.paymentDeadline, today);
-        if (d === null) {
-            /* skip */
-        } else if (d > 3) {
-            /* skip */
-        } else {
-            const dk = `payment:${req.id}`;
-            let body: string;
-            let accent: RequestAlertAccent = 'green';
-            let urgent = false;
-            if (d <= 0) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} Full payment deadline has passed.`;
-            } else if (d === 1) {
-                urgent = true;
-                accent = 'red';
-                body = `Urgent. ${contactLine(contactName, reqName, account)} 1 day left.`;
-            } else if (d === 2) {
-                body = `${contactLine(contactName, reqName, account)} 2 days left.`;
-            } else {
-                body = contactLine(contactName, reqName, account);
-            }
-            out.push({
-                ...base,
-                dismissKey: dk,
-                kind: 'payment',
-                title: 'Full Payment',
-                body,
-                accent,
-                urgent,
-                anchorDate: normalizeAlertDate(req?.paymentDeadline) || undefined,
-            });
-        }
+        // Offsets are days-before-deadline; on-day (0) also covers overdue (d < 0).
+        const offsets = rule.offsets && rule.offsets.length ? rule.offsets : [0, 1, 2, 3];
+        const onDayEnabled = offsets.includes(0);
+        const triggers = offsets.includes(d) || (onDayEnabled && d < 0);
+        if (!triggers) continue;
+
+        const urgentWithin = Number.isFinite(rule.urgentWithinDays) ? rule.urgentWithinDays : 1;
+        const urgent = d <= urgentWithin;
+        const accent: RequestAlertAccent = urgent ? 'red' : ((rule.accent || 'yellow') as RequestAlertAccent);
+
+        const baseMsg = applyMessageTokens(rule.message, {
+            contact: contactName,
+            request: reqName,
+            account,
+            days: d,
+        });
+        // Auto tier suffix preserves today's wording.
+        let suffix = '';
+        if (d <= 0) suffix = ` ${def.pastLabel} deadline has passed.`;
+        else if (d === 1) suffix = ' 1 day left.';
+        else if (d === 2) suffix = ' 2 days left.';
+
+        const urgentPrefix = urgent ? 'Urgent. ' : '';
+        const tag = String(rule.tag || '').trim();
+        const tagPrefix = tag ? `[${tag}] ` : '';
+        const body = `${urgentPrefix}${tagPrefix}${baseMsg}${suffix}`;
+
+        out.push({
+            ...base,
+            dismissKey: `${def.kind}:${req.id}`,
+            kind: def.kind,
+            title: def.title,
+            body,
+            accent,
+            urgent,
+            anchorDate: normalizeAlertDate(req?.[def.dateKey]) || undefined,
+        });
     }
 }
 

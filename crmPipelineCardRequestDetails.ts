@@ -72,6 +72,31 @@ export function getPipelineLinkedRequestDisplay(req: any): PipelineLinkedRequest
     };
 }
 
+export type RequestCardDeadline = { label: string; date: string };
+
+/**
+ * Status-based deadline list shown at the bottom of CRM Request kanban cards (fixed product spec):
+ *  - Inquiry: Offer Acceptance Deadline
+ *  - Accepted / Tentative: Deposit Deadline + Full Payment Deadline
+ *  - Definite: Full Payment Deadline
+ *  - Actual / Cancelled / Lost: none
+ */
+export function getRequestCardDeadlines(req: any): RequestCardDeadline[] {
+    if (!req) return [];
+    const status = String(req?.status || '').trim().toLowerCase();
+    const offer: RequestCardDeadline = { label: 'Offer Acceptance', date: formatYmd(String(req?.offerDeadline || '')) };
+    const deposit: RequestCardDeadline = { label: 'Deposit', date: formatYmd(String(req?.depositDeadline || '')) };
+    const payment: RequestCardDeadline = { label: 'Full Payment', date: formatYmd(String(req?.paymentDeadline || '')) };
+
+    let picks: RequestCardDeadline[] = [];
+    if (status === 'inquiry') picks = [offer];
+    else if (status === 'accepted' || status === 'tentative') picks = [deposit, payment];
+    else if (status === 'definite') picks = [payment];
+    else picks = [];
+
+    return picks.filter((p) => p.date && p.date !== '—');
+}
+
 export function countRequestRooms(req: any): number {
     const total = Number(req?.totalRooms || 0);
     if (Number.isFinite(total) && total > 0) return Math.floor(total);

@@ -74,15 +74,32 @@ import {
 } from './userProfileMetrics';
 import { formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
 import { UserPerformanceDashboard } from './UserPerformanceDashboard';
-import type { PropertyAlertSettingsMap, SystemAlertKind } from './propertyAlertSettings';
+import type {
+    DeadlineAlertKind,
+    DeadlineAlertRuleSettings,
+    PropertyAlertSettingsMap,
+    SystemAlertKind,
+} from './propertyAlertSettings';
 import {
     ALERT_TYPE_REGISTRY,
     CLIENT_FEEDBACK_LOOKBACK_DAYS,
     CLIENT_FEEDBACK_URGENT_LAST_DAYS,
+    DEADLINE_ACCENT_OPTIONS,
+    DEADLINE_ALERT_KINDS,
+    DEADLINE_OFFSET_OPTIONS,
+    REQUEST_STATUS_OPTIONS,
     mergePropertyAlertSettings,
     resolveAlertSettingsForProperty,
     saveAlertSettingsForProperty,
 } from './propertyAlertSettings';
+import type { DeadlineCallKind, DeadlineCallRuleSettings, PropertyCallSettingsMap } from './propertyCallSettings';
+import {
+    CALL_TYPE_REGISTRY,
+    DEADLINE_CALL_KINDS,
+    mergePropertyCallSettings,
+    resolveCallSettingsForProperty,
+    saveCallSettingsForProperty,
+} from './propertyCallSettings';
 import {
     FORM_CONFIGURATION_CHANGED_EVENT,
     FORM_CONFIGURATION_META,
@@ -727,6 +744,10 @@ export default function Settings({
     const [alertSettingsDraft, setAlertSettingsDraft] = useState<PropertyAlertSettingsMap>(() =>
         mergePropertyAlertSettings(null)
     );
+    const [callSettingsDraft, setCallSettingsDraft] = useState<PropertyCallSettingsMap>(() =>
+        mergePropertyCallSettings(null)
+    );
+    const [callSettingsSaveStatus, setCallSettingsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [feedbackTemplateType, setFeedbackTemplateType] = useState<FeedbackTemplateType>('accommodation');
     const [feedbackTemplatesDraft, setFeedbackTemplatesDraft] = useState<Record<FeedbackTemplateType, FeedbackTemplate>>(
         () => buildDefaultFeedbackTemplateStore()
@@ -735,6 +756,7 @@ export default function Settings({
 
     useEffect(() => {
         if (activePropTab !== 'alert_notifications') setAlertSettingsSaveStatus('idle');
+        if (activePropTab !== 'calls') setCallSettingsSaveStatus('idle');
         if (activePropTab !== 'feedback_forms') setFeedbackFormsSaveStatus('idle');
     }, [activePropTab]);
     const [cxlReasons, setCxlReasons] = useState<any[]>([]);
@@ -822,10 +844,12 @@ export default function Settings({
             setOccupancyTypesList([]);
             setPaymentMethodsList([]);
             setAlertSettingsDraft(mergePropertyAlertSettings(null));
+            setCallSettingsDraft(mergePropertyCallSettings(null));
             setFeedbackTemplatesDraft(buildDefaultFeedbackTemplateStore());
             return;
         }
         setAlertSettingsDraft(resolveAlertSettingsForProperty(managingProperty.id, managingProperty));
+        setCallSettingsDraft(resolveCallSettingsForProperty(managingProperty.id, managingProperty));
         setTaxonomySegments(resolveSegmentsForProperty(managingProperty.id, managingProperty));
         setTaxonomyAccountTypes(resolveAccountTypesForProperty(managingProperty.id, managingProperty));
         setEditSegIdx(null);
@@ -1012,6 +1036,7 @@ export default function Settings({
         { id: 'cxl', label: 'CXL', icon: List },
         { id: 'feedback_forms', label: 'Feedback Forms', icon: FileText },
         { id: 'alert_notifications', label: 'Alerts & Notifications', icon: Bell },
+        { id: 'calls', label: 'Calls', icon: Phone },
         ...(appIsAdmin ? [{ id: 'users', label: 'User Mgmt', icon: Users }] : []),
     ];
 
@@ -1061,6 +1086,7 @@ export default function Settings({
                         {activePropTab === 'cxl' && renderCxlTab()}
                         {activePropTab === 'feedback_forms' && renderFeedbackFormsTab()}
                         {activePropTab === 'alert_notifications' && renderAlertsNotificationsTab()}
+                        {activePropTab === 'calls' && renderCallsTab()}
                         {activePropTab === 'users' && renderUsersTab()}
                     </div>
                 </div>
@@ -2320,6 +2346,35 @@ export default function Settings({
             });
         };
 
+        const patchDeadlineRule = (kind: DeadlineAlertKind, patch: Partial<DeadlineAlertRuleSettings>) => {
+            setAlertSettingsDraft((prev) => ({
+                ...prev,
+                [kind]: { ...(prev[kind] as DeadlineAlertRuleSettings), ...patch },
+            }));
+        };
+
+        const toggleStatus = (kind: DeadlineAlertKind, status: string) => {
+            setAlertSettingsDraft((prev) => {
+                const cur = prev[kind] as DeadlineAlertRuleSettings;
+                const has = cur.linkedStatuses.includes(status);
+                const next = has
+                    ? cur.linkedStatuses.filter((s) => s !== status)
+                    : [...cur.linkedStatuses, status];
+                return { ...prev, [kind]: { ...cur, linkedStatuses: next } };
+            });
+        };
+
+        const toggleOffset = (kind: DeadlineAlertKind, offset: number) => {
+            setAlertSettingsDraft((prev) => {
+                const cur = prev[kind] as DeadlineAlertRuleSettings;
+                const has = cur.offsets.includes(offset);
+                const next = has
+                    ? cur.offsets.filter((o) => o !== offset)
+                    : [...cur.offsets, offset].sort((a, b) => a - b);
+                return { ...prev, [kind]: { ...cur, offsets: next } };
+            });
+        };
+
         const handleSaveAlertSettings = async () => {
             setAlertSettingsSaveStatus('saving');
             try {
@@ -2371,6 +2426,127 @@ export default function Settings({
                     </div>
                 </div>
 
+                <div className="space-y-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest" style={{ color: colors.textMuted }}>
+                        Deadline alert rules
+                    </h3>
+                    <p className="text-xs -mt-2" style={{ color: colors.textMuted }}>
+                        These reflect the current system behavior by default. Change linked statuses, trigger days, message,
+                        tag, or accent color, then Save. Urgent escalation (red, &quot;Urgent.&quot; prefix) and the
+                        &quot;X days left&quot; wording are added automatically near the deadline.
+                    </p>
+                    {DEADLINE_ALERT_KINDS.map((kind) => {
+                        const def = ALERT_TYPE_REGISTRY.find((d) => d.kind === kind)!;
+                        const rule = alertSettingsDraft[kind] as DeadlineAlertRuleSettings;
+                        return (
+                            <div
+                                key={kind}
+                                className="rounded-xl border p-4 space-y-4"
+                                style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <div className="font-bold text-sm" style={{ color: colors.textMain }}>{def.title}</div>
+                                        <p className="text-xs mt-1" style={{ color: colors.textMuted }}>{def.description}</p>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest shrink-0" style={{ color: colors.textMuted }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={rule.enabled}
+                                            onChange={(e) => patchDeadlineRule(kind, { enabled: e.target.checked, createTask: e.target.checked ? rule.createTask : false })}
+                                            className="w-4 h-4 rounded border cursor-pointer"
+                                            style={{ accentColor: colors.primary, borderColor: colors.border }}
+                                        />
+                                        Active
+                                    </label>
+                                </div>
+
+                                <div className={`grid gap-4 md:grid-cols-2 ${rule.enabled ? '' : 'opacity-40 pointer-events-none'}`}>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Linked statuses</div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {REQUEST_STATUS_OPTIONS.map((st) => (
+                                                <label key={st} className="flex items-center gap-1.5 text-xs cursor-pointer px-2 py-1 rounded-lg border" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={rule.linkedStatuses.includes(st)}
+                                                        onChange={() => toggleStatus(kind, st)}
+                                                        className="w-3.5 h-3.5 rounded cursor-pointer"
+                                                        style={{ accentColor: colors.primary }}
+                                                    />
+                                                    {st}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Trigger days</div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {DEADLINE_OFFSET_OPTIONS.map((opt) => (
+                                                <label key={opt.value} className="flex items-center gap-1.5 text-xs cursor-pointer px-2 py-1 rounded-lg border" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={rule.offsets.includes(opt.value)}
+                                                        onChange={() => toggleOffset(kind, opt.value)}
+                                                        className="w-3.5 h-3.5 rounded cursor-pointer"
+                                                        style={{ accentColor: colors.primary }}
+                                                    />
+                                                    {opt.label}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Message</div>
+                                        <input
+                                            type="text"
+                                            value={rule.message}
+                                            onChange={(e) => patchDeadlineRule(kind, { message: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-lg border text-sm"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg, color: colors.textMain }}
+                                        />
+                                        <p className="text-[10px] mt-1" style={{ color: colors.textMuted }}>Tokens: {'{contact}'} {'{request}'} {'{account}'} {'{days}'}</p>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Tag (optional)</div>
+                                        <input
+                                            type="text"
+                                            value={rule.tag}
+                                            placeholder="e.g. Urgent"
+                                            onChange={(e) => patchDeadlineRule(kind, { tag: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-lg border text-sm"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg, color: colors.textMain }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Accent color</div>
+                                        <select
+                                            value={rule.accent}
+                                            onChange={(e) => patchDeadlineRule(kind, { accent: e.target.value as DeadlineAlertRuleSettings['accent'] })}
+                                            className="w-full px-3 py-2 rounded-lg border text-sm"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg, color: colors.textMain }}
+                                        >
+                                            {DEADLINE_ACCENT_OPTIONS.map((o) => (
+                                                <option key={o.value} value={o.value}>{o.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-xs" style={{ color: colors.textMain }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={rule.createTask}
+                                            onChange={(e) => patchDeadlineRule(kind, { createTask: e.target.checked })}
+                                            className="w-4 h-4 rounded border cursor-pointer"
+                                            style={{ accentColor: colors.primary, borderColor: colors.border }}
+                                        />
+                                        Auto-task for request owner
+                                    </label>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
                 <div className="rounded-xl border overflow-hidden" style={{ borderColor: colors.border, backgroundColor: colors.card }}>
                     <table className="w-full text-left">
                         <thead style={{ backgroundColor: colors.bg }}>
@@ -2381,7 +2557,7 @@ export default function Settings({
                             </tr>
                         </thead>
                         <tbody className="divide-y" style={{ borderColor: colors.border }}>
-                            {ALERT_TYPE_REGISTRY.map((def) => {
+                            {ALERT_TYPE_REGISTRY.filter((def) => !(DEADLINE_ALERT_KINDS as readonly string[]).includes(def.kind)).map((def) => {
                                 const row = alertSettingsDraft[def.kind];
                                 return (
                                     <tr key={def.kind} className="hover:bg-white/5 transition-colors align-top">
@@ -2447,6 +2623,165 @@ export default function Settings({
                         </p>
                     </div>
                 </details>
+            </div>
+        );
+    };
+
+    const renderCallsTab = () => {
+        const propId = managingProperty?.id;
+        if (!propId) return null;
+
+        const patchCallRule = (kind: DeadlineCallKind, patch: Partial<DeadlineCallRuleSettings>) => {
+            setCallSettingsDraft((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
+        };
+        const toggleCallStatus = (kind: DeadlineCallKind, status: string) => {
+            setCallSettingsDraft((prev) => {
+                const cur = prev[kind];
+                const has = cur.linkedStatuses.includes(status);
+                const next = has ? cur.linkedStatuses.filter((s) => s !== status) : [...cur.linkedStatuses, status];
+                return { ...prev, [kind]: { ...cur, linkedStatuses: next } };
+            });
+        };
+        const toggleCallOffset = (kind: DeadlineCallKind, offset: number) => {
+            setCallSettingsDraft((prev) => {
+                const cur = prev[kind];
+                const has = cur.offsets.includes(offset);
+                const next = has ? cur.offsets.filter((o) => o !== offset) : [...cur.offsets, offset].sort((a, b) => a - b);
+                return { ...prev, [kind]: { ...cur, offsets: next } };
+            });
+        };
+
+        const handleSaveCallSettings = async () => {
+            setCallSettingsSaveStatus('saving');
+            try {
+                const clean = mergePropertyCallSettings(callSettingsDraft);
+                const ok = await saveCallSettingsForProperty(propId, clean);
+                if (!ok) throw new Error('save failed');
+                const nextProp = { ...managingProperty, callSettings: clean };
+                setManagingProperty(nextProp);
+                setProperties((prev: any[]) => prev.map((p: any) => (p.id === propId ? { ...p, callSettings: clean } : p)));
+                setCallSettingsSaveStatus('saved');
+                setTimeout(() => setCallSettingsSaveStatus('idle'), 3000);
+            } catch (err) {
+                console.error('Error saving call settings:', err);
+                setCallSettingsSaveStatus('error');
+            }
+        };
+
+        return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-start">
+                    <div className="min-w-0 flex-1">
+                        <h2 className="text-xl font-bold" style={{ color: colors.textMain }}>Calls</h2>
+                        <p className="text-sm mt-1 max-w-3xl" style={{ color: colors.textMuted }}>
+                            Control the CRM follow-up calls auto-created from request deadlines. Defaults match the current
+                            system behavior. Choose which request statuses generate each call, when the call is due
+                            (relative to the deadline), and the call description. The call contact is always the request&apos;s
+                            booker.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                        {callSettingsSaveStatus === 'saved' && (
+                            <span className="text-[10px] font-bold text-emerald-500 animate-pulse">SAVED SUCCESSFULLY!</span>
+                        )}
+                        {callSettingsSaveStatus === 'error' && (
+                            <span className="text-[10px] font-bold text-red-500">ERROR SAVING!</span>
+                        )}
+                        <button
+                            type="button"
+                            onClick={handleSaveCallSettings}
+                            disabled={callSettingsSaveStatus === 'saving'}
+                            className="px-6 py-2 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center gap-2 hover:brightness-110 active:scale-95 transition-all disabled:opacity-50"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            {callSettingsSaveStatus === 'saving' ? (
+                                <RefreshCw size={14} className="animate-spin" />
+                            ) : (
+                                <Save size={14} />
+                            )}
+                            {callSettingsSaveStatus === 'saving' ? 'Saving...' : 'Save configuration'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    {DEADLINE_CALL_KINDS.map((kind) => {
+                        const def = CALL_TYPE_REGISTRY.find((d) => d.kind === kind)!;
+                        const rule = callSettingsDraft[kind];
+                        return (
+                            <div
+                                key={kind}
+                                className="rounded-xl border p-4 space-y-4"
+                                style={{ borderColor: colors.border, backgroundColor: colors.card }}
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <div className="font-bold text-sm" style={{ color: colors.textMain }}>{def.title}</div>
+                                        <p className="text-xs mt-1" style={{ color: colors.textMuted }}>{def.description}</p>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest shrink-0" style={{ color: colors.textMuted }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={rule.enabled}
+                                            onChange={(e) => patchCallRule(kind, { enabled: e.target.checked })}
+                                            className="w-4 h-4 rounded border cursor-pointer"
+                                            style={{ accentColor: colors.primary, borderColor: colors.border }}
+                                        />
+                                        Active
+                                    </label>
+                                </div>
+
+                                <div className={`grid gap-4 md:grid-cols-2 ${rule.enabled ? '' : 'opacity-40 pointer-events-none'}`}>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Linked statuses</div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {REQUEST_STATUS_OPTIONS.map((st) => (
+                                                <label key={st} className="flex items-center gap-1.5 text-xs cursor-pointer px-2 py-1 rounded-lg border" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={rule.linkedStatuses.includes(st)}
+                                                        onChange={() => toggleCallStatus(kind, st)}
+                                                        className="w-3.5 h-3.5 rounded cursor-pointer"
+                                                        style={{ accentColor: colors.primary }}
+                                                    />
+                                                    {st}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Call due (relative to deadline)</div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {DEADLINE_OFFSET_OPTIONS.map((opt) => (
+                                                <label key={opt.value} className="flex items-center gap-1.5 text-xs cursor-pointer px-2 py-1 rounded-lg border" style={{ borderColor: colors.border, color: colors.textMain }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={rule.offsets.includes(opt.value)}
+                                                        onChange={() => toggleCallOffset(kind, opt.value)}
+                                                        className="w-3.5 h-3.5 rounded cursor-pointer"
+                                                        style={{ accentColor: colors.primary }}
+                                                    />
+                                                    {opt.label}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: colors.textMuted }}>Description</div>
+                                        <input
+                                            type="text"
+                                            value={rule.description}
+                                            onChange={(e) => patchCallRule(kind, { description: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-lg border text-sm"
+                                            style={{ borderColor: colors.border, backgroundColor: colors.bg, color: colors.textMain }}
+                                        />
+                                        <p className="text-[10px] mt-1" style={{ color: colors.textMuted }}>Tokens: {'{title}'} {'{reqId}'} {'{request}'} {'{account}'} {'{contact}'} {'{date}'}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
             </div>
         );
     };

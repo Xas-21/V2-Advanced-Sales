@@ -152,6 +152,7 @@ import {
     resolveAlertSettingsForProperty,
     shouldCreateTaskForAlertKind,
 } from './propertyAlertSettings';
+import { CALL_SETTINGS_CHANGED_EVENT } from './propertyCallSettings';
 import { MEALS_PACKAGES_CHANGED_EVENT } from './propertyMealsPackages';
 import { OCCUPANCY_TYPES_CHANGED_EVENT } from './propertyOccupancyTypes';
 import { PAYMENT_METHODS_CHANGED_EVENT } from './propertyPaymentMethods';
@@ -4735,15 +4736,19 @@ export default function AdvancedSalesDashboard() {
         const pidStr = String(pid);
         skipNextCrmPersist.current = true;
         const applyCrmPayload = (payload: any, accs: any[]) => {
+            const rawPipeCount = PIPELINE_STAGE_KEYS.reduce((n, k) => {
+                const arr = payload?.pipeline?.[k];
+                return n + (Array.isArray(arr) ? arr.length : 0);
+            }, 0);
+            crmServerCountsRef.current = {
+                salesCalls: Array.isArray(payload?.salesCalls) ? payload.salesCalls.length : 0,
+                pipeline: rawPipeCount,
+            };
             const merged = mergeCrmStateFromApi(payload);
             const pipeCount = PIPELINE_STAGE_KEYS.reduce(
                 (n, k) => n + (merged.pipeline[k]?.length || 0),
                 0
             );
-            crmServerCountsRef.current = {
-                salesCalls: merged.salesCalls.length,
-                pipeline: pipeCount,
-            };
             const scoped: CrmStatePayload = {
                 salesCalls: filterSalesCallsForProperty(merged.salesCalls, pidStr, accs),
                 pipeline: filterPipelineForProperty(merged.pipeline, pidStr, accs),
@@ -4928,6 +4933,11 @@ export default function AdvancedSalesDashboard() {
             if (!d?.propertyId || d.alertSettings == null) return;
             mergeIntoProperty(String(d.propertyId), { alertSettings: d.alertSettings });
         };
+        const onCallSettings = (e: Event) => {
+            const d = (e as CustomEvent<{ propertyId?: string; callSettings?: unknown }>).detail;
+            if (!d?.propertyId || d.callSettings == null) return;
+            mergeIntoProperty(String(d.propertyId), { callSettings: d.callSettings });
+        };
         const onFormConfigurations = (e: Event) => {
             const d = (e as CustomEvent<{ propertyId?: string; formConfigurations?: unknown }>).detail;
             if (!d?.propertyId || d.formConfigurations == null) return;
@@ -4948,6 +4958,7 @@ export default function AdvancedSalesDashboard() {
         window.addEventListener(TAXONOMY_CHANGED_EVENT, onTax);
         window.addEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
         window.addEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+        window.addEventListener(CALL_SETTINGS_CHANGED_EVENT, onCallSettings);
         window.addEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
         window.addEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
         window.addEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);
@@ -4955,6 +4966,7 @@ export default function AdvancedSalesDashboard() {
             window.removeEventListener(TAXONOMY_CHANGED_EVENT, onTax);
             window.removeEventListener(MEALS_PACKAGES_CHANGED_EVENT, onMeals);
             window.removeEventListener(ALERT_SETTINGS_CHANGED_EVENT, onAlertSettings);
+            window.removeEventListener(CALL_SETTINGS_CHANGED_EVENT, onCallSettings);
             window.removeEventListener(FORM_CONFIGURATION_CHANGED_EVENT, onFormConfigurations);
             window.removeEventListener(OCCUPANCY_TYPES_CHANGED_EVENT, onOccupancyTypes);
             window.removeEventListener(PAYMENT_METHODS_CHANGED_EVENT, onPaymentMethods);

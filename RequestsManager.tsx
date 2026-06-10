@@ -1921,24 +1921,20 @@ export default function RequestsManager({
                     },
                     ...updatedLogs,
                 ];
-            } else if (
-                paymentSum > 0 &&
-                (initialPipelineStatus === 'Inquiry' || initialPipelineStatus === 'Accepted')
-            ) {
-                resolvedStatus = 'Tentative';
+            } else if (paymentSum > 0 && canAutoDefiniteFromStatus(initialPipelineStatus)) {
+                resolvedStatus = 'Definite';
                 updatedLogs = [
                     {
                         date: new Date().toISOString(),
                         user: requestLogUser,
                         action: 'Status auto-updated',
-                        details: `Payment recorded while status was ${initialPipelineStatus} — set to Tentative.`,
+                        details: `Deposit recorded while status was ${initialPipelineStatus} — set to Definite.`,
                     },
                     ...updatedLogs,
                 ];
             }
             const becameDefiniteThisSave =
                 paymentSum > 0 &&
-                paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost) &&
                 canAutoDefiniteFromStatus(initialPipelineStatus);
             const resolvedPaymentStatus = paymentsMeetOrExceedTotal(paymentSum, resolvedTotalCost)
                 ? 'Paid'
@@ -2598,7 +2594,7 @@ export default function RequestsManager({
             const newPaid = sumPaymentAmounts(mergedPayments);
             const total = Number(fin.grandTotalWithTax ?? fin.totalCostWithTax ?? 0) || 0;
             const fullPayPromotion = paymentsMeetOrExceedTotal(newPaid, total) && canAutoDefiniteFromStatus(st);
-            const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+            const bumpToDefinite = !fullPayPromotion && newPaid > 0 && canAutoDefiniteFromStatus(st);
             const requestTypeLabel =
                 accForm.requestType ||
                 (requestType === 'event_rooms'
@@ -2637,14 +2633,14 @@ export default function RequestsManager({
                         details: `Full payment recorded while status was ${st} — set to Definite.`,
                     },
                 ];
-            } else if (bumpToTentative) {
-                nextStatus = 'Tentative';
+            } else if (bumpToDefinite) {
+                nextStatus = 'Definite';
                 autoLog = [
                     {
                         date: new Date().toISOString(),
                         user: requestLogUser,
                         action: 'Status auto-updated',
-                        details: `Payment posted while status was ${st} — set to Tentative.`,
+                        details: `Deposit posted while status was ${st} — set to Definite.`,
                     },
                 ];
             }
@@ -4971,7 +4967,7 @@ export default function RequestsManager({
                                         Number(finAfter.grandTotalWithTax ?? finAfter.totalCostWithTax ?? 0) || 0;
                                     const fullPayPromotion =
                                         paymentsMeetOrExceedTotal(paidSum, total) && canAutoDefiniteFromStatus(st);
-                                    const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+                                    const bumpToDefinite = !fullPayPromotion && paidSum > 0 && canAutoDefiniteFromStatus(st);
                                     const requestTypeLabel =
                                         prev.requestType ||
                                         (requestType === 'event_rooms'
@@ -5009,14 +5005,14 @@ export default function RequestsManager({
                                                 details: `Full payment recorded while status was ${st} — set to Definite.`,
                                             },
                                         ];
-                                    } else if (bumpToTentative) {
-                                        nextStatus = 'Tentative';
+                                    } else if (bumpToDefinite) {
+                                        nextStatus = 'Definite';
                                         autoLog = [
                                             {
                                                 date: new Date().toISOString(),
                                                 user: requestLogUser,
                                                 action: 'Status auto-updated',
-                                                details: `Deposit posted while status was ${st} — set to Tentative.`,
+                                                details: `Deposit posted while status was ${st} — set to Definite.`,
                                             },
                                         ];
                                     }
@@ -5050,7 +5046,7 @@ export default function RequestsManager({
                                     const fullPayPromotion =
                                         paymentsMeetOrExceedTotal(paidSum, totalCost) &&
                                         canAutoDefiniteFromStatus(st);
-                                    const bumpToTentative = !fullPayPromotion && (st === 'Inquiry' || st === 'Accepted');
+                                    const bumpToDefinite = !fullPayPromotion && paidSum > 0 && canAutoDefiniteFromStatus(st);
                                     const actualProbe = {
                                         ...req,
                                         payments: newPayments,
@@ -5081,14 +5077,14 @@ export default function RequestsManager({
                                                 details: `Full payment recorded while status was ${st} — set to Definite.`,
                                             },
                                         ];
-                                    } else if (bumpToTentative) {
-                                        nextStatus = 'Tentative';
+                                    } else if (bumpToDefinite) {
+                                        nextStatus = 'Definite';
                                         autoLog = [
                                             {
                                                 date: new Date().toISOString(),
                                                 user: requestLogUser,
                                                 action: 'Status auto-updated',
-                                                details: `Deposit posted while status was ${st} — set to Tentative.`,
+                                                details: `Deposit posted while status was ${st} — set to Definite.`,
                                             },
                                         ];
                                     }
@@ -5373,16 +5369,47 @@ export default function RequestsManager({
                                 </button>
                             );
                         })()}
-                    {!readOnlyOperational && (
-                        <button 
-                            onClick={() => { setShowCancelModal(true); }}
-                            className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-red-500/10 text-red-500 text-left transition-all active:scale-[0.98]">
-                            <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500">
-                                <Trash2 size={12} />
-                            </div>
-                            <span>Cancel</span>
-                        </button>
-                    )}
+                    {!readOnlyOperational && (() => {
+                        const optReq = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
+                        const isCancelled = String(optReq?.status || '').toLowerCase() === 'cancelled';
+                        if (isCancelled) {
+                            return (
+                                <button
+                                    onClick={async () => {
+                                        if (!optReq) return;
+                                        const newLogs = [
+                                            {
+                                                date: new Date().toISOString(),
+                                                user: requestLogUser,
+                                                action: 'Reinstated',
+                                                details: 'Request status changed from Cancelled to Inquiry.',
+                                            },
+                                            ...(optReq.logs || []),
+                                        ];
+                                        await updateRequest(optReq.id, { status: 'Inquiry', logs: newLogs });
+                                        setActiveOptionsMenu(null);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-emerald-500/10 text-emerald-500 text-left transition-all active:scale-[0.98]"
+                                >
+                                    <div className="w-6 h-6 rounded-md bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                                        <RotateCcw size={12} />
+                                    </div>
+                                    <span>Reinstate</span>
+                                </button>
+                            );
+                        }
+                        return (
+                            <button
+                                onClick={() => { setShowCancelModal(true); }}
+                                className="w-full px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-2.5 hover:bg-red-500/10 text-red-500 text-left transition-all active:scale-[0.98]"
+                            >
+                                <div className="w-6 h-6 rounded-md bg-red-500/10 flex items-center justify-center text-red-500">
+                                    <Trash2 size={12} />
+                                </div>
+                                <span>Cancel</span>
+                            </button>
+                        );
+                    })()}
                     {canDeleteRequest && !readOnlyOperational && (
                         <button 
                             onClick={() => {
@@ -7253,6 +7280,8 @@ export default function RequestsManager({
         const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
         const companyColWidth = 180;
         const groupColWidth = 220;
+        const confirmationColWidth = 130;
+        const pinnedColsWidth = companyColWidth + groupColWidth + confirmationColWidth;
         const parseYmdToDate = (raw: string): Date | null => {
             const v = String(raw || '').trim().slice(0, 10);
             if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
@@ -7276,6 +7305,7 @@ export default function RequestsManager({
             monthIndex: number;
             companyName: string;
             groupName: string;
+            confirmationNo: string;
             dayCounts: Record<number, number>;
             totalRoomNights: number;
             status: string;
@@ -7305,7 +7335,8 @@ export default function RequestsManager({
                     id: `${req.id || 'REQ'}-${monthIndex}-${suffix}`,
                     monthIndex,
                     companyName: String(req.account || req.accountName || '—'),
-                    groupName: String(req.requestName || req.confirmationNo || req.id || '—'),
+                    groupName: String(req.requestName || req.id || '—'),
+                    confirmationNo: String(req.confirmationNo || '—'),
                     dayCounts: counts,
                     totalRoomNights,
                     status,
@@ -7484,6 +7515,22 @@ export default function RequestsManager({
                                             >
                                                 Group Name
                                             </th>
+                                            <th
+                                                className="border px-2 py-1 text-left sticky"
+                                                style={{
+                                                    left: companyColWidth + groupColWidth,
+                                                    borderColor: colors.border,
+                                                    backgroundColor: pinnedBg,
+                                                    color: colors.textMain,
+                                                    minWidth: confirmationColWidth,
+                                                    width: confirmationColWidth,
+                                                    maxWidth: confirmationColWidth,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
+                                                }}
+                                            >
+                                                Confirmation #
+                                            </th>
                                             {Array.from({ length: daysInMonth }, (_, i) => (
                                                 <th key={`dow-${i + 1}`} className="border px-1 py-1 text-center min-w-[34px] relative" style={{ borderColor: colors.border, color: colors.textMuted, zIndex: dayCellZ }}>
                                                     {GRID_WEEKDAY_CODES[new Date(gridYear, monthIndex, i + 1).getDay()]}
@@ -7518,6 +7565,19 @@ export default function RequestsManager({
                                                     minWidth: groupColWidth,
                                                     width: groupColWidth,
                                                     maxWidth: groupColWidth,
+                                                    boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                    zIndex: pinnedHeadZ,
+                                                }}
+                                            />
+                                            <th
+                                                className="border px-2 py-1 text-left sticky"
+                                                style={{
+                                                    left: companyColWidth + groupColWidth,
+                                                    borderColor: colors.border,
+                                                    backgroundColor: pinnedBg,
+                                                    minWidth: confirmationColWidth,
+                                                    width: confirmationColWidth,
+                                                    maxWidth: confirmationColWidth,
                                                     boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
                                                     zIndex: pinnedHeadZ,
                                                 }}
@@ -7572,6 +7632,22 @@ export default function RequestsManager({
                                                 >
                                                     {row.groupName}
                                                 </td>
+                                                <td
+                                                    className="border px-2 py-1 sticky truncate font-semibold"
+                                                    style={{
+                                                        left: companyColWidth + groupColWidth,
+                                                        borderColor: colors.border,
+                                                        backgroundColor: rowBg,
+                                                        color: gridRoomsRowText,
+                                                        minWidth: confirmationColWidth,
+                                                        width: confirmationColWidth,
+                                                        maxWidth: confirmationColWidth,
+                                                        boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,
+                                                        zIndex: pinnedBodyZ,
+                                                    }}
+                                                >
+                                                    {row.confirmationNo}
+                                                </td>
                                                 {Array.from({ length: daysInMonth }, (_, i) => {
                                                     const day = i + 1;
                                                     const value = row.dayCounts[day] || 0;
@@ -7601,15 +7677,15 @@ export default function RequestsManager({
                                         })}
                                         <tr className="shrink-0" style={{ borderTop: `2px solid ${colors.primary}` }}>
                                             <td
-                                                colSpan={2}
+                                                colSpan={3}
                                                 className="border px-2 py-1.5 sticky left-0 font-black text-center"
                                                 style={{
                                                     borderColor: colors.border,
                                                     backgroundColor: totalRoomsFooterBg,
                                                     color: colors.primary,
-                                                    minWidth: companyColWidth + groupColWidth,
-                                                    width: companyColWidth + groupColWidth,
-                                                    maxWidth: companyColWidth + groupColWidth,
+                                                    minWidth: pinnedColsWidth,
+                                                    width: pinnedColsWidth,
+                                                    maxWidth: pinnedColsWidth,
                                                     textAlign: 'center',
                                                     borderLeft: `3px solid ${colors.primary}`,
                                                     boxShadow: `4px 0 8px -2px rgba(0,0,0,0.35)`,

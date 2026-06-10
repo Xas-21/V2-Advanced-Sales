@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Check, PhoneCall, Plus, Tag } from 'lucide-react';
+import { X, Check, PhoneCall, Plus, Tag, Info } from 'lucide-react';
 import { getTagColor, setTagColorForName } from './tagColorSettings';
+import { isRequestDeadlineAutoCall } from './crmActivitiesUtils';
 
 export type LogCallInterest = 'waiting' | 'interested' | 'not_interested' | '';
 
@@ -45,20 +46,28 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
     const [showTagInput, setShowTagInput] = useState(false);
     const [tagDraft, setTagDraft] = useState('');
     const [tagColorTick, setTagColorTick] = useState(0);
+    const [showDeadlineFollowUpHint, setShowDeadlineFollowUpHint] = useState(false);
+
+    const isDeadlineAutoCall = isRequestDeadlineAutoCall(lead);
 
     useEffect(() => {
         if (!open) {
             setForm(emptyForm());
             setShowTagInput(false);
             setTagDraft('');
+            setShowDeadlineFollowUpHint(false);
             return;
         }
         setForm(emptyForm(lead));
         setShowTagInput(false);
         setTagDraft('');
+        setShowDeadlineFollowUpHint(false);
     }, [open, lead?.id]);
 
     if (!open || !lead) return null;
+
+    const deadlineFollowUpMessage =
+        'No need to set a follow-up date. Change the deadline on the request to automatically create another call based on the new deadline.';
 
     const handleSave = () => {
         if (!form.description.trim()) {
@@ -265,14 +274,26 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                             ))}
                         </div>
                     </div>
-                    <div>
+                    {isDeadlineAutoCall ? (
+                        <div
+                            className="flex gap-2 p-3 rounded-lg border text-xs leading-relaxed"
+                            style={{ borderColor: colors.border, backgroundColor: `${colors.primary}10`, color: colors.textMuted }}
+                        >
+                            <Info size={16} className="shrink-0 mt-0.5" style={{ color: colors.primary }} />
+                            <span>
+                                This call was auto-created from a request deadline. To schedule another call, update the
+                                deadline on the request — the system will create it automatically.
+                            </span>
+                        </div>
+                    ) : null}
+                    <div className={isDeadlineAutoCall ? 'opacity-50 pointer-events-none' : ''}>
                         <label className="text-[10px] uppercase font-bold tracking-wider mb-1 block" style={{ color: colors.textMuted }}>
                             Client Interest
                         </label>
                         <select
                             value={form.interest}
                             onChange={(e) => setForm({ ...form, interest: e.target.value as LogCallInterest })}
-                            disabled={readOnly}
+                            disabled={readOnly || isDeadlineAutoCall}
                             className="w-full px-3 py-2 rounded-lg border text-sm"
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                         >
@@ -301,23 +322,35 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                     </div>
                     <div className="space-y-2">
                         <div
-                            className="flex items-center gap-2 cursor-pointer select-none"
-                            onClick={() => !readOnly && setForm({ ...form, followUpRequired: !form.followUpRequired })}
+                            className={`flex items-center gap-2 select-none ${isDeadlineAutoCall ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                            onClick={() => {
+                                if (readOnly) return;
+                                if (isDeadlineAutoCall) {
+                                    setShowDeadlineFollowUpHint(true);
+                                    return;
+                                }
+                                setForm({ ...form, followUpRequired: !form.followUpRequired });
+                            }}
                         >
                             <div
                                 className="w-5 h-5 rounded border-2 flex items-center justify-center"
                                 style={{
-                                    borderColor: form.followUpRequired ? colors.primary : colors.border,
-                                    backgroundColor: form.followUpRequired ? colors.primary : 'transparent',
+                                    borderColor: form.followUpRequired && !isDeadlineAutoCall ? colors.primary : colors.border,
+                                    backgroundColor: form.followUpRequired && !isDeadlineAutoCall ? colors.primary : 'transparent',
                                 }}
                             >
-                                {form.followUpRequired && <Check size={14} color="#000" strokeWidth={4} />}
+                                {form.followUpRequired && !isDeadlineAutoCall && <Check size={14} color="#000" strokeWidth={4} />}
                             </div>
                             <span className="text-xs font-medium" style={{ color: colors.textMain }}>
                                 Follow-up required
                             </span>
                         </div>
-                        {form.followUpRequired && (
+                        {showDeadlineFollowUpHint && isDeadlineAutoCall ? (
+                            <p className="text-xs p-2 rounded-lg border" style={{ borderColor: colors.orange || '#f59e0b', color: colors.textMain, backgroundColor: `${colors.orange || '#f59e0b'}15` }}>
+                                {deadlineFollowUpMessage}
+                            </p>
+                        ) : null}
+                        {form.followUpRequired && !isDeadlineAutoCall && (
                             <input
                                 type="date"
                                 value={form.followUpDate}
@@ -328,20 +361,20 @@ export default function LogCallModal({ open, onClose, onSave, lead, theme, readO
                             />
                         )}
                     </div>
-                    <div className="space-y-3 pt-2 border-t" style={{ borderColor: colors.border }}>
+                    <div className={`space-y-3 pt-2 border-t ${isDeadlineAutoCall ? 'opacity-50 pointer-events-none' : ''}`} style={{ borderColor: colors.border }}>
                         <ToggleRow
                             label="New Request"
                             value={form.newRequest}
                             onChange={(v) => setForm({ ...form, newRequest: v })}
                             colors={colors}
-                            disabled={readOnly}
+                            disabled={readOnly || isDeadlineAutoCall}
                         />
                         <ToggleRow
                             label="New Agreement"
                             value={form.newAgreement}
                             onChange={(v) => setForm({ ...form, newAgreement: v })}
                             colors={colors}
-                            disabled={readOnly}
+                            disabled={readOnly || isDeadlineAutoCall}
                         />
                     </div>
                 </div>

@@ -256,14 +256,6 @@ const FORM_DEFAULTS: Record<FormConfigurationFormId, FormSchema> = {
                     { id: 'next_step', label: 'Next step', required: false },
                 ],
             },
-            {
-                id: 'followup',
-                title: 'Follow-up',
-                fields: [
-                    { id: 'follow_up_required', label: 'Follow-up required', required: false },
-                    { id: 'follow_up_date', label: 'Follow-up date', required: false },
-                ],
-            },
         ],
     },
     user_new: {
@@ -656,12 +648,6 @@ export function collectSalesCallFormViolations(
                     break;
                 case 'next_step':
                     ok = present(data?.nextStep);
-                    break;
-                case 'follow_up_required':
-                    ok = data?.followUpRequired === true;
-                    break;
-                case 'follow_up_date':
-                    ok = !data?.followUpRequired || present(data?.followUpDate);
                     break;
                 default:
                     ok = true;

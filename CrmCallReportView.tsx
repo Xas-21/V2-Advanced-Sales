@@ -35,6 +35,7 @@ export type CrmCallReportViewProps = {
     activePropertyId?: string;
     accounts?: any[];
     todayOnly?: boolean;
+    onOpenAccountProfile?: (accountId: string, accountName?: string) => void;
 };
 
 function chartTooltipTheme(colors: any) {
@@ -59,6 +60,7 @@ export default function CrmCallReportView({
     activePropertyId,
     accounts,
     todayOnly = false,
+    onOpenAccountProfile,
 }: CrmCallReportViewProps) {
     const colors = theme.colors;
     const [statusFilter, setStatusFilter] = useState<CallReportStatusFilter>('all');
@@ -301,7 +303,18 @@ export default function CrmCallReportView({
                                             {row.subject}
                                         </td>
                                         <td className="px-3 py-2 max-w-[140px] truncate" title={row.account}>
-                                            {row.account}
+                                            {onOpenAccountProfile && (row.accountId || row.account) && row.account !== '—' ? (
+                                                <button
+                                                    type="button"
+                                                    className="font-semibold hover:underline text-left truncate max-w-full"
+                                                    style={{ color: colors.primary }}
+                                                    onClick={() => onOpenAccountProfile(row.accountId, row.account)}
+                                                >
+                                                    {row.account}
+                                                </button>
+                                            ) : (
+                                                row.account
+                                            )}
                                         </td>
                                         <td className="px-3 py-2 max-w-[120px] truncate" title={row.contactPerson}>
                                             {row.contactPerson}
