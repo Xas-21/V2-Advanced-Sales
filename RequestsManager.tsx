@@ -274,7 +274,7 @@ const LOG_ACTUAL_FROM_DEFINITE =
 
 // Initial Form States
 const initialAccommodation = {
-    id: 'REQ-' + Math.floor(Math.random() * 100000),
+    id: '',
     requestName: '',
     accountName: '',
     accountId: '',
@@ -1118,7 +1118,7 @@ export default function RequestsManager({
             // CLEAR FORM DATA FOR NEW REQUEST
             setAccForm({ 
                 ...initialAccommodation, 
-                id: 'REQ-' + Math.floor(Math.random() * 100000),
+                id: '',
                 rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: primaryOccupancyDefault, count: 1, rate: 0, mealPlan: 'RO' }],
                 payments: [],
                 logs: [],
@@ -1152,7 +1152,7 @@ export default function RequestsManager({
                 const first = matched || contacts[0];
                 setAccForm({
                     ...initialAccommodation,
-                    id: 'REQ-' + Math.floor(Math.random() * 100000),
+                    id: '',
                     rooms: [{ id: Date.now(), type: primaryPropertyRoomType || '', occupancy: primaryOccupancyDefault, count: 1, rate: 0, mealPlan: 'RO' }],
                     payments: [],
                     logs: [],
@@ -1469,7 +1469,7 @@ export default function RequestsManager({
     };
 
     const makeDuplicateIdentity = (typeKey: string) => {
-        const id = 'REQ-' + Math.floor(Math.random() * 100000);
+        const id = generateRequestId();
         let confirmationNo = 'CNF-' + Math.floor(Math.random() * 100000);
         if (typeKey === 'event') confirmationNo = 'EVT-' + Math.floor(Math.random() * 10000);
         return { id, confirmationNo };
@@ -1995,7 +1995,7 @@ export default function RequestsManager({
                 ...formData,
                 rooms: savedRooms,
                 mealPlan: mealPlanForPayload || String(formData.mealPlan ?? '').trim() || '—',
-                id: formData.id || generateRequestId(),
+                id: isUpdate ? String(formData.id || '').trim() : generateRequestId(),
                 requestName: formData.requestName || 'Unnamed Request',
                 account: formData.accountName || formData.leadId || formData.account || 'Unknown Account',
                 accountId: resolvedAccountId,
@@ -2034,12 +2034,26 @@ export default function RequestsManager({
             };
 
             const url = apiUrl('/api/requests');
-            
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+
+            const postRequest = (body: any) =>
+                fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+
+            let res = await postRequest(payload);
+            if (res.status === 409 && !isUpdate) {
+                const retryPayload = {
+                    ...payload,
+                    id: generateRequestId(),
+                    createdAt: new Date().toISOString(),
+                };
+                res = await postRequest(retryPayload);
+                if (res.ok) {
+                    Object.assign(payload, retryPayload);
+                }
+            }
 
             if (res.ok) {
                 let saved: any = payload;
@@ -2070,7 +2084,17 @@ export default function RequestsManager({
                     setRequestType(null);
                 }
             } else {
-                showSystemNotice('Save failed', 'Failed to save request. Status: ' + res.status);
+                let detail = '';
+                try {
+                    const errBody = await res.json();
+                    detail = typeof errBody?.detail === 'string' ? errBody.detail : '';
+                } catch {
+                    /* ignore */
+                }
+                showSystemNotice(
+                    'Save failed',
+                    detail || `Failed to save request. Status: ${res.status}`
+                );
             }
         } catch (err) {
             console.error("Error saving request:", err);

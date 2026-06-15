@@ -185,6 +185,45 @@ def test_requests_post_then_delete():
     assert d.status_code == 200
 
 
+def test_requests_reject_id_collision_on_create():
+    rid = "REQ_pytest_collision_guard"
+    created_at = "2026-06-14T10:00:00+00:00"
+    first = {
+        "id": rid,
+        "propertyId": PROP_ID,
+        "requestName": "Collision Guard Original",
+        "accountId": "A_pytest_collision",
+        "confirmationNo": "CNF-COLLISION-1",
+        "createdAt": created_at,
+        "status": "Inquiry",
+    }
+    r1 = client.post("/api/requests", json=first)
+    assert r1.status_code == 200
+    try:
+        clash = {
+            "id": rid,
+            "propertyId": PROP_ID,
+            "requestName": "Collision Guard Replacement",
+            "accountId": "A_pytest_collision_other",
+            "confirmationNo": "CNF-COLLISION-2",
+            "createdAt": "2026-06-15T10:00:00+00:00",
+            "status": "Inquiry",
+        }
+        r2 = client.post("/api/requests", json=clash)
+        assert r2.status_code == 409
+
+        update = {
+            **first,
+            "requestName": "Collision Guard Updated",
+            "status": "Tentative",
+        }
+        r3 = client.post("/api/requests", json=update)
+        assert r3.status_code == 200
+        assert r3.json().get("requestName") == "Collision Guard Updated"
+    finally:
+        client.delete(f"/api/requests/{rid}")
+
+
 def test_crm_state_post_roundtrip():
     r_get = client.get("/api/crm-state", params={"propertyId": PROP_ID})
     assert r_get.status_code == 200

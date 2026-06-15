@@ -542,6 +542,36 @@ def close_database():
         _POOL = None
 
 
+class RequestIdCollisionError(Exception):
+    """Raised when a create would overwrite an existing request row."""
+
+    def __init__(self, req_id: str, existing: dict | None = None):
+        self.req_id = str(req_id)
+        self.existing = existing if isinstance(existing, dict) else {}
+
+
+def _normalize_request_timestamp(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _is_explicit_request_update(prev: dict, incoming: dict) -> bool:
+    if incoming.get("_update") is True:
+        return True
+    prev_created = _normalize_request_timestamp(prev.get("createdAt"))
+    inc_created = _normalize_request_timestamp(incoming.get("createdAt"))
+    if prev_created and inc_created and prev_created == inc_created:
+        return True
+    # Legacy rows without createdAt: allow when core identity fields still match.
+    if not prev_created and not inc_created:
+        prev_conf = _normalize_request_timestamp(prev.get("confirmationNo"))
+        inc_conf = _normalize_request_timestamp(incoming.get("confirmationNo"))
+        prev_acc = _normalize_request_timestamp(prev.get("accountId"))
+        inc_acc = _normalize_request_timestamp(incoming.get("accountId"))
+        if prev_conf and inc_conf and prev_conf == inc_conf and prev_acc and inc_acc and prev_acc == inc_acc:
+            return True
+    return False
+
+
 def list_requests_rows(property_id: str | None = None) -> list[dict]:
     _ensure_special_migration()
     pool = _get_pool()
@@ -577,7 +607,8 @@ def list_requests_rows(property_id: str | None = None) -> list[dict]:
 
 def upsert_request_row(data: dict) -> dict:
     _ensure_special_migration()
-    item = {**data}
+    item = {**(data if isinstance(data, dict) else {})}
+    item.pop("_update", None)
     item_id = str(item.get("id") or f"R{uuid.uuid4().hex[:8]}")
     item["id"] = item_id
     property_id = str(item.get("propertyId") or "").strip()
@@ -588,8 +619,13 @@ def upsert_request_row(data: dict) -> dict:
         with conn.cursor() as cur:
             cur.execute("SELECT payload FROM requests_rows WHERE id = %s;", (item_id,))
             row = cur.fetchone()
+            prev: dict | None = None
             if row and isinstance(row.get("payload"), dict):
                 prev = row["payload"]
+                if not _is_explicit_request_update(prev, item):
+                    raise RequestIdCollisionError(item_id, prev)
+                if prev.get("createdAt"):
+                    item["createdAt"] = prev["createdAt"]
                 if item.get("createdByUserId") is None and prev.get("createdByUserId") is not None:
                     item["createdByUserId"] = prev["createdByUserId"]
             created_by_user_id = (

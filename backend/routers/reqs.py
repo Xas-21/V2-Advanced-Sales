@@ -1,7 +1,14 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from typing import Optional
-from utils import PROPERTIES_FILE, delete_request_row, list_requests_rows, read_json_file, upsert_request_row
+from utils import (
+    PROPERTIES_FILE,
+    RequestIdCollisionError,
+    delete_request_row,
+    list_requests_rows,
+    read_json_file,
+    upsert_request_row,
+)
 
 router = APIRouter(prefix="/api", tags=["Requests"])
 
@@ -11,7 +18,17 @@ def list_requests(propertyId: Optional[str] = None):
 
 @router.post("/requests")
 def create_request(data: dict):
-    return upsert_request_row(data)
+    try:
+        return upsert_request_row(data)
+    except RequestIdCollisionError as exc:
+        existing = exc.existing or {}
+        existing_name = str(existing.get("requestName") or existing.get("confirmationNo") or "").strip()
+        detail = (
+            f"Request id {exc.req_id} already exists"
+            + (f" ({existing_name})" if existing_name else "")
+            + ". Save again to get a new id, or load the existing request to update it."
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
 
 @router.delete("/requests/{req_id}")
 def remove_request(req_id: str):
