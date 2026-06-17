@@ -43,7 +43,16 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
             onLogin(data.user ?? data);
         } catch (error) {
             console.error('Login error:', error);
-            alert('Failed to connect to the server. Make sure the FastAPI backend is running! Run python -m venv venv && .\\venv\\Scripts\\activate && pip install -r requirements.txt && uvicorn main:app --reload in the backend folder.');
+            const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+            if (!apiBase) {
+                alert(
+                    'Cannot reach the API. Set VITE_API_BASE_URL on your static site to your backend URL (e.g. https://your-api.onrender.com), then redeploy the frontend.'
+                );
+                return;
+            }
+            alert(
+                'Failed to connect to the API server. Confirm the backend is running and CORS allows this site origin.'
+            );
         }
     };
 

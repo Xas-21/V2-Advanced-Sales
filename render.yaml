@@ -12,6 +12,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: CORS_ORIGIN_REGEX
+        value: "https://([a-z0-9-]+\\.)*onrender\\.com"
 
   - type: web
     name: advanced-sales-ui

@@ -20,12 +20,28 @@ def _database_host() -> str | None:
         return None
     return url.split("@", 1)[1].split("/", 1)[0]
 
+
+def _cors_settings() -> tuple[list[str], str | None]:
+    """Explicit origins from env plus optional regex (Render subdomains)."""
+    raw = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    )
+    origins = [o.strip() for o in raw.split(",") if o.strip() and "*" not in o.strip()]
+    regex = os.getenv(
+        "CORS_ORIGIN_REGEX",
+        r"https://([a-z0-9-]+\.)*onrender\.com",
+    ).strip() or None
+    return origins, regex
+
+
 app = FastAPI(title="VisaTour ERP Backend", version="2.0.0", redirect_slashes=False)
 
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,https://*.onrender.com").split(",")
+_cors_origins, _cors_regex = _cors_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in origins if o.strip()],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
