@@ -2,6 +2,27 @@
  * Fuzzy account name matching for duplicate detection (spacing, case, punctuation).
  */
 
+const INVISIBLE_SORT_CHARS = /[\u200B-\u200D\uFEFF\u061C\u202A-\u202E\u2066-\u2069]/g;
+
+/** Normalize account name for stable A–Z list sorting (trim, strip invisible/bidi chars). */
+export function accountNameSortKey(name: unknown): string {
+    return String(name ?? '')
+        .normalize('NFD')
+        .replace(/\p{M}+/gu, '')
+        .replace(INVISIBLE_SORT_CHARS, '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+}
+
+/** Case-insensitive A–Z compare with natural number ordering (e.g. "1st" before "88"). */
+export function compareAccountNames(a: unknown, b: unknown): number {
+    return accountNameSortKey(a).localeCompare(accountNameSortKey(b), undefined, {
+        sensitivity: 'base',
+        numeric: true,
+    });
+}
+
 /** Collapse spaces and punctuation so "Al Boraq" and "ALBORAQ" match. */
 export function normalizeAccountNameKey(name: string): string {
     const raw = String(name ?? '')

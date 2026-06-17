@@ -2,6 +2,9 @@
 Full API smoke + CRUD coverage using FastAPI TestClient (no tunnel, no live server).
 Run from backend folder: pytest tests/ -v
 """
+import os
+os.environ["USE_FILE_STORAGE"] = "1"
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -10,6 +13,9 @@ client = TestClient(app)
 
 # Seed property id present in data/properties.json (stable for GET filters)
 PROP_ID = "P5jj48x718"
+# Known test user credentials — passwords are bcrypt-hashed in data/users.json
+_ADMIN_USER = "Abdullah"
+_ADMIN_PASS = os.environ.get("TEST_ADMIN_PASS", "password123")
 
 
 def test_health():
@@ -25,15 +31,14 @@ def test_root():
 
 
 def test_login_success_sets_cookie_and_user_shape():
-    # Use demo123 so this passes with either JSON-file users or Postgres-seeded users.
     r = client.post(
         "/api/login",
-        json={"username": "Abdullah", "password": "demo123"},
+        json={"username": _ADMIN_USER, "password": _ADMIN_PASS},
     )
     assert r.status_code == 200
     data = r.json()
     assert "user" in data
-    assert data["user"].get("username") == "Abdullah"
+    assert data["user"].get("username") == _ADMIN_USER
     assert "password" not in data["user"]
     assert "sessionVersion" in data["user"]
     assert isinstance(data["user"].get("sessionVersion"), int)
@@ -41,8 +46,8 @@ def test_login_success_sets_cookie_and_user_shape():
 
 
 def test_change_password_then_login_with_new():
-    u = "Abdullah"
-    old_pw = "password123"
+    u = _ADMIN_USER
+    old_pw = _ADMIN_PASS
     new_pw = "password123_tmp_rot9xx"
     r_bad = client.post(
         "/api/auth/change-password",
@@ -52,7 +57,7 @@ def test_change_password_then_login_with_new():
 
     r_ok = client.post(
         "/api/auth/change-password",
-        json={"username": u, "current_password": "demo123", "new_password": new_pw},
+        json={"username": u, "current_password": _ADMIN_PASS, "new_password": new_pw},
     )
     assert r_ok.status_code == 200
     assert r_ok.json().get("ok") is True

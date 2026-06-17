@@ -1,11 +1,16 @@
+import bcrypt as _bcrypt
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from utils import USERS_FILE, read_json_file, write_json_file
 
 router = APIRouter(prefix="/api")
+
+_login_attempts: dict[str, list[datetime]] = defaultdict(list)
 
 
 class LoginRequest(BaseModel):
@@ -19,11 +24,38 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
-def _password_accepted(stored: str, provided: str) -> bool:
-    """Match login rules: correct stored password, or shared demo override."""
-    if provided == "demo123":
-        return True
-    return stored == provided
+def _hash_password(pwd: str) -> str:
+    return _bcrypt.hashpw(pwd.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt_hash(s: str) -> bool:
+    return s.startswith("$2b$") or s.startswith("$2a$") or s.startswith("$2y$")
+
+
+def _check_password(pwd: str, stored: str) -> bool:
+    if not pwd or not stored:
+        return False
+    if _is_bcrypt_hash(stored):
+        try:
+            return _bcrypt.checkpw(pwd.encode("utf-8"), stored.encode("utf-8"))
+        except Exception:
+            return False
+    return stored == pwd
+
+
+def _needs_rehash(stored: str) -> bool:
+    return bool(stored) and not _is_bcrypt_hash(stored)
+
+
+def _check_login_rate_limit(ip: str):
+    now = datetime.utcnow()
+    _login_attempts[ip] = [t for t in _login_attempts[ip] if t > now - timedelta(minutes=1)]
+    if len(_login_attempts[ip]) >= 5:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in 1 minute.")
+
+
+def _record_login_attempt(ip: str):
+    _login_attempts[ip].append(datetime.utcnow())
 
 
 def _next_session_version(user: dict) -> int:
@@ -52,24 +84,28 @@ def change_password(request: ChangePasswordRequest):
 
     user = users[idx]
     stored = str(user.get("password", ""))
-    if not _password_accepted(stored, request.current_password):
+    if not _check_password(request.current_password, stored):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    if request.new_password == stored:
+    if _check_password(request.new_password, stored):
         raise HTTPException(
             status_code=400,
             detail="New password must be different from the current password",
         )
 
     new_ver = _next_session_version(user)
-    users[idx] = {**user, "password": request.new_password, "sessionVersion": new_ver}
+    users[idx] = {**user, "password": _hash_password(request.new_password), "sessionVersion": new_ver}
     write_json_file(USERS_FILE, users)
     return {"ok": True, "sessionVersion": new_ver}
 
 
 @router.post("/login")
-def login(request: LoginRequest):
+def login(request: LoginRequest, http_req: Request):
+    ip_addr = http_req.client.host if http_req.client else "127.0.0.1"
+    _check_login_rate_limit(ip_addr)
+
     if request.password is None or request.password == "":
+        _record_login_attempt(ip_addr)
         raise HTTPException(
             status_code=400,
             detail="password field is required",
@@ -83,10 +119,17 @@ def login(request: LoginRequest):
     )
 
     if not user:
+        _record_login_attempt(ip_addr)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    if not _password_accepted(user["password"], request.password):
+    stored = user["password"]
+    if not _check_password(request.password, stored):
+        _record_login_attempt(ip_addr)
         raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    if _needs_rehash(stored):
+        user["password"] = _hash_password(request.password)
+        write_json_file(USERS_FILE, users)
 
     result = {k: v for k, v in user.items() if k != "password"}
     if "sessionVersion" not in result:

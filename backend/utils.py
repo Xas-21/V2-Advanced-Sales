@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,8 +94,9 @@ def _get_pool() -> ConnectionPool:
         raise RuntimeError("DATABASE_URL is required.")
     _POOL = ConnectionPool(
         conninfo=db_url,
-        min_size=1,
-        max_size=10,
+        min_size=2,
+        max_size=20,
+        max_lifetime=600,
         kwargs={"row_factory": dict_row},
     )
     _POOL.open(wait=True)
@@ -167,6 +170,18 @@ def _ensure_special_tables():
                 ON accounts_rows(property_id);
                 """
             )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_requests_rows_payload_gin
+                ON requests_rows USING GIN (payload jsonb_path_ops);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_accounts_rows_payload_gin
+                ON accounts_rows USING GIN (payload jsonb_path_ops);
+                """
+            )
             conn.commit()
     _SPECIAL_TABLES_READY = True
 
@@ -195,6 +210,12 @@ def _ensure_general_tables():
                 """
                 CREATE INDEX IF NOT EXISTS idx_app_collection_rows_collection_property
                 ON app_collection_rows(collection_name, property_id);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_app_collection_rows_payload_gin
+                ON app_collection_rows USING GIN (payload jsonb_path_ops);
                 """
             )
             cur.execute(
@@ -542,6 +563,17 @@ def close_database():
         _POOL = None
 
 
+def check_database_health() -> bool:
+    try:
+        pool = _get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 AS ok")
+                return cur.fetchone()["ok"] == 1
+    except Exception:
+        return False
+
+
 class RequestIdCollisionError(Exception):
     """Raised when a create would overwrite an existing request row."""
 
@@ -656,6 +688,14 @@ def delete_request_row(req_id: str):
             conn.commit()
 
 
+def _account_name_sort_key(name: object) -> str:
+    raw = str(name or "")
+    raw = unicodedata.normalize("NFD", raw)
+    raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
+    raw = re.sub(r"[\u200b-\u200d\ufeff\u061c\u202a-\u202e\u2066-\u2069]", "", raw)
+    return re.sub(r"\s+", " ", raw.strip()).casefold()
+
+
 def list_accounts_rows(property_id: str | None = None) -> list[dict]:
     _ensure_special_migration()
     pool = _get_pool()
@@ -690,7 +730,14 @@ def list_accounts_rows(property_id: str | None = None) -> list[dict]:
                     """
                 )
             rows = cur.fetchall()
-    return [r["payload"] for r in rows]
+    out = [r["payload"] for r in rows]
+    out.sort(
+        key=lambda item: (
+            _account_name_sort_key(item.get("name")),
+            str(item.get("id") or ""),
+        )
+    )
+    return out
 
 
 def upsert_account_row(data: dict) -> dict:
@@ -992,10 +1039,13 @@ def sync_collection_rows(
                     "protected": True,
                 }
 
-            cur.execute(
-                "DELETE FROM app_collection_rows WHERE collection_name = %s AND property_id = %s;",
-                (cname, pid),
-            )
+            # Full replace only when explicitly requested (seed scripts, tests).
+            # The SPA syncs often with client state that can be stale; merge avoids wiping the DB.
+            if allow_clear:
+                cur.execute(
+                    "DELETE FROM app_collection_rows WHERE collection_name = %s AND property_id = %s;",
+                    (cname, pid),
+                )
             saved = 0
             for row in incoming:
                 if not isinstance(row, dict):

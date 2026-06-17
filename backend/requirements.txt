@@ -7,3 +7,5 @@ psycopg[binary]
 psycopg-pool
 python-dotenv
 python-multipart
+slowapi
+bcrypt>=4.0,<5

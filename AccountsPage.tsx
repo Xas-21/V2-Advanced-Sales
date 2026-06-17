@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Plus, Building2, Camera, GitMerge, X } from 'lucide-react';
+import { Search, Plus, Building2, Camera, GitMerge, AlertCircle } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
@@ -47,7 +47,12 @@ import {
 import { resolveUserAttributionId } from './userProfileMetrics';
 import { applyAccountMergeInMemory, persistAccountMergeToBackend } from './accountMergeUtils';
 import { repointContractRecordsForAccountMerge } from './contractsStore';
-import { findPotentialDuplicateAccounts, normalizeAccountNameKey } from './accountDuplicateUtils';
+import {
+    compareAccountNames,
+    findPotentialDuplicateAccounts,
+    normalizeAccountNameKey,
+} from './accountDuplicateUtils';
+import { getAccountProfileGaps, isAccountProfileIncomplete, meaningfulContactEmail, meaningfulContactPhone } from './accountProfileCompleteness';
 import {
     deleteAccountDuplicateQueueItem,
     extractBusinessCard,
@@ -57,8 +62,10 @@ import {
 
 const COLUMN_STORAGE_KEY = 'visatour_accounts_column_order_v2';
 const DEFAULT_COLUMN_ORDER = ['name', 'segment', 'city', 'contact', 'phone', 'email', 'totalRev', 'totalReq'];
+const DEFAULT_CONTACT_COLUMN_ORDER = ['contact', 'segment', 'city', 'phone', 'email', 'accountName'];
 
 type AccountsListSort = 'name_az' | 'rev_high' | 'rev_low';
+type AccountsPageTab = 'accounts' | 'contacts';
 
 interface AccountsPageProps {
     theme: any;
@@ -126,6 +133,7 @@ export default function AccountsPage({
     } | null>(null);
     const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [search, setSearch] = useState('');
+    const [listTab, setListTab] = useState<AccountsPageTab>('accounts');
     const [listSort, setListSort] = useState<AccountsListSort>('name_az');
     const [cityFilter, setCityFilter] = useState('');
     const [segmentFilter, setSegmentFilter] = useState('');
@@ -156,7 +164,9 @@ export default function AccountsPage({
     const [scanPrefillAccount, setScanPrefillAccount] = useState<any | null>(null);
     const [duplicateQueue, setDuplicateQueue] = useState<any[]>([]);
     const [showDuplicateQueue, setShowDuplicateQueue] = useState(false);
+    const [showIncompleteQueue, setShowIncompleteQueue] = useState(false);
     const scanAccountInputRef = useRef<HTMLInputElement | null>(null);
+    const scanPendingDuplicateIdsRef = useRef<string[]>([]);
 
     useEffect(() => {
         try {
@@ -181,7 +191,11 @@ export default function AccountsPage({
     useEffect(() => {
         const propertyId = activeProperty?.id ? String(activeProperty.id) : '';
         listAccountDuplicateQueue(propertyId)
-            .then((rows) => setDuplicateQueue(rows))
+            .then((rows) =>
+                setDuplicateQueue(
+                    rows.filter((row: any) => String(row?.status || 'open') === 'open')
+                )
+            )
             .catch(() => setDuplicateQueue([]));
     }, [activeProperty?.id]);
 
@@ -214,6 +228,15 @@ export default function AccountsPage({
         email: 'Email',
         totalRev: 'Total Rev',
         totalReq: 'Total Req',
+    };
+
+    const contactColumnLabels: Record<string, string> = {
+        contact: 'Contact Person',
+        segment: 'Segment',
+        city: 'City',
+        phone: 'Phone',
+        email: 'Email',
+        accountName: 'Account Name',
     };
 
     const requestStatsByAccountId = useMemo(() => {
@@ -257,8 +280,17 @@ export default function AccountsPage({
 
         return accounts.filter((a: any) => {
             if (t) {
-                const c0 = (a.contacts && a.contacts[0]) || {};
-                const hay = [a.name, a.type, a.city, contactDisplayName(c0), c0.firstName, c0.lastName, c0.phone, c0.email]
+                const contacts = Array.isArray(a.contacts) ? a.contacts : [];
+                const contactHay = contacts.flatMap((c: any) => [
+                    contactDisplayName(c),
+                    c.firstName,
+                    c.lastName,
+                    c.phone,
+                    c.email,
+                    c.city,
+                ]);
+                const c0 = contacts[0] || {};
+                const hay = [a.name, a.type, a.city, ...contactHay, c0.firstName, c0.lastName, c0.phone, c0.email]
                     .map((x) => String(x || '').toLowerCase())
                     .join(' ');
                 if (!hay.includes(t)) return false;
@@ -298,15 +330,41 @@ export default function AccountsPage({
     const sortedFiltered = useMemo(() => {
         const rows = [...filtered];
         const stat = (id: string) => requestStatsByAccountId.get(String(id)) || { revSar: 0, reqCount: 0 };
-        if (listSort === 'name_az') {
-            rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
-        } else if (listSort === 'rev_high') {
-            rows.sort((a, b) => stat(b.id).revSar - stat(a.id).revSar || String(a.name || '').localeCompare(String(b.name || '')));
+        const byName = (a: any, b: any) =>
+            compareAccountNames(a?.name, b?.name) || String(a?.id || '').localeCompare(String(b?.id || ''));
+        if (listSort === 'rev_high') {
+            rows.sort((a, b) => stat(b.id).revSar - stat(a.id).revSar || byName(a, b));
         } else if (listSort === 'rev_low') {
-            rows.sort((a, b) => stat(a.id).revSar - stat(b.id).revSar || String(a.name || '').localeCompare(String(b.name || '')));
+            rows.sort((a, b) => stat(a.id).revSar - stat(b.id).revSar || byName(a, b));
+        } else {
+            rows.sort(byName);
         }
         return rows;
     }, [filtered, listSort, requestStatsByAccountId]);
+
+    const sortedContactRows = useMemo(() => {
+        const rows: { key: string; account: any; contact: any; contactIndex: number }[] = [];
+        for (const account of sortedFiltered) {
+            const contacts = Array.isArray(account.contacts) ? account.contacts : [];
+            contacts.forEach((contact: any, contactIndex: number) => {
+                rows.push({
+                    key: `${account.id}::${contactIndex}`,
+                    account,
+                    contact,
+                    contactIndex,
+                });
+            });
+        }
+        const byContactName = (
+            a: { account: any; contact: any },
+            b: { account: any; contact: any }
+        ) =>
+            compareAccountNames(contactDisplayName(a.contact), contactDisplayName(b.contact)) ||
+            compareAccountNames(a.account?.name, b.account?.name) ||
+            String(a.key).localeCompare(String(b.key));
+        rows.sort(byContactName);
+        return rows;
+    }, [sortedFiltered]);
 
     const systemDuplicateItems = useMemo(() => {
         const byName = new Map<string, any[]>();
@@ -349,11 +407,11 @@ export default function AccountsPage({
                 const contactsB = Array.isArray(b?.contacts) ? b.contacts : [];
                 let reason = '';
                 outer: for (const ca of contactsA) {
-                    const ea = String(ca?.email || '').trim().toLowerCase();
-                    const pa = String(ca?.phone || '').replace(/\D+/g, '');
+                    const ea = meaningfulContactEmail(ca?.email);
+                    const pa = meaningfulContactPhone(ca?.phone);
                     for (const cb of contactsB) {
-                        const eb = String(cb?.email || '').trim().toLowerCase();
-                        const pb = String(cb?.phone || '').replace(/\D+/g, '');
+                        const eb = meaningfulContactEmail(cb?.email);
+                        const pb = meaningfulContactPhone(cb?.phone);
                         if (ea && eb && ea === eb) {
                             reason = `same-contact-email:${ea}`;
                             break outer;
@@ -382,6 +440,32 @@ export default function AccountsPage({
         return [...systemDuplicateItems, ...duplicateQueue];
     }, [systemDuplicateItems, duplicateQueue]);
 
+    const propertyIdForForms = activeProperty?.id ? String(activeProperty.id) : undefined;
+
+    const incompleteAccounts = useMemo(() => {
+        return accountsSameProperty
+            .filter((a: any) => isAccountProfileIncomplete(a, propertyIdForForms, activeProperty))
+            .sort((a: any, b: any) => compareAccountNames(a?.name, b?.name));
+    }, [accountsSameProperty, propertyIdForForms, activeProperty]);
+
+    const openAccountForEdit = (account: any) => {
+        if (!account || profileReadOnly) return;
+        setEditingAccountRow(account);
+        setShowEditAccountModal(true);
+    };
+
+    const handleEditAccountSave = (data: any) => {
+        if (!data?.id) return;
+        const merged = { ...(accounts.find((a: any) => a.id === data.id) || {}), ...data };
+        setAccounts((prev: any[]) => prev.map((a: any) => (a.id === data.id ? merged : a)));
+        if (profileLead && String(profileLead.accountId || profileLead.id) === String(data.id)) {
+            setProfileLead(accountToLead(merged));
+            appendProfileAudit('Account updated', 'Account details saved from edit modal');
+        }
+        setShowEditAccountModal(false);
+        setEditingAccountRow(null);
+    };
+
     const handleColumnDragStart = (column: string) => setDraggedColumn(column);
     const handleColumnDrop = (targetColumn: string) => {
         if (!draggedColumn || draggedColumn === targetColumn) return;
@@ -396,6 +480,7 @@ export default function AccountsPage({
 
     const handleSaveNew = (accountData: any) => {
         if (!accountData?.name) return;
+        scanPendingDuplicateIdsRef.current = [];
         const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
         const act = {
             id: `acct-${Date.now()}`,
@@ -415,6 +500,28 @@ export default function AccountsPage({
             },
             ...prev,
         ]);
+        setShowAddModal(false);
+        setScanPrefillAccount(null);
+        setScanMeta(null);
+    };
+
+    const discardScanPendingDuplicateQueue = async () => {
+        const pending = [...scanPendingDuplicateIdsRef.current];
+        scanPendingDuplicateIdsRef.current = [];
+        if (!pending.length) return;
+        const pid = activeProperty?.id ? String(activeProperty.id) : '';
+        for (const id of pending) {
+            try {
+                await deleteAccountDuplicateQueueItem(id, pid);
+            } catch {
+                // Best-effort cleanup when user discards a scan.
+            }
+        }
+        setDuplicateQueue((prev) => prev.filter((x) => !pending.includes(String(x.id))));
+    };
+
+    const handleCloseAddModal = async () => {
+        await discardScanPendingDuplicateQueue();
         setShowAddModal(false);
         setScanPrefillAccount(null);
         setScanMeta(null);
@@ -440,8 +547,22 @@ export default function AccountsPage({
             accountsSameProperty,
             { propertyId }
         );
+        scanPendingDuplicateIdsRef.current = [];
         if (matches.length && prefill.contacts?.[0]) {
+            const scannedContact = prefill.contacts[0];
+            const hasScannedContact = meaningfulContactEmail(scannedContact?.email) || meaningfulContactPhone(scannedContact?.phone);
+            if (!hasScannedContact) {
+                // No real contact details — skip queue noise from test scans.
+            } else {
             for (const acc of matches) {
+                const existing = duplicateQueue.find(
+                    (row: any) =>
+                        String(row.propertyId || '') === propertyId &&
+                        String(row.candidateAccountId || '') === String(acc.id) &&
+                        normalizeAccountNameKey(String(row.scannedAccountName || '')) ===
+                            normalizeAccountNameKey(String(prefill.name || ''))
+                );
+                if (existing) continue;
                 const queueItem = {
                     propertyId,
                     createdAt: new Date().toISOString(),
@@ -450,15 +571,17 @@ export default function AccountsPage({
                     scannedAccountName: prefill.name || '',
                     candidateAccountId: String(acc.id),
                     candidateAccountName: String(acc.name || ''),
-                    scannedContact: prefill.contacts[0],
+                    scannedContact,
                     rawText: parsed.rawText || '',
                 };
                 try {
                     const saved = await upsertAccountDuplicateQueueItem(queueItem);
-                    setDuplicateQueue((prev) => [saved, ...prev]);
+                    scanPendingDuplicateIdsRef.current.push(String(saved.id));
+                    setDuplicateQueue((prev) => [saved, ...prev.filter((x) => String(x.id) !== String(saved.id))]);
                 } catch {
                     // Keep UI flow responsive even if queue save fails.
                 }
+            }
             }
         }
         setScanMeta({ confidence: parsed.confidence, rawText: parsed.rawText, unmapped: parsed.unmapped });
@@ -606,8 +729,10 @@ export default function AccountsPage({
 
     const removeDuplicateQueueItem = async (item: any) => {
         const pid = activeProperty?.id ? String(activeProperty.id) : '';
-        await deleteAccountDuplicateQueueItem(String(item.id), pid);
-        setDuplicateQueue((prev) => prev.filter((x) => String(x.id) !== String(item.id)));
+        const itemId = String(item.id);
+        await deleteAccountDuplicateQueueItem(itemId, pid);
+        scanPendingDuplicateIdsRef.current = scanPendingDuplicateIdsRef.current.filter((id) => id !== itemId);
+        setDuplicateQueue((prev) => prev.filter((x) => String(x.id) !== itemId));
     };
 
     const attachQueueContactToExistingAccount = async (item: any) => {
@@ -712,6 +837,38 @@ export default function AccountsPage({
         }
     };
 
+    const cellForContact = (col: string, row: { account: any; contact: any }) => {
+        const { account, contact } = row;
+        switch (col) {
+            case 'contact':
+                return (
+                    <span className="font-bold text-sm" style={{ color: colors.textMain }}>
+                        {contactDisplayName(contact) || '-'}
+                    </span>
+                );
+            case 'segment':
+                return <span className="text-sm" style={{ color: colors.textMain }}>{account.type || '-'}</span>;
+            case 'city':
+                return (
+                    <span className="text-sm" style={{ color: colors.textMain }}>
+                        {contact.city || account.city || '-'}
+                    </span>
+                );
+            case 'phone':
+                return <span className="text-sm" style={{ color: colors.textMain }}>{contact.phone || '-'}</span>;
+            case 'email':
+                return (
+                    <span className="text-sm break-all" style={{ color: colors.textMain }}>
+                        {contact.email || '-'}
+                    </span>
+                );
+            case 'accountName':
+                return <span className="text-sm" style={{ color: colors.textMain }}>{account.name || '-'}</span>;
+            default:
+                return null;
+        }
+    };
+
     if (profileLead) {
         const aid = profileLead.accountId || profileLead.id;
         const aname = profileLead.company;
@@ -800,15 +957,7 @@ export default function AccountsPage({
                     accountTypeOptions={accountTypeOptions}
                     configurationProperty={activeProperty || undefined}
                     configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
-                    onSave={(data: any) => {
-                        if (!data?.id) return;
-                        const merged = { ...(accounts.find((a: any) => a.id === data.id) || {}), ...data };
-                        setAccounts((prev: any[]) => prev.map((a: any) => (a.id === data.id ? merged : a)));
-                        setProfileLead(accountToLead(merged));
-                        appendProfileAudit('Account updated', 'Account details saved from edit modal');
-                        setShowEditAccountModal(false);
-                        setEditingAccountRow(null);
-                    }}
+                    onSave={handleEditAccountSave}
                 />
                 <ConfirmDialog
                     isOpen={confirmDeleteOpen}
@@ -916,9 +1065,15 @@ export default function AccountsPage({
                     <div className="shrink-0 pt-0.5">
                         <h1 className="text-2xl font-bold" style={{ color: colors.textMain }}>Accounts</h1>
                         <p className="text-sm" style={{ color: colors.textMuted }}>
-                            {sortedFiltered.length === accounts.length
-                                ? `${accounts.length} accounts`
-                                : `${sortedFiltered.length} of ${accounts.length} accounts`}
+                            {listTab === 'accounts'
+                                ? sortedFiltered.length === accounts.length
+                                    ? `${accounts.length} accounts`
+                                    : `${sortedFiltered.length} of ${accounts.length} accounts`
+                                : sortedContactRows.length === 0
+                                  ? 'No contacts'
+                                  : sortedFiltered.length === accounts.length
+                                    ? `${sortedContactRows.length} contacts`
+                                    : `${sortedContactRows.length} contacts (filtered)`}
                         </p>
                     </div>
                     <div className="flex flex-col items-center gap-2.5 w-full min-w-0 max-w-3xl justify-self-center mx-auto lg:px-2">
@@ -933,7 +1088,7 @@ export default function AccountsPage({
                         <input
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Search accounts..."
+                            placeholder={listTab === 'contacts' ? 'Search contacts...' : 'Search accounts...'}
                             className="w-full pl-10 pr-4 py-2 rounded-xl border text-sm outline-none"
                             style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                         />
@@ -971,9 +1126,13 @@ export default function AccountsPage({
                                 className="w-full px-3 py-2 rounded-xl border text-sm outline-none"
                                 style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.textMain }}
                             >
-                                <option value="name_az">A–Z (name)</option>
-                                <option value="rev_high">Highest Rev</option>
-                                <option value="rev_low">Lowest Rev</option>
+                                <option value="name_az">{listTab === 'contacts' ? 'A–Z (contact)' : 'A–Z (name)'}</option>
+                                {listTab === 'accounts' && (
+                                    <>
+                                        <option value="rev_high">Highest Rev</option>
+                                        <option value="rev_low">Lowest Rev</option>
+                                    </>
+                                )}
                             </select>
                         </div>
                     </div>
@@ -1027,7 +1186,20 @@ export default function AccountsPage({
                                 style={{ borderColor: colors.border, color: colors.textMain }}
                                 title="Review possible duplicate accounts for manual merge"
                             >
-                                <GitMerge size={14} /> Duplicate ({allDuplicateItems.length})
+                                <GitMerge size={14} />
+                                <span>Duplicate</span>
+                                <span className="text-red-500 font-black">({allDuplicateItems.length})</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowIncompleteQueue(true)}
+                                className="flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold uppercase tracking-wider w-full justify-center"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                                title="Review accounts with missing or placeholder profile details"
+                            >
+                                <AlertCircle size={14} />
+                                <span>Incomplete</span>
+                                <span className="text-red-500 font-black">({incompleteAccounts.length})</span>
                             </button>
                             <input
                                 ref={scanAccountInputRef}
@@ -1044,7 +1216,31 @@ export default function AccountsPage({
             </div>
 
             <div className="flex-1 overflow-auto p-6 min-h-0">
-                {!sortedFiltered.length ? (
+                <div className="flex items-center gap-1 mb-4">
+                    {(['accounts', 'contacts'] as AccountsPageTab[]).map((tab) => {
+                        const active = listTab === tab;
+                        return (
+                            <button
+                                key={tab}
+                                type="button"
+                                onClick={() => {
+                                    setListTab(tab);
+                                    if (tab === 'contacts' && listSort !== 'name_az') setListSort('name_az');
+                                }}
+                                className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all"
+                                style={{
+                                    backgroundColor: active ? colors.primary : 'transparent',
+                                    color: active ? '#000' : colors.textMain,
+                                    border: `1px solid ${active ? colors.primary : colors.border}`,
+                                }}
+                            >
+                                {tab === 'accounts' ? 'Accounts' : 'Contacts'}
+                            </button>
+                        );
+                    })}
+                </div>
+                {listTab === 'accounts' ? (
+                !sortedFiltered.length ? (
                     <div className="flex flex-col items-center justify-center py-20 text-center" style={{ color: colors.textMuted }}>
                         <Building2 size={48} className="opacity-20 mb-4" />
                         <p className="font-bold">{accounts.length ? 'No matching accounts' : 'No accounts yet'}</p>
@@ -1098,16 +1294,63 @@ export default function AccountsPage({
                             ))}
                         </tbody>
                     </table>
+                )
+                ) : !sortedContactRows.length ? (
+                    <div className="flex flex-col items-center justify-center py-20 text-center" style={{ color: colors.textMuted }}>
+                        <Building2 size={48} className="opacity-20 mb-4" />
+                        <p className="font-bold">{accounts.length ? 'No matching contacts' : 'No contacts yet'}</p>
+                        <p className="text-sm mt-1">Add contacts to accounts or adjust your search and filters.</p>
+                    </div>
+                ) : (
+                    <table className="w-full text-left border-separate border-spacing-y-3">
+                        <thead>
+                            <tr>
+                                {DEFAULT_CONTACT_COLUMN_ORDER.map((column) => (
+                                    <th
+                                        key={column}
+                                        className="px-6 py-2 text-[11px] font-bold uppercase tracking-wider opacity-60"
+                                        style={{ color: colors.textMain }}
+                                    >
+                                        {contactColumnLabels[column]}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {sortedContactRows.map((row) => (
+                                <tr
+                                    key={row.key}
+                                    onClick={() => setProfileLead(accountToLead(row.account))}
+                                    className="cursor-pointer group transition-all duration-300 hover:translate-y-[-2px]"
+                                >
+                                    {DEFAULT_CONTACT_COLUMN_ORDER.map((column, colIdx) => {
+                                        const isFirst = colIdx === 0;
+                                        const isLast = colIdx === DEFAULT_CONTACT_COLUMN_ORDER.length - 1;
+                                        return (
+                                            <td
+                                                key={column}
+                                                className={`py-4 px-6 border-y ${isFirst ? 'border-l rounded-l-2xl' : ''} ${isLast ? 'border-r rounded-r-2xl' : ''}`}
+                                                style={{
+                                                    backgroundColor: colors.card,
+                                                    borderColor: colors.border,
+                                                    boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+                                                    borderLeft: isFirst ? `4px solid ${colors.primary}` : `1px solid ${colors.border}`
+                                                }}
+                                            >
+                                                {cellForContact(column, row)}
+                                            </td>
+                                        );
+                                    })}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 )}
             </div>
 
             <AddAccountModal
                 isOpen={showAddModal}
-                onClose={() => {
-                    setShowAddModal(false);
-                    setScanPrefillAccount(null);
-                    setScanMeta(null);
-                }}
+                onClose={handleCloseAddModal}
                 onSave={handleSaveNew}
                 theme={theme}
                 accountTypeOptions={accountTypeOptions}
@@ -1117,6 +1360,19 @@ export default function AccountsPage({
                 configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
                 prefillAccount={scanPrefillAccount}
                 scanMeta={scanMeta}
+            />
+            <AddAccountModal
+                isOpen={showEditAccountModal}
+                onClose={() => {
+                    setShowEditAccountModal(false);
+                    setEditingAccountRow(null);
+                }}
+                editingAccount={editingAccountRow}
+                onSave={handleEditAccountSave}
+                theme={theme}
+                accountTypeOptions={accountTypeOptions}
+                configurationProperty={activeProperty || undefined}
+                configurationPropertyId={activeProperty?.id ? String(activeProperty.id) : undefined}
             />
             {showDuplicateQueue && (
                 <div className="fixed inset-0 z-[180] bg-black/70 p-4 flex items-center justify-center">
@@ -1188,6 +1444,65 @@ export default function AccountsPage({
                                     </div>
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+            {showIncompleteQueue && (
+                <div className="fixed inset-0 z-[180] bg-black/70 p-4 flex items-center justify-center">
+                    <div className="w-full max-w-3xl rounded-2xl border max-h-[80vh] overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
+                        <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
+                            <div>
+                                <h3 className="text-lg font-bold" style={{ color: colors.textMain }}>Incomplete Account Profiles</h3>
+                                <p className="text-xs" style={{ color: colors.textMuted }}>
+                                    Accounts missing city, phone, email, contact details, or other required fields. Placeholder values like dots or dashes count as missing.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowIncompleteQueue(false)}
+                                className="px-3 py-2 rounded border text-sm"
+                                style={{ borderColor: colors.border, color: colors.textMain }}
+                            >
+                                Close
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-auto space-y-3 max-h-[65vh]">
+                            {incompleteAccounts.length === 0 ? (
+                                <p className="text-sm" style={{ color: colors.textMuted }}>All accounts have complete profiles.</p>
+                            ) : incompleteAccounts.map((account: any) => {
+                                const gaps = getAccountProfileGaps(account, propertyIdForForms, activeProperty);
+                                return (
+                                    <div
+                                        key={account.id}
+                                        className="rounded-xl border p-3 space-y-2 cursor-pointer hover:opacity-90 transition-opacity"
+                                        style={{ borderColor: colors.border, backgroundColor: colors.bg }}
+                                        onClick={() => {
+                                            openAccountForEdit(account);
+                                            setShowIncompleteQueue(false);
+                                        }}
+                                    >
+                                        <p className="text-sm font-semibold" style={{ color: colors.textMain }}>
+                                            {account.name || 'Unnamed account'}
+                                        </p>
+                                        <p className="text-xs" style={{ color: colors.textMuted }}>
+                                            Missing: {gaps.join(', ')}
+                                        </p>
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1.5 rounded text-xs font-bold"
+                                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                openAccountForEdit(account);
+                                                setShowIncompleteQueue(false);
+                                            }}
+                                        >
+                                            Edit account
+                                        </button>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 </div>

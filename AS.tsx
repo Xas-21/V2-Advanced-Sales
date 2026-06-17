@@ -88,6 +88,7 @@ import RequestsManager from './RequestsManager';
 import AddSalesCallModal from './AddSalesCallModal';
 import AddAccountModal from './AddAccountModal';
 import AccountsPage from './AccountsPage';
+import DashboardHubShell from './dashboardHub/DashboardHubShell';
 import PromotionsPage from './PromotionsPage';
 import { collectSalesCallFormViolations, FORM_CONFIGURATION_CHANGED_EVENT } from './formConfigurations';
 import { flattenCrmLeads, filterRequestsForAccount, computeAccountMetrics } from './accountProfileData';
@@ -742,7 +743,7 @@ function computeRequestTotalWithTax(req: any, taxes: any[] = []) {
     let eventTax = 0;
     let transTax = 0;
     for (const tax of taxes) {
-        const rate = Number(tax?.rate || 0) / 100;
+        const rate = (Number(tax?.rate) || 0) / 100;
         if (tax?.scope?.accommodation) roomsTax += rate;
         if (tax?.scope?.events || tax?.scope?.foodAndBeverage) eventTax += rate;
         if (tax?.scope?.transport) transTax += rate;
@@ -1482,8 +1483,8 @@ const EventsView = ({
     const parseValue = (valStr: string) => {
         if (typeof valStr === 'number') return Number.isFinite(valStr) ? valStr : 0;
         const str = valStr.toString().toLowerCase();
-        if (str.endsWith('k')) return parseFloat(str) * 1000;
-        if (str.endsWith('m')) return parseFloat(str) * 1000000;
+        if (str.endsWith('k')) return (parseFloat(str) || 0) * 1000;
+        if (str.endsWith('m')) return (parseFloat(str) || 0) * 1000000;
         return parseFloat(str) || 0;
     };
 
@@ -4149,6 +4150,9 @@ export default function AdvancedSalesDashboard() {
     const crmHydratedForPropertyId = useRef<string | null>(null);
     const crmServerCountsRef = useRef({ salesCalls: 0, pipeline: 0 });
     const crmPersistEnabledRef = useRef(false);
+    const requestsLoadPropertyRef = useRef<string | null>(null);
+    const financialsLoadPropertyRef = useRef<string | null>(null);
+    const promotionsLoadPropertyRef = useRef<string | null>(null);
 
     const [accounts, setAccounts] = useState<any[]>([]);
 
@@ -4506,7 +4510,7 @@ export default function AdvancedSalesDashboard() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ propertyId: String(pid), accounts }),
-            }).catch(() => {});
+            }).catch((e) => console.warn('[AccountSync] Failed:', e));
         }, 300);
         return () => clearTimeout(t);
     }, [accounts, activeProperty?.id]);
@@ -4551,7 +4555,7 @@ export default function AdvancedSalesDashboard() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ propertyId: String(pid), tasks }),
-            }).catch(() => {});
+            }).catch((e) => console.warn('[TaskSync] Failed:', e));
         }, 300);
         return () => clearTimeout(t);
     }, [tasks, activeProperty?.id]);
@@ -4586,14 +4590,17 @@ export default function AdvancedSalesDashboard() {
     }, [currentView]);
 
     const refreshSharedRequests = async () => {
+        const pid = activeProperty?.id || '';
+        requestsLoadPropertyRef.current = pid;
         try {
-            const url = activeProperty?.id
-                ? apiUrl(`/api/requests?propertyId=${encodeURIComponent(activeProperty.id)}`)
+            const url = pid
+                ? apiUrl(`/api/requests?propertyId=${encodeURIComponent(pid)}`)
                 : apiUrl('/api/requests');
             const data = await refreshRequestsWithDefiniteToActual(url, {
                 readOnly: !canMutateOperational(currentUser),
                 requestLogUser: String(currentUser?.name || 'System').trim() || 'System',
             });
+            if (requestsLoadPropertyRef.current !== pid) return;
             if (Array.isArray(data)) {
                 setSharedRequests(data);
                 setCrmState((prev) => ({
@@ -4662,6 +4669,7 @@ export default function AdvancedSalesDashboard() {
     );
 
     useEffect(() => {
+        if (!activeProperty?.id) return;
         refreshSharedRequests();
     }, [activeProperty?.id]);
 
@@ -4672,10 +4680,11 @@ export default function AdvancedSalesDashboard() {
             setPromotions([]);
             return;
         }
+        promotionsLoadPropertyRef.current = pid;
         fetch(apiUrl(`/api/promotions?propertyId=${encodeURIComponent(pid)}`))
             .then((res) => (res.ok ? res.json() : []))
             .then((data) => {
-                if (cancelled) return;
+                if (cancelled || promotionsLoadPropertyRef.current !== pid) return;
                 setPromotions(Array.isArray(data) ? data : []);
             })
             .catch(() => {
@@ -4693,10 +4702,12 @@ export default function AdvancedSalesDashboard() {
             setPropertyFinancialKpis([]);
             return;
         }
-        fetch(apiUrl(`/api/financials?propertyId=${encodeURIComponent(String(pid))}`), { cache: 'no-store' })
+        const pidStr = String(pid);
+        financialsLoadPropertyRef.current = pidStr;
+        fetch(apiUrl(`/api/financials?propertyId=${encodeURIComponent(pidStr)}`), { cache: 'no-store' })
             .then((res) => (res.ok ? res.json() : []))
             .then((data) => {
-                if (cancelled) return;
+                if (cancelled || financialsLoadPropertyRef.current !== pidStr) return;
                 if (Array.isArray(data)) {
                     setPropertyFinancialKpis(data);
                 } else {
@@ -4712,16 +4723,24 @@ export default function AdvancedSalesDashboard() {
     }, [activeProperty?.id, currentView]);
 
     useEffect(() => {
-        if (!activeProperty?.id) {
+        let cancelled = false;
+        const pid = activeProperty?.id;
+        if (!pid) {
             setPropertyTaxes([]);
             return;
         }
-        fetch(apiUrl(`/api/taxes?propertyId=${encodeURIComponent(activeProperty.id)}`))
+        fetch(apiUrl(`/api/taxes?propertyId=${encodeURIComponent(pid)}`))
             .then((r) => r.json())
             .then((d) => {
+                if (cancelled) return;
                 if (Array.isArray(d)) setPropertyTaxes(d);
             })
-            .catch(() => setPropertyTaxes([]));
+            .catch(() => {
+                if (!cancelled) setPropertyTaxes([]);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [activeProperty?.id]);
 
     useEffect(() => {
@@ -5014,8 +5033,8 @@ export default function AdvancedSalesDashboard() {
             name,
             value: (accounts || []).filter((a: any) => String(a.type || '').trim() === name).length,
         }));
-        const sum = rows.reduce((s, d) => s + d.value, 0) || 1;
-        return rows.map((d) => ({ ...d, percent: Math.round((d.value / sum) * 100) }));
+        const sum = rows.reduce((s, d) => s + d.value, 0);
+        return rows.map((d) => ({ ...d, percent: (sum || 1) > 0 ? Math.round((d.value / (sum || 1)) * 100) : 0 }));
     }, [accounts, propertyAccountTypeLabels]);
 
     const dashboardRequestDistributionData = useMemo(() => {
@@ -7289,6 +7308,7 @@ export default function AdvancedSalesDashboard() {
                     ) : (
                         /* DASHBOARD VIEW */
                         <div className="grid grid-cols-1 md:grid-cols-12 auto-rows-min gap-3 pb-4">
+                            <DashboardHubShell colors={colors}>
 
                             {/* ROW 1: PRIMARY KPIs */}
                             <div className="col-span-1 md:col-span-12 grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -7515,6 +7535,7 @@ export default function AdvancedSalesDashboard() {
                                     </div>
                                 </Card>
                             </div>
+                            </DashboardHubShell>
                         </div>
                     )}
                     {calendarDetailModal && (

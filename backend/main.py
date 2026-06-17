@@ -11,13 +11,21 @@ sys.path.append(BASE_DIR)
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
 from routers import auth, users, properties, rooms, venues, taxes, financials, reqs, crm_state, contact, accounts, tasks, uploads, contracts, cxl_reasons, promotions
-from utils import close_database, init_database, storage_mode
+from utils import close_database, get_database_url, init_database, storage_mode, check_database_health
 
-app = FastAPI(title="VisaTour ERP Backend", version="1.0.0", redirect_slashes=False)
 
+def _database_host() -> str | None:
+    url = get_database_url()
+    if not url or "@" not in url:
+        return None
+    return url.split("@", 1)[1].split("/", 1)[0]
+
+app = FastAPI(title="VisaTour ERP Backend", version="2.0.0", redirect_slashes=False)
+
+origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,https://*.onrender.com").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in origins if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,9 +62,12 @@ def on_shutdown():
 
 @app.get("/api/health")
 def health():
+    db_ok = check_database_health() if storage_mode() == "postgres" else None
     return {
-        "status": "ok",
+        "status": "ok" if db_ok is not False else "degraded",
         "storage": storage_mode(),
+        "database_host": _database_host(),
+        "database_connected": db_ok,
         "routers": ["reqs", "auth", "others"],
     }
 

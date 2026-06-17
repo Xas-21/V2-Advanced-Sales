@@ -2753,7 +2753,7 @@ export default function CRM({
                                                     }}
                                                 >
                                                     <div className="text-[11px] leading-tight px-2">
-                                                        <div>{row.pct.toFixed(0)}%</div>
+                                                        <div>{(typeof row.pct === 'number' ? row.pct : 0).toFixed(0)}%</div>
                                                         <div>{row.stageTitle}</div>
                                                         <div>{row.count}</div>
                                                     </div>

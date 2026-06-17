@@ -458,7 +458,10 @@ export function normalizedRequestTypeToFormId(normalizedType: string): FormConfi
 function present(v: unknown): boolean {
     if (v === null || v === undefined) return false;
     if (typeof v === 'boolean') return v;
-    return String(v).trim().length > 0;
+    const s = String(v).trim();
+    if (!s) return false;
+    if (/^[\s.\-–—_,;:*#@!?/\\|~`"'`+]+$/u.test(s)) return false;
+    return true;
 }
 
 function getRequestScalar(formData: any, fieldId: string, isEventOnly: boolean): unknown {

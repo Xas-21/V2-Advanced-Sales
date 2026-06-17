@@ -70,8 +70,8 @@ def _enrich_company_from_web(account: dict[str, Any]) -> str:
     try:
         q = urllib.parse.quote_plus(query)
         url = f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
-        with httpx.Client(timeout=8.0) as client:
-            resp = client.get(url)
+        with httpx.Client(timeout=8.0) as client_sync:
+            resp = client_sync.get(url)
         if resp.status_code >= 300:
             return ""
         data = resp.json()
@@ -143,8 +143,8 @@ def _extract_with_openai(content: bytes, file_name: str) -> dict[str, Any]:
         "temperature": 0,
     }
     try:
-        with httpx.Client(timeout=45.0) as client:
-            resp = client.post(
+        with httpx.Client(timeout=45.0) as client_sync:
+            resp = client_sync.post(
                 "https://api.openai.com/v1/responses",
                 headers={
                     "Authorization": f"Bearer {api_key}",

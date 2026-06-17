@@ -18,6 +18,7 @@ import {
     Layers,
 } from 'lucide-react';
 import { apiUrl } from './backendApi';
+import { normalizeRequestTypeKey } from './requestTypeUtils';
 import { filterRequestsForAccount, computeAccountMetrics, flattenCrmLeads } from './accountProfileData';
 import { formatCompactCurrency } from './formatCompactCurrency';
 import { convertCurrencyToSar, convertSarToCurrency, formatCurrencyAmount, resolveCurrencyCode, type CurrencyCode } from './currency';
@@ -67,15 +68,6 @@ type ReportEntity =
     | 'MICE vs LY'
     | 'Full Report'
     | 'Promotions';
-
-function normalizeRequestTypeKey(raw: string = '') {
-    const t = String(raw || '').toLowerCase().trim();
-    if (t === 'event' || t === 'event only') return 'event';
-    if (t === 'event_rooms' || t === 'event with rooms' || t === 'event with room' || t.includes('event with room')) return 'event_rooms';
-    if (t === 'series' || t === 'series group') return 'series';
-    if (t === 'accommodation' || t === 'accommodation only') return 'accommodation';
-    return t || 'accommodation';
-}
 
 function requestTypeLabel(raw: string = '') {
     const k = normalizeRequestTypeKey(raw);

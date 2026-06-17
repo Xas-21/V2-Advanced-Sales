@@ -407,7 +407,7 @@ export function calculateAccFinancialsForRequest(
     let transTaxMultiplier = 0;
 
     (taxesList || []).forEach((tax: any) => {
-        const rate = Number(tax.rate) / 100;
+        const rate = (Number(tax?.rate) || 0) / 100;
         if (tax.scope?.accommodation) roomsTaxMultiplier += rate;
         if (tax.scope?.events) eventTaxMultiplier += rate;
         if (tax.scope?.transport) transTaxMultiplier += rate;

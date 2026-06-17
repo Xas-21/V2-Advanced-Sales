@@ -2,7 +2,7 @@
     {
         "id": "U-TESTSPRITE",
         "username": "testuser",
-        "password": "CorrectPassword123!",
+        "password": "$2b$12$brTc.v2BmKs4Tw76MsStju.D6Z1ND60jX5Nz6pytclGCgVLWUHNGq",
         "name": "TestSprite API User",
         "email": "testuser@test.local",
         "role": "Sales",
@@ -16,7 +16,7 @@
     {
         "id": "U-VALID-TEST",
         "username": "validUser",
-        "password": "validPassword123",
+        "password": "$2b$12$8/pS98IVv4.eTj5dK64.NO68s051IGg26RtTvrXqkhaMlNeAUPDcq",
         "name": "Valid Test User",
         "email": "valid@test.local",
         "role": "Sales",
@@ -30,7 +30,7 @@
     {
         "id": "U001",
         "username": "Abdullah",
-        "password": "password123",
+        "password": "$2b$12$CIA7GGl9VUPzICX6p2.kcu6y0CdzukzXL1cpYHjLpsjCZ0ChxyQLG",
         "name": "Abdullah (Admin)",
         "email": "abdullah@advancedsales.com",
         "role": "Admin",
@@ -42,7 +42,8 @@
             "yearlyTargets": {
                 "2026": 720
             }
-        }
+        },
+        "sessionVersion": 16
     },
     {
         "propertyId": "Pxn4cf8a5y",
@@ -54,7 +55,7 @@
                 "2026": 60
             }
         },
-        "password": "password123",
+        "password": "$2b$12$cywYsJQyKC04cj4yIXXaNeciP0pJb4M6P9XcISWJQdthEedYaqF.i",
         "email": "",
         "permissionGrants": [],
         "permissionRevokes": []
@@ -70,7 +71,7 @@
         "stats": {
             "yearlyTargets": {}
         },
-        "password": "password123",
+        "password": "$2b$12$BZy4C.44PjLbUqSfMJolN.yjeSRJw0gHjtSRAiHfFO896a41DEUXW",
         "id": "Unaf47sv01",
         "status": "Active"
     }

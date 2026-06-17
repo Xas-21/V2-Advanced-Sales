@@ -316,7 +316,7 @@ function sanitizeRequestRoomsForSave(rooms: unknown): any[] {
         if (String(r?.arrival || '').trim() || String(r?.departure || '').trim()) return true;
         return false;
     });
-    return cleaned.length > 0 ? cleaned : raw;
+    return cleaned;
 }
 
 const initialEvent = {
@@ -746,7 +746,7 @@ export default function RequestsManager({
     }, [showAccountDropdown]);
 
     const [showPaymentModal, setShowPaymentModal] = useState(false);
-    const [paymentModalSource, setPaymentModalSource] = useState<'form' | 'opts'>('opts');
+    const [paymentModalSource, setPaymentModalSource] = useState<'form' | 'opts' | 'detail'>('opts');
     const [newPayment, setNewPayment] = useState({
         method: defaultPaymentMethodForProperty('', null),
         note: '',
@@ -794,6 +794,8 @@ export default function RequestsManager({
     /** In-app notice (replaces browser `alert` for consistent UI). */
     const [systemNotice, setSystemNotice] = useState<{ title: string; message: string } | null>(null);
     const prevDetailRequestIdRef = useRef<string | null>(null);
+    const hydratedForEditIdRef = useRef<string | null>(null);
+    const hydratedForDuplicateIdRef = useRef<string | null>(null);
 
     const getSearchOnlyParams = (params: any = {}) => {
         const { subView, ...rest } = params || {};
@@ -1723,9 +1725,15 @@ export default function RequestsManager({
     useEffect(() => {
         if (readOnlyOperational) return;
         const editId = searchParams?.editRequestId;
-        if (subView !== 'new_request' || !editId || !requests.length) return;
+        if (!editId) {
+            hydratedForEditIdRef.current = null;
+            return;
+        }
+        if (subView !== 'new_request' || !requests.length) return;
+        if (hydratedForEditIdRef.current === editId) return;
         const req = requests.find((x: any) => String(x.id) === String(editId));
         if (!req) return;
+        hydratedForEditIdRef.current = editId;
         hydrateFormsFromRequest(req, { asDuplicate: false });
         setSearchParams({
             ...getSearchOnlyParams(searchParams),
@@ -1736,9 +1744,15 @@ export default function RequestsManager({
     useEffect(() => {
         if (readOnlyOperational) return;
         const dupId = searchParams?.duplicateFromRequestId;
-        if (subView !== 'new_request' || !dupId || !requests.length) return;
+        if (!dupId) {
+            hydratedForDuplicateIdRef.current = null;
+            return;
+        }
+        if (subView !== 'new_request' || !requests.length) return;
+        if (hydratedForDuplicateIdRef.current === dupId) return;
         const req = requests.find((x: any) => String(x.id) === String(dupId));
         if (!req) return;
+        hydratedForDuplicateIdRef.current = dupId;
         skipNewRequestResetRef.current = true;
         hydrateFormsFromRequest(req, { asDuplicate: true });
         setSearchParams({
@@ -4644,62 +4658,321 @@ export default function RequestsManager({
 
                         {isEventKind && renderAgendaSection()}
 
-                        {isEventOnly && (
-                            <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
-                                <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
-                                    {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
-                                    {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
-                                    {statCard('Number of days', displayEventDays || '—')}
-                                    {statCard('Total attendees', fin.totalEventAttendeeDays ?? fin.totalEventPax)}
-                                    {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
-                                    <div className="col-span-2 lg:col-span-2">
-                                        {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
+                        {isEventKind && renderAgendaSection()}
+
+                        {(function renderDetailFinancials() {
+                            const remainingBalance = Math.max(0, (fin.grandTotalWithTax || 0) - (fin.paidAmount || 0));
+                            const handleOffsetPayment = async (payment: any) => {
+                                const amt = Number(payment.amount);
+                                if (!(amt > 0)) return;
+                                const netPaid = sumPaymentAmounts(request.payments || []);
+                                if (netPaid < amt) {
+                                    showSystemNotice('Cannot offset payment', 'There is no remaining paid balance to offset for this amount.');
+                                    return;
+                                }
+                                const newPayments = [...(request.payments || []), {
+                                    ...payment,
+                                    id: Date.now(),
+                                    amount: -amt,
+                                    note: `Offset for payment #${payment.id}`,
+                                }];
+                                const paidSum = sumPaymentAmounts(newPayments);
+                                const totalCost = parseFloat(String(request.totalCost ?? '0').replace(/,/g, '')) || 0;
+                                let paymentStatus = 'Unpaid';
+                                if (totalCost > 0) {
+                                    if (paymentsMeetOrExceedTotal(paidSum, totalCost)) paymentStatus = 'Paid';
+                                    else if (paidSum > 0) paymentStatus = 'Deposit';
+                                }
+                                await updateRequest(request.id, { payments: newPayments, paidAmount: paidSum.toFixed(2), paymentStatus });
+                                if (selectedRequest?.id === request.id) {
+                                    setSelectedRequest((prev: any) => prev ? { ...prev, payments: newPayments, paidAmount: paidSum.toFixed(2), paymentStatus } : null);
+                                }
+                            };
+                            const handleDeletePayment = async (payment: any) => {
+                                if (!payment?.id) return;
+                                if (!window.confirm('Remove this payment line from the request?')) return;
+                                const newPayments = (request.payments || []).filter((p: any) => p.id !== payment.id);
+                                const paidSum = sumPaymentAmounts(newPayments);
+                                const totalCost = parseFloat(String(request.totalCost ?? '0').replace(/,/g, '')) || 0;
+                                let paymentStatus = 'Unpaid';
+                                if (totalCost > 0) {
+                                    if (paymentsMeetOrExceedTotal(paidSum, totalCost)) paymentStatus = 'Paid';
+                                    else if (paidSum > 0) paymentStatus = 'Deposit';
+                                }
+                                await updateRequest(request.id, { payments: newPayments, paidAmount: paidSum.toFixed(2), paymentStatus });
+                                if (selectedRequest?.id === request.id) {
+                                    setSelectedRequest((prev: any) => prev ? { ...prev, payments: newPayments, paidAmount: paidSum.toFixed(2), paymentStatus } : null);
+                                }
+                            };
+                            return (
+                            <div className="p-8 rounded-2xl border-2 space-y-8 relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '40' }}>
+                                <div className="absolute top-0 right-0 p-8 opacity-5">
+                                    <Calculator size={150} color={colors.primary} />
+                                </div>
+
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="text-xl font-bold flex items-center gap-2 mb-1" style={{ color: colors.textMain }}>
+                                            <Calculator size={20} className="text-primary" /> Section 6: Statistics & Financials
+                                        </h3>
+                                        <p className="text-xs opacity-50" style={{ color: colors.textMuted }}>Automated calculations based on request details</p>
+                                    </div>
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-1">Current Status</span>
+                                        <div className="px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2"
+                                            style={{
+                                                backgroundColor: fin.paymentStatus === 'Paid' ? colors.green + '20' : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow + '20' : colors.red + '20',
+                                                borderColor: fin.paymentStatus === 'Paid' ? colors.green : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow : colors.red,
+                                                color: fin.paymentStatus === 'Paid' ? colors.green : (fin.paymentStatus === 'Partially Paid' || fin.paymentStatus === 'Deposit') ? colors.yellow : colors.red
+                                            }}>
+                                            <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'currentColor' }} />
+                                            {fin.paymentStatus === 'Deposit' ? 'Partial / deposit' : fin.paymentStatus}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {detailType === 'event_rooms' ? (
+                                    <>
+                                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 xl:gap-8">
+                                            <div className="space-y-4 p-5 sm:p-6 rounded-xl border bg-black/5 min-w-0" style={{ borderColor: colors.border }}>
+                                                <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Accommodation</h4>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">ADR (Avg Daily Rate)</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(fin.adr)}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Room Nights</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalRoomNights}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Rooms</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalRooms}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Rooms (Incl. Tax)</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-4 p-5 sm:p-6 rounded-xl border bg-black/5 min-w-0" style={{ borderColor: colors.border }}>
+                                                <h4 className="text-xs font-black uppercase opacity-50 tracking-widest">Event</h4>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">DDR (Per Person)</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(fin.ddr)}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Cost Per Day (Incl. Tax)</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.textMain }}>{formatMoney(eventCostPerDay)}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Days</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventDays || displayEventDays}</p>
+                                                    </div>
+                                                    <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                        <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Total Attendees</p>
+                                                        <p className="text-lg sm:text-xl lg:text-2xl font-bold leading-snug" style={{ color: colors.textMain }}>{fin.totalEventAttendeeDays ?? fin.totalEventPax}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                            <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Paid Amount</p>
+                                                <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
+                                            </div>
+                                            <div className="p-4 sm:p-5 rounded-xl bg-black/10 border border-white/5 min-w-0">
+                                                <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Remaining Balance</p>
+                                                <p className="text-lg sm:text-xl lg:text-2xl font-mono font-bold leading-snug break-words" style={{ color: remainingBalance > 0 ? '#f87171' : colors.green }}>
+                                                    {formatMoney(remainingBalance)}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                                {detailType === 'event' ? 'DDR (Daily Delegate Rate)' : 'ADR (Avg Daily Rate)'}
+                                            </p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.textMain }}>
+                                                {formatMoney(detailType === 'event' ? fin.ddr : fin.adr)}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                                {detailType === 'event' ? 'Total Attendees' : 'Total Room Nights'}
+                                            </p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>
+                                                {detailType === 'event' ? (fin.totalEventAttendeeDays ?? fin.totalEventPax) : fin.totalRoomNights}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">
+                                                {detailType === 'event' ? 'Total Days' : 'Total Rooms'}
+                                            </p>
+                                            <p className="text-2xl font-bold" style={{ color: colors.textMain }}>
+                                                {detailType === 'event' ? fin.totalEventDays : fin.totalRooms}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 rounded-xl bg-black/10 border border-white/5">
+                                            <p className="text-[10px] font-bold uppercase opacity-40 mb-1">Paid Amount</p>
+                                            <p className="text-2xl font-mono font-bold" style={{ color: colors.green }}>{formatMoney(fin.paidAmount)}</p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4 border-t border-white/5">
+                                    <div className="space-y-4">
+                                        <h4 className="text-xs font-black uppercase opacity-30 tracking-widest pl-2">Cost Breakdown</h4>
+                                        {detailType === 'event_rooms' ? (
+                                            <div className="space-y-6">
+                                                <div className="space-y-3">
+                                                    <h5 className="text-[10px] font-black uppercase opacity-40 tracking-wider">Accommodation</h5>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Rooms Cost (Before Tax)</span>
+                                                        <span className="font-mono font-bold">{formatMoney(fin.roomsCostNoTax)}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Rooms Cost (Incl. Tax)</span>
+                                                        <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Transportation (Before Tax)</span>
+                                                        <span className="font-mono font-bold">{formatMoney(fin.transCostNoTax)}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Transportation (Incl. Tax)</span>
+                                                        <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.transCostWithTax)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="space-y-3">
+                                                    <h5 className="text-[10px] font-black uppercase opacity-40 tracking-wider">Event</h5>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Event Cost (Before Tax)</span>
+                                                        <span className="font-mono font-bold">{formatMoney(fin.eventCostNoTax)}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Event Cost (Incl. Tax)</span>
+                                                        <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.eventCostWithTax)}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                        <div className="space-y-3">
+                                            {detailType !== 'event' && (
+                                                <>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Rooms Cost (Before Tax)</span>
+                                                        <span className="font-mono font-bold">{formatMoney(fin.roomsCostNoTax)}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                        <span className="text-sm opacity-60">Rooms Cost (Incl. Tax)</span>
+                                                        <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.roomsCostWithTax)}</span>
+                                                    </div>
+                                                </>
+                                            )}
+                                            <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                <span className="text-sm opacity-60">Transportation (Before Tax)</span>
+                                                <span className="font-mono font-bold">{formatMoney(fin.transCostNoTax)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                <span className="text-sm opacity-60">Transportation (Incl. Tax)</span>
+                                                <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.transCostWithTax)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                <span className="text-sm opacity-60">Event Cost (Before Tax)</span>
+                                                <span className="font-mono font-bold">{formatMoney(fin.eventCostNoTax)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center p-3 rounded-lg bg-black/10 group">
+                                                <span className="text-sm opacity-60">Event Cost (Incl. Tax)</span>
+                                                <span className="font-mono font-bold" style={{ color: colors.primary }}>{formatMoney(fin.eventCostWithTax)}</span>
+                                            </div>
+                                        </div>
+                                        )}
+                                    </div>
+
+                                    <div className="flex flex-col justify-end gap-6">
+                                        <div className="p-6 rounded-2xl bg-primary/5 border border-primary/20 flex justify-between items-center">
+                                            <div>
+                                                <p className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-1">Grand Total Amount (Before Tax)</p>
+                                                <p className="text-2xl font-mono font-bold opacity-60">{formatMoney(fin.grandTotalNoTax)}</p>
+                                            </div>
+                                        </div>
+                                        <div className="p-6 rounded-2xl bg-primary/10 border-2 border-primary/30 flex justify-between items-center shadow-xl shadow-primary/5">
+                                            <div>
+                                                <p className="text-xs font-black uppercase tracking-widest text-primary mb-1">Grand Total Amount (Including Tax)</p>
+                                                <p className="text-4xl font-mono font-black" style={{ color: colors.textMain }}>{formatMoney(fin.grandTotalWithTax)}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Payments record */}
+                                <div className="pt-8 border-t border-white/5 space-y-4">
+                                    <div className="flex justify-between items-center">
+                                        <h4 className="text-xs font-black uppercase opacity-30 tracking-widest pl-2">Payment Records</h4>
+                                        {!readOnlyOperational && (
+                                        <button onClick={() => {
+                                            setNewPayment(emptyNewPayment());
+                                            setPaymentModalSource('detail');
+                                            setShowPaymentModal(true);
+                                        }}
+                                            className="px-4 py-2 rounded-xl bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-xs font-bold flex items-center gap-2 hover:bg-emerald-500/20 hover:scale-105 transition-all active:scale-95 shadow-lg shadow-emerald-500/10">
+                                            <Plus size={16} /> Add Deposit
+                                        </button>
+                                        )}
+                                    </div>
+                                    <div className="bg-black/10 rounded-xl overflow-hidden border border-white/5">
+                                        <table className="w-full text-xs">
+                                            <thead>
+                                                <tr className="bg-white/5 text-[10px] font-black uppercase tracking-widest text-white/30">
+                                                    <th className="px-4 py-3 text-left">Date</th>
+                                                    <th className="px-4 py-3 text-left">Method</th>
+                                                    <th className="px-4 py-3 text-left">Notes</th>
+                                                    <th className="px-4 py-3 text-right">Amount</th>
+                                                    <th className="px-4 py-3 text-center">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {(request.payments || []).length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={5} className="px-4 py-8 text-center opacity-20 italic">No payments recorded yet.</td>
+                                                    </tr>
+                                                ) : (
+                                                    (request.payments || []).map((p: any, idx: number) => (
+                                                        <tr key={p.id ?? `pay-${idx}`} className="border-t border-white/5 hover:bg-white/5 transition-colors">
+                                                            <td className="px-4 py-3 opacity-60">{p.date}</td>
+                                                            <td className="px-4 py-3 font-bold">{p.method}</td>
+                                                            <td className="px-4 py-3 opacity-60">{p.note || '-'}</td>
+                                                            <td className={`px-4 py-3 text-right font-mono font-bold ${p.amount < 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                                {formatMoney(p.amount, 0)}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-center">
+                                                                <div className="flex items-center justify-center gap-1">
+                                                                    {p.amount > 0 && (
+                                                                        <button type="button" onClick={() => handleOffsetPayment(p)} className="p-1.5 hover:bg-red-500/10 text-red-400 rounded-md transition-all group relative" title="Offset payment">
+                                                                            <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-500" />
+                                                                        </button>
+                                                                    )}
+                                                                    {canDeletePayments && (
+                                                                        <button type="button" onClick={() => handleDeletePayment(p)} className="p-1.5 hover:bg-red-500/15 text-red-500 rounded-md transition-all" title="Delete payment line">
+                                                                            <Trash2 size={14} />
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>
-                        )}
-
-                        {isEventRooms && (
-                            <>
-                                <div className="p-6 rounded-[2rem] border-2 shadow-xl" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
-                                    <h4 className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-4">Accommodation</h4>
-                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
-                                        {statCard('ADR (avg daily rate)', <>{formatMoney(fin.adr)}</>)}
-                                        {statCard('Total room nights', fin.totalRoomNights)}
-                                        {statCard('Total rooms', fin.totalRooms)}
-                                        {statCard('Rooms total (incl. tax)', <>{formatMoney(fin.roomsCostWithTax)}</>)}
-                                    </div>
-                                </div>
-                                <div className="p-6 rounded-[2rem] border-2 shadow-xl" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
-                                    <h4 className="text-[10px] font-black uppercase tracking-widest opacity-40 mb-4">Event</h4>
-                                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
-                                        {statCard('DDR (per person)', <>{formatMoney(fin.ddr)}</>)}
-                                        {statCard('Cost per day', <>{formatMoney(eventCostPerDay)}</>)}
-                                        {statCard('Number of days', displayEventDays || '—')}
-                                        {statCard('Total attendees', fin.totalEventAttendeeDays ?? fin.totalEventPax)}
-                                        {statCard('Event total (incl. tax)', <>{formatMoney(fin.eventCostWithTax)}</>)}
-                                    </div>
-                                </div>
-                                <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                        {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
-                                        {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-
-                        {!isEventKind && (
-                            <div className="p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.primary + '20' }}>
-                                <div className="grid grid-cols-2 lg:grid-cols-5 gap-8">
-                                    {statCard('ADR (avg daily rate)', <>{formatMoney(fin.adr)}</>)}
-                                    {statCard('Total room nights', fin.totalRoomNights)}
-                                    {statCard('Total rooms', fin.totalRooms)}
-                                    {statCard('Paid amount', <>{formatMoney(fin.paidAmount)}</>, 'border-emerald-500', 'text-emerald-500')}
-                                    {statCard('Grand total (incl. tax)', <>{formatMoney(fin.grandTotalWithTax || fin.totalCostWithTax || 0)}</>, 'border-primary', 'text-primary')}
-                                </div>
-                            </div>
-                        )}
+                            );
+                        })()}
 
                         <div className="rounded-2xl border overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                             <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
@@ -5055,6 +5328,44 @@ export default function RequestsManager({
                                         ],
                                     };
                                 });
+                            } else if (paymentModalSource === 'detail' && selectedRequest) {
+                                const req = selectedRequest;
+                                const newPayments = [...(req.payments || []), { ...newPayment, id: Date.now(), amount: amt }];
+                                const paidSum = sumPaymentAmounts(newPayments);
+                                const totalCost = parseFloat(String(req.totalCost ?? '0').replace(/,/g, '')) || 0;
+                                let paymentStatus = 'Unpaid';
+                                if (totalCost > 0) {
+                                    if (paymentsMeetOrExceedTotal(paidSum, totalCost)) paymentStatus = 'Paid';
+                                    else if (paidSum > 0) paymentStatus = 'Deposit';
+                                }
+                                const st = String(req.status || '').trim();
+                                const fullPayPromotion = paymentsMeetOrExceedTotal(paidSum, totalCost) && canAutoDefiniteFromStatus(st);
+                                const bumpToDefinite = !fullPayPromotion && paidSum > 0 && canAutoDefiniteFromStatus(st);
+                                const actualProbe = {
+                                    ...req, payments: newPayments, status: 'Definite',
+                                    paidAmount: paidSum.toFixed(2), totalCost: req.totalCost, paymentStatus,
+                                };
+                                let nextStatus = st;
+                                let autoLog: any[] = [];
+                                if (st === 'Definite' && shouldPromoteDefiniteToActual(actualProbe)) {
+                                    nextStatus = 'Actual';
+                                    autoLog = [{ date: new Date().toISOString(), user: requestLogUser, action: 'Status auto-updated', details: LOG_ACTUAL_FROM_DEFINITE }];
+                                } else if (fullPayPromotion) {
+                                    nextStatus = 'Definite';
+                                    autoLog = [{ date: new Date().toISOString(), user: requestLogUser, action: 'Status auto-updated', details: `Full payment recorded while status was ${st} — set to Definite.` }];
+                                } else if (bumpToDefinite) {
+                                    nextStatus = 'Definite';
+                                    autoLog = [{ date: new Date().toISOString(), user: requestLogUser, action: 'Status auto-updated', details: `Deposit posted while status was ${st} — set to Definite.` }];
+                                }
+                                const newLogs = [...autoLog, { date: new Date().toISOString(), user: requestLogUser, action: `Posted deposit of ${amt} via ${newPayment.method}` }, ...(req.logs || [])];
+                                const updateData: Record<string, unknown> = {
+                                    paidAmount: paidSum.toFixed(2), paymentStatus, payments: newPayments,
+                                    status: nextStatus, logs: newLogs,
+                                };
+                                await updateRequest(req.id, updateData);
+                                setSelectedRequest((prev: any) => prev ? { ...prev, ...updateData } : null);
+                                setShowPaymentModal(false);
+                                setNewPayment(emptyNewPayment());
                             } else {
                                 const req = activeOptionsMenu !== null ? requests[activeOptionsMenu] : null;
                                 if (req) {
