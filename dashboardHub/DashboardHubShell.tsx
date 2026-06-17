@@ -61,7 +61,13 @@ export default function DashboardHubShell({ colors, children }: DashboardHubShel
                 <DashboardHubTabBar activeTab={activeTab} onTabClick={handleTabClick} colors={colors} />
             </div>
 
-            {activeTab === 'dashboard' ? children : <DashboardHubTabPage tabId={activeTab} colors={colors} />}
+            {activeTab === 'dashboard' ? (
+                children
+            ) : (
+                <div className="col-span-1 md:col-span-12 flex min-h-[calc(100dvh-12rem)] items-center justify-center px-4 py-10">
+                    <DashboardHubTabPage tabId={activeTab} colors={colors} />
+                </div>
+            )}
         </>
     );
 }

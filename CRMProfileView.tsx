@@ -335,6 +335,7 @@ export default function CRMProfileView({
     const initial = (lead.company || '?').toString().charAt(0) || '?';
 
     const [showActivityModal, setShowActivityModal] = useState(false);
+    const [showRatesComingSoon, setShowRatesComingSoon] = useState(false);
     const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
     const [activityForm, setActivityForm] = useState({ title: '', body: '' });
     const [tagDraft, setTagDraft] = useState('');
@@ -649,6 +650,18 @@ export default function CRMProfileView({
                             <Plus size={16} /> New Activity
                         </button>
                     )}
+                    <button
+                        type="button"
+                        onClick={() => setShowRatesComingSoon(true)}
+                        className="px-4 py-2 rounded border font-bold flex items-center gap-2 hover:opacity-90 transition-opacity"
+                        style={{
+                            borderColor: colors.primary,
+                            color: colors.primary,
+                            boxShadow: `0 0 16px ${colors.primary}44`,
+                        }}
+                    >
+                        Rates
+                    </button>
                 </div>
                 </div>
             </div>
@@ -1598,7 +1611,7 @@ export default function CRMProfileView({
                                     onChange={e => setNewContactData({ ...newContactData, phone: e.target.value })}
                                     className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
                                     style={{ borderColor: colors.border, color: colors.textMain }}
-                                    placeholder="+966 ..."
+                                    placeholder="966 ..."
                                 />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
@@ -1666,6 +1679,57 @@ export default function CRMProfileView({
                                 ))
                             )}
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {showRatesComingSoon && (
+                <div
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+                    onClick={() => setShowRatesComingSoon(false)}
+                >
+                    <div
+                        className="relative w-full max-w-sm p-6 rounded-2xl border text-center shadow-2xl animate-in zoom-in-95 duration-200"
+                        style={{
+                            backgroundColor: colors.card,
+                            borderColor: colors.primary + '55',
+                            boxShadow: `0 0 32px ${colors.primary}33`,
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => setShowRatesComingSoon(false)}
+                            className="absolute top-4 right-4 p-1 rounded-lg hover:opacity-70"
+                            style={{ color: colors.textMuted }}
+                            aria-label="Close"
+                        >
+                            <X size={18} />
+                        </button>
+                        <div
+                            className="inline-flex px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest animate-pulse mb-4"
+                            style={{
+                                color: colors.primary,
+                                backgroundColor: `${colors.primary}18`,
+                                boxShadow: `0 0 14px ${colors.primary}55`,
+                            }}
+                        >
+                            Coming Soon
+                        </div>
+                        <h3 className="text-lg font-bold mb-2" style={{ color: colors.textMain }}>
+                            Account Rates
+                        </h3>
+                        <p className="text-sm leading-relaxed" style={{ color: colors.textMuted }}>
+                            Rate management for this account is under development. Check back later.
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => setShowRatesComingSoon(false)}
+                            className="mt-6 w-full py-2.5 rounded-lg font-bold text-sm"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            OK
+                        </button>
                     </div>
                 </div>
             )}

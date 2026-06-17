@@ -5911,7 +5911,7 @@ export default function RequestsManager({
                                         onChange={(e) => setNewContactDraft((prev) => ({ ...prev, phone: e.target.value }))}
                                         className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
                                         style={{ borderColor: colors.border, color: colors.textMain }}
-                                        placeholder="+966 ..."
+                                        placeholder="966 ..."
                                     />
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">

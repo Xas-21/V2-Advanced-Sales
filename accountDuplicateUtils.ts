@@ -1,3 +1,5 @@
+import { meaningfulContactEmail, meaningfulContactPhone } from './accountProfileCompleteness';
+
 /**
  * Fuzzy account name matching for duplicate detection (spacing, case, punctuation).
  */
@@ -72,4 +74,33 @@ export function findPotentialDuplicateAccounts(
         }
     }
     return out;
+}
+
+/** True when the scanned contact email/phone is already on the account. */
+export function isScannedContactOnAccount(account: any, scannedContact: any): boolean {
+    if (!account || !scannedContact) return false;
+    const contacts = Array.isArray(account.contacts) ? account.contacts : [];
+    const scannedEmails = String(scannedContact?.email || '')
+        .split(/[,;]+/)
+        .map((s) => meaningfulContactEmail(s))
+        .filter(Boolean);
+    const scannedPhone = meaningfulContactPhone(scannedContact?.phone);
+    if (!scannedEmails.length && !scannedPhone) return false;
+
+    for (const c of contacts) {
+        const rowEmail = meaningfulContactEmail(c?.email);
+        const rowPhone = meaningfulContactPhone(c?.phone);
+        if (rowEmail && scannedEmails.includes(rowEmail)) return true;
+        if (scannedPhone && rowPhone && scannedPhone === rowPhone) return true;
+    }
+    return false;
+}
+
+/** Scan queue rows that no longer need review (contact already saved, or account gone). */
+export function isScanDuplicateQueueItemStale(item: any, accounts: any[]): boolean {
+    if (item?.source !== 'business-card-scan') return false;
+    const candidateId = String(item?.candidateAccountId || '').trim();
+    const candidate = (accounts || []).find((a) => String(a?.id) === candidateId);
+    if (!candidate) return true;
+    return isScannedContactOnAccount(candidate, item?.scannedContact);
 }

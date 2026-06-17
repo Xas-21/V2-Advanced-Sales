@@ -36,7 +36,6 @@ import type { CurrencyCode } from './currency';
 export type AccountPerfDateRange = { from: string; to: string };
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
-import RequestTypePickerModal from './RequestTypePickerModal';
 import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
 import RequestsManager from './RequestsManager';
 import {
@@ -51,6 +50,8 @@ import {
     compareAccountNames,
     findPotentialDuplicateAccounts,
     normalizeAccountNameKey,
+    isScanDuplicateQueueItemStale,
+    isScannedContactOnAccount,
 } from './accountDuplicateUtils';
 import { getAccountProfileGaps, isAccountProfileIncomplete, meaningfulContactEmail, meaningfulContactPhone } from './accountProfileCompleteness';
 import {
@@ -125,12 +126,8 @@ export default function AccountsPage({
     const canDelRequests = canDeleteRequests(currentUser);
     const canLinkPromos = canLinkRequestPromotions(currentUser);
     const canMutate = canMutateOperational(currentUser);
-    const [profileRequestTypeOpen, setProfileRequestTypeOpen] = useState(false);
     const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
-    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{
-        accountId: string;
-        requestType: string;
-    } | null>(null);
+    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{ accountId: string } | null>(null);
     const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [search, setSearch] = useState('');
     const [listTab, setListTab] = useState<AccountsPageTab>('accounts');
@@ -436,9 +433,41 @@ export default function AccountsPage({
         });
     }, [accountsSameProperty]);
 
+    const activeScanDuplicateQueue = useMemo(
+        () => duplicateQueue.filter((item) => !isScanDuplicateQueueItemStale(item, accountsSameProperty)),
+        [duplicateQueue, accountsSameProperty]
+    );
+
     const allDuplicateItems = useMemo(() => {
-        return [...systemDuplicateItems, ...duplicateQueue];
-    }, [systemDuplicateItems, duplicateQueue]);
+        return [...systemDuplicateItems, ...activeScanDuplicateQueue];
+    }, [systemDuplicateItems, activeScanDuplicateQueue]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const stale = duplicateQueue.filter((item) =>
+            isScanDuplicateQueueItemStale(item, accountsSameProperty)
+        );
+        if (!stale.length) return;
+        (async () => {
+            const pid = activeProperty?.id ? String(activeProperty.id) : '';
+            const staleIds = stale.map((x) => String(x.id));
+            for (const id of staleIds) {
+                if (cancelled) return;
+                try {
+                    await deleteAccountDuplicateQueueItem(id, pid);
+                } catch {
+                    // Best-effort prune of resolved scan queue rows.
+                }
+            }
+            if (!cancelled) {
+                const gone = new Set(staleIds);
+                setDuplicateQueue((prev) => prev.filter((x) => !gone.has(String(x.id))));
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [duplicateQueue, accountsSameProperty, activeProperty?.id]);
 
     const propertyIdForForms = activeProperty?.id ? String(activeProperty.id) : undefined;
 
@@ -478,8 +507,23 @@ export default function AccountsPage({
         setDraggedColumn(null);
     };
 
+    const purgeScanDuplicateQueueIds = async (ids: string[]) => {
+        if (!ids.length) return;
+        const pid = activeProperty?.id ? String(activeProperty.id) : '';
+        for (const id of ids) {
+            try {
+                await deleteAccountDuplicateQueueItem(id, pid);
+            } catch {
+                // Best-effort cleanup for resolved scan sessions.
+            }
+        }
+        const gone = new Set(ids);
+        setDuplicateQueue((prev) => prev.filter((x) => !gone.has(String(x.id))));
+    };
+
     const handleSaveNew = (accountData: any) => {
         if (!accountData?.name) return;
+        const pendingQueueIds = [...scanPendingDuplicateIdsRef.current];
         scanPendingDuplicateIdsRef.current = [];
         const u = currentUser?.name || currentUser?.username || currentUser?.email || 'User';
         const act = {
@@ -503,21 +547,13 @@ export default function AccountsPage({
         setShowAddModal(false);
         setScanPrefillAccount(null);
         setScanMeta(null);
+        void purgeScanDuplicateQueueIds(pendingQueueIds);
     };
 
     const discardScanPendingDuplicateQueue = async () => {
         const pending = [...scanPendingDuplicateIdsRef.current];
         scanPendingDuplicateIdsRef.current = [];
-        if (!pending.length) return;
-        const pid = activeProperty?.id ? String(activeProperty.id) : '';
-        for (const id of pending) {
-            try {
-                await deleteAccountDuplicateQueueItem(id, pid);
-            } catch {
-                // Best-effort cleanup when user discards a scan.
-            }
-        }
-        setDuplicateQueue((prev) => prev.filter((x) => !pending.includes(String(x.id))));
+        await purgeScanDuplicateQueueIds(pending);
     };
 
     const handleCloseAddModal = async () => {
@@ -555,6 +591,7 @@ export default function AccountsPage({
                 // No real contact details — skip queue noise from test scans.
             } else {
             for (const acc of matches) {
+                if (isScannedContactOnAccount(acc, scannedContact)) continue;
                 const existing = duplicateQueue.find(
                     (row: any) =>
                         String(row.propertyId || '') === propertyId &&
@@ -890,7 +927,9 @@ export default function AccountsPage({
                     currentUser={currentUser}
                     onOpenRequest={onOpenRequest}
                     onOpenAddRequestPicker={
-                        profileReadOnly ? undefined : () => setProfileRequestTypeOpen(true)
+                        profileReadOnly
+                            ? undefined
+                            : () => setProfileEmbeddedRequest({ accountId: String(aid) })
                     }
                     onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={
@@ -972,15 +1011,6 @@ export default function AccountsPage({
                         setDeleteImpactMessage('');
                     }}
                 />
-                <RequestTypePickerModal
-                    open={profileRequestTypeOpen}
-                    onClose={() => setProfileRequestTypeOpen(false)}
-                    theme={theme}
-                    onSelectType={(type) => {
-                        setProfileRequestTypeOpen(false);
-                        setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
-                    }}
-                />
                 <AccountLinkedRequestsModal
                     open={profileRequestsListOpen}
                     onClose={() => setProfileRequestsListOpen(false)}
@@ -1025,7 +1055,7 @@ export default function AccountsPage({
                                 <X size={20} />
                             </button>
                             <RequestsManager
-                                key={`acct-prof-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                key={`acct-prof-req-${profileEmbeddedRequest.accountId}`}
                                 embedded
                                 theme={theme}
                                 subView="new_request"
@@ -1033,7 +1063,6 @@ export default function AccountsPage({
                                 setSearchParams={(p: any) =>
                                     setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
                                 }
-                                initialRequestType={profileEmbeddedRequest.requestType}
                                 initialAccountId={profileEmbeddedRequest.accountId}
                                 onConsumedInitialAccountId={() => {}}
                                 activeProperty={activeProperty}
@@ -1399,13 +1428,20 @@ export default function AccountsPage({
                             ) : allDuplicateItems.map((item: any) => (
                                 <div key={item.id} className="rounded-xl border p-3 space-y-2" style={{ borderColor: colors.border, backgroundColor: colors.bg }}>
                                     <p className="text-xs font-semibold" style={{ color: colors.textMain }}>
-                                        {item.source === 'system-detection' ? 'Detected duplicate' : 'Scanned account'}: {item.scannedAccountName || item.baseAccountName || 'Unknown'} | Candidate: {item.candidateAccountName || item.candidateAccountId || 'Unknown'}
+                                        {item.source === 'system-detection'
+                                            ? `Detected duplicate: ${item.baseAccountName || 'Unknown'} ↔ ${item.candidateAccountName || 'Unknown'}`
+                                            : `Scanned card matches existing account: ${item.candidateAccountName || item.scannedAccountName || 'Unknown'}`}
                                     </p>
                                     <p className="text-xs" style={{ color: colors.textMuted }}>
                                         {item.source === 'system-detection'
                                             ? `Reason: ${String(item.reason || 'possible duplicate')}`
-                                            : `Scanned contact: ${contactDisplayName(item.scannedContact || {}) || 'N/A'} · ${String(item.scannedContact?.email || '—')} · ${String(item.scannedContact?.phone || '—')}`}
+                                            : `No second account was created — review the scanned contact below and attach it to the existing profile, or dismiss if already saved.`}
                                     </p>
+                                    {item.source !== 'system-detection' && (
+                                        <p className="text-xs" style={{ color: colors.textMuted }}>
+                                            Scanned contact: {contactDisplayName(item.scannedContact || {}) || 'N/A'} · {String(item.scannedContact?.email || '—')} · {String(item.scannedContact?.phone || '—')}
+                                        </p>
+                                    )}
                                     <div className="flex flex-wrap gap-2">
                                         <button
                                             type="button"

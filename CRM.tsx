@@ -46,7 +46,6 @@ import { formatCrmFunnelRequestTypeDisplay } from './requestTypeUtils';
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import CrmActivitiesView from './CrmActivitiesView';
-import RequestTypePickerModal from './RequestTypePickerModal';
 import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
 import RequestsManager from './RequestsManager';
 import {
@@ -268,12 +267,8 @@ export default function CRM({
     const canDelRequests = canDeleteRequests(currentUser);
     const canLinkPromos = canLinkRequestPromotions(currentUser);
 
-    const [profileRequestTypeOpen, setProfileRequestTypeOpen] = useState(false);
     const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
-    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{
-        accountId: string;
-        requestType: string;
-    } | null>(null);
+    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{ accountId: string } | null>(null);
     const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [profileOverlayLead, setProfileOverlayLead] = useState<any | null>(null);
     const [pipelineOptsHostMounted, setPipelineOptsHostMounted] = useState(false);
@@ -2492,7 +2487,9 @@ export default function CRM({
                     salesCalls={salesForAcc}
                     currentUser={currentUser}
                     onOpenRequest={onNavigateToRequest}
-                    onOpenAddRequestPicker={crmReadOnly ? undefined : () => setProfileRequestTypeOpen(true)}
+                    onOpenAddRequestPicker={
+                        crmReadOnly ? undefined : () => setProfileEmbeddedRequest({ accountId: String(aid) })
+                    }
                     onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
                     readOnly={crmReadOnly}
@@ -2549,15 +2546,6 @@ export default function CRM({
                         setDeleteImpactMessage('');
                     }}
                 />
-                <RequestTypePickerModal
-                    open={profileRequestTypeOpen}
-                    onClose={() => setProfileRequestTypeOpen(false)}
-                    theme={theme}
-                    onSelectType={(type) => {
-                        setProfileRequestTypeOpen(false);
-                        setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
-                    }}
-                />
                 <AccountLinkedRequestsModal
                     open={profileRequestsListOpen}
                     onClose={() => setProfileRequestsListOpen(false)}
@@ -2602,7 +2590,7 @@ export default function CRM({
                                 <X size={20} />
                             </button>
                             <RequestsManager
-                                key={`profile-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                key={`profile-req-${profileEmbeddedRequest.accountId}`}
                                 embedded
                                 theme={theme}
                                 subView="new_request"
@@ -2610,7 +2598,6 @@ export default function CRM({
                                 setSearchParams={(p: any) =>
                                     setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
                                 }
-                                initialRequestType={profileEmbeddedRequest.requestType}
                                 initialAccountId={profileEmbeddedRequest.accountId}
                                 onConsumedInitialAccountId={() => {}}
                                 activeProperty={activeProperty}
@@ -3793,7 +3780,7 @@ export default function CRM({
                                     onChange={(e) => setNewContactPersonForm({ ...newContactPersonForm, phone: e.target.value })}
                                     className="w-full p-3 rounded-lg border bg-black/20 outline-none focus:border-primary transition-colors text-sm"
                                     style={{ borderColor: colors.border, color: colors.textMain }}
-                                    placeholder="+966 ..."
+                                    placeholder="966 ..."
                                 />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
@@ -4053,7 +4040,9 @@ export default function CRM({
                                           onNavigateToRequest?.(rid);
                                       }}
                                       onOpenAddRequestPicker={
-                                          crmReadOnly ? undefined : () => setProfileRequestTypeOpen(true)
+                                          crmReadOnly
+                                              ? undefined
+                                              : () => setProfileEmbeddedRequest({ accountId: String(aid) })
                                       }
                                       onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                                       onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
@@ -4109,15 +4098,6 @@ export default function CRM({
                                   setShowEditAccountModal(false);
                               }}
                           />
-                          <RequestTypePickerModal
-                              open={profileRequestTypeOpen}
-                              onClose={() => setProfileRequestTypeOpen(false)}
-                              theme={theme}
-                              onSelectType={(type) => {
-                                  setProfileRequestTypeOpen(false);
-                                  setProfileEmbeddedRequest({ accountId: String(aid), requestType: type });
-                              }}
-                          />
                           <AccountLinkedRequestsModal
                               open={profileRequestsListOpen}
                               onClose={() => setProfileRequestsListOpen(false)}
@@ -4163,7 +4143,7 @@ export default function CRM({
                                           <X size={20} />
                                       </button>
                                       <RequestsManager
-                                          key={`overlay-req-${profileEmbeddedRequest.requestType}-${profileEmbeddedRequest.accountId}`}
+                                          key={`overlay-req-${profileEmbeddedRequest.accountId}`}
                                           embedded
                                           theme={theme}
                                           subView="new_request"
@@ -4171,7 +4151,6 @@ export default function CRM({
                                           setSearchParams={(p: any) =>
                                               setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
                                           }
-                                          initialRequestType={profileEmbeddedRequest.requestType}
                                           initialAccountId={profileEmbeddedRequest.accountId}
                                           onConsumedInitialAccountId={() => {}}
                                           activeProperty={activeProperty}
