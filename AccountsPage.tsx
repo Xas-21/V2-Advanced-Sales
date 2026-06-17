@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Plus, Building2, Camera, GitMerge, AlertCircle } from 'lucide-react';
+import { Search, Plus, Building2, Camera, GitMerge, AlertCircle, X } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
