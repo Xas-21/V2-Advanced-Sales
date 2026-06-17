@@ -1,6 +1,21 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, LogIn, Palette, X } from 'lucide-react';
+import { Eye, EyeOff, LogIn, Palette, X, ShieldAlert } from 'lucide-react';
 import { apiUrl } from './backendApi';
+
+const OFFICIAL_APP_URL = 'https://as-saas.com/';
+
+function isOfficialAppHost(): boolean {
+    if (typeof window === 'undefined') return true;
+    const host = window.location.hostname.toLowerCase();
+    return (
+        host === 'as-saas.com' ||
+        host === 'www.as-saas.com' ||
+        host === 'localhost' ||
+        host === '127.0.0.1'
+    );
+}
+
+type ConnectionNotice = 'wrong-domain' | 'server-unavailable' | 'config' | null;
 
 interface LoginProps {
     onLogin: (user: any) => void;
@@ -16,6 +31,8 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
     const [showPassword, setShowPassword] = useState(false);
     const [keepSignedIn, setKeepSignedIn] = useState(false);
     const [showForgotPassword, setShowForgotPassword] = useState(false);
+    const [loginError, setLoginError] = useState<string | null>(null);
+    const [connectionNotice, setConnectionNotice] = useState<ConnectionNotice>(null);
 
     const theme = themes[currentThemeId] || themes.light;
     const colors = theme.colors;
@@ -23,6 +40,8 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setLoginError(null);
+        setConnectionNotice(null);
 
         try {
             const response = await fetch(apiUrl('/api/login'), {
@@ -34,8 +53,8 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
             });
 
             if (!response.ok) {
-                const errorData = await response.json();
-                alert(errorData.detail || 'Login failed');
+                const errorData = await response.json().catch(() => ({}));
+                setLoginError(String(errorData.detail || 'Login failed. Please check your username and password.'));
                 return;
             }
 
@@ -45,14 +64,10 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
             console.error('Login error:', error);
             const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
             if (!apiBase) {
-                alert(
-                    'Cannot reach the API. Set VITE_API_BASE_URL on your static site to your backend URL (e.g. https://your-api.onrender.com), then redeploy the frontend.'
-                );
+                setConnectionNotice('config');
                 return;
             }
-            alert(
-                'Failed to connect to the API server. Confirm the backend is running and CORS allows this site origin.'
-            );
+            setConnectionNotice(isOfficialAppHost() ? 'server-unavailable' : 'wrong-domain');
         }
     };
 
@@ -164,6 +179,20 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
                                 </button>
                             </div>
 
+                            {loginError && (
+                                <p
+                                    className="text-sm rounded-lg px-4 py-3 border"
+                                    style={{
+                                        color: colors.textMain,
+                                        borderColor: '#ef444460',
+                                        backgroundColor: '#ef444415',
+                                    }}
+                                    role="alert"
+                                >
+                                    {loginError}
+                                </p>
+                            )}
+
                             {/* Submit Button */}
                             <button
                                 type="submit"
@@ -205,6 +234,87 @@ export default function Login({ onLogin, themes, currentThemeId, onThemeChange, 
                     </p>
                 </div>
             </div>
+
+            {connectionNotice && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="connection-notice-title"
+                    onClick={() => setConnectionNotice(null)}
+                >
+                    <div
+                        className="w-full max-w-md rounded-2xl border shadow-2xl p-6 relative"
+                        style={{ backgroundColor: colors.card, borderColor: colors.border }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => setConnectionNotice(null)}
+                            className="absolute top-4 right-4 p-1 rounded-lg hover:opacity-70 transition-opacity"
+                            style={{ color: colors.textMuted }}
+                            aria-label="Close"
+                        >
+                            <X size={22} />
+                        </button>
+
+                        <div className="flex items-start gap-3 pr-8 mb-4">
+                            <div
+                                className="p-2 rounded-lg shrink-0"
+                                style={{ backgroundColor: `${colors.primary}20`, color: colors.primary }}
+                            >
+                                <ShieldAlert size={22} />
+                            </div>
+                            <div>
+                                <h3 id="connection-notice-title" className="text-xl font-bold mb-2" style={{ color: colors.textMain }}>
+                                    {connectionNotice === 'wrong-domain' ? 'Please use the official link' : 'Unable to connect'}
+                                </h3>
+                                {connectionNotice === 'wrong-domain' ? (
+                                    <p className="text-sm leading-relaxed" style={{ color: colors.textMuted }}>
+                                        Sorry — for your security, you must access Advanced Sales through our official link only.
+                                        This address is not authorized to sign in.
+                                    </p>
+                                ) : connectionNotice === 'server-unavailable' ? (
+                                    <p className="text-sm leading-relaxed" style={{ color: colors.textMuted }}>
+                                        We could not reach the server right now. Please try again in a moment.
+                                    </p>
+                                ) : (
+                                    <p className="text-sm leading-relaxed" style={{ color: colors.textMuted }}>
+                                        The application is not fully configured to reach the API. Please contact your administrator.
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+
+                        {connectionNotice === 'wrong-domain' && (
+                            <div
+                                className="rounded-xl border p-4 text-center"
+                                style={{ borderColor: colors.border, backgroundColor: colors.bg }}
+                            >
+                                <p className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: colors.textMuted }}>
+                                    Click the link below to open the system
+                                </p>
+                                <a
+                                    href={OFFICIAL_APP_URL}
+                                    className="inline-block text-base font-bold underline hover:opacity-80 break-all"
+                                    style={{ color: colors.primary }}
+                                >
+                                    {OFFICIAL_APP_URL}
+                                </a>
+                            </div>
+                        )}
+
+                        <button
+                            type="button"
+                            onClick={() => setConnectionNotice(null)}
+                            className="mt-6 w-full py-2.5 rounded-lg font-bold text-sm"
+                            style={{ backgroundColor: colors.primary, color: '#000' }}
+                        >
+                            {connectionNotice === 'wrong-domain' ? 'Close' : 'OK'}
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {showForgotPassword && (
                 <div
