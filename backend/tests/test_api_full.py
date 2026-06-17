@@ -44,7 +44,7 @@ def test_login_cors_preflight_render_origin():
 
 
 def test_login_cors_preflight_custom_domain(monkeypatch):
-    monkeypatch.setenv("CORS_ORIGINS", "https://as-saas.com")
+    monkeypatch.setenv("CORS_ORIGINS", "https://as-saas.com/")
     from importlib import reload
     import cors_middleware
     import main as main_mod
@@ -62,6 +62,27 @@ def test_login_cors_preflight_custom_domain(monkeypatch):
     )
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == "https://as-saas.com"
+
+
+def test_login_cors_preflight_custom_domain_www(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "https://as-saas.com")
+    from importlib import reload
+    import cors_middleware
+    import main as main_mod
+
+    reload(cors_middleware)
+    reload(main_mod)
+    c = TestClient(main_mod.app)
+    r = c.options(
+        "/api/login",
+        headers={
+            "Origin": "https://www.as-saas.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "https://www.as-saas.com"
 
 
 def test_login_success_sets_cookie_and_user_shape():
