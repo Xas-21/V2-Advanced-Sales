@@ -2,8 +2,9 @@ import sys
 import os
 print("VisaTour Backend: LOADING MAIN APP...")
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+
+from cors_middleware import ProductionCORSMiddleware, build_cors_settings
 
 # Ensure the backend directory is in the path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,25 +22,11 @@ def _database_host() -> str | None:
     return url.split("@", 1)[1].split("/", 1)[0]
 
 
-def _cors_settings() -> tuple[list[str], str | None]:
-    """Explicit origins from env plus optional regex (Render subdomains)."""
-    raw = os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    )
-    origins = [o.strip() for o in raw.split(",") if o.strip() and "*" not in o.strip()]
-    regex = os.getenv(
-        "CORS_ORIGIN_REGEX",
-        r"https://([a-z0-9-]+\.)*onrender\.com",
-    ).strip() or None
-    return origins, regex
-
-
 app = FastAPI(title="VisaTour ERP Backend", version="2.0.0", redirect_slashes=False)
 
-_cors_origins, _cors_regex = _cors_settings()
+_cors_origins, _cors_regex = build_cors_settings()
 app.add_middleware(
-    CORSMiddleware,
+    ProductionCORSMiddleware,
     allow_origins=_cors_origins,
     allow_origin_regex=_cors_regex,
     allow_credentials=True,
@@ -85,6 +72,8 @@ def health():
         "database_host": _database_host(),
         "database_connected": db_ok,
         "routers": ["reqs", "auth", "others"],
+        "cors_origins": _cors_origins,
+        "cors_origin_regex": _cors_regex,
     }
 
 @app.get("/")

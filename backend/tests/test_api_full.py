@@ -30,6 +30,19 @@ def test_root():
     assert "message" in r.json()
 
 
+def test_login_cors_preflight_render_origin():
+    r = client.options(
+        "/api/login",
+        headers={
+            "Origin": "https://advanced-sales-ui.onrender.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "https://advanced-sales-ui.onrender.com"
+
+
 def test_login_success_sets_cookie_and_user_shape():
     r = client.post(
         "/api/login",

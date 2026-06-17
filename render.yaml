@@ -12,8 +12,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: CORS_ORIGINS
+        fromService:
+          type: web
+          name: advanced-sales-ui
+          envVarKey: RENDER_EXTERNAL_URL
       - key: CORS_ORIGIN_REGEX
-        value: "https://([a-z0-9-]+\\.)*onrender\\.com"
+        value: "^https://([a-z0-9-]+\\.)*onrender\\.com$"
 
   - type: web
     name: advanced-sales-ui
