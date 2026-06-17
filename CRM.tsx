@@ -268,8 +268,6 @@ export default function CRM({
     const canLinkPromos = canLinkRequestPromotions(currentUser);
 
     const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
-    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{ accountId: string } | null>(null);
-    const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [profileOverlayLead, setProfileOverlayLead] = useState<any | null>(null);
     const [pipelineOptsHostMounted, setPipelineOptsHostMounted] = useState(false);
     const [pipelineOptsBootstrapId, setPipelineOptsBootstrapId] = useState<string | null>(null);
@@ -2487,9 +2485,6 @@ export default function CRM({
                     salesCalls={salesForAcc}
                     currentUser={currentUser}
                     onOpenRequest={onNavigateToRequest}
-                    onOpenAddRequestPicker={
-                        crmReadOnly ? undefined : () => setProfileEmbeddedRequest({ accountId: String(aid) })
-                    }
                     onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
                     readOnly={crmReadOnly}
@@ -2570,54 +2565,6 @@ export default function CRM({
                     promotionOptions={promotionOptions}
                     canLinkRequestPromotions={canLinkPromos}
                 />
-                {profileEmbeddedRequest ? (
-                    <div
-                        className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
-                        onClick={() => setProfileEmbeddedRequest(null)}
-                    >
-                        <div
-                            className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            <button
-                                type="button"
-                                onClick={() => setProfileEmbeddedRequest(null)}
-                                className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
-                                style={{ borderColor: colors.border, color: colors.textMuted }}
-                                aria-label="Close"
-                            >
-                                <X size={20} />
-                            </button>
-                            <RequestsManager
-                                key={`profile-req-${profileEmbeddedRequest.accountId}`}
-                                embedded
-                                theme={theme}
-                                subView="new_request"
-                                searchParams={profileRequestModalParams}
-                                setSearchParams={(p: any) =>
-                                    setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
-                                }
-                                initialAccountId={profileEmbeddedRequest.accountId}
-                                onConsumedInitialAccountId={() => {}}
-                                activeProperty={activeProperty}
-                                accounts={accounts}
-                                setAccounts={setAccounts}
-                                onAfterRequestsMutate={onAfterRequestsMutate}
-                                onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
-                                onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
-                                segmentOptions={segmentOptions}
-                                accountTypeOptions={accountTypeOptions}
-                                canDeleteRequest={canDelRequests}
-                                readOnlyOperational={crmReadOnly}
-                                currentUser={currentUser}
-                                currency={currency}
-                                promotionOptions={promotionOptions}
-                                canLinkRequestPromotions={canLinkPromos}
-                            />
-                        </div>
-                    </div>
-                ) : null}
             </>
         );
     }
@@ -4039,11 +3986,6 @@ export default function CRM({
                                           setProfileOverlayLead(null);
                                           onNavigateToRequest?.(rid);
                                       }}
-                                      onOpenAddRequestPicker={
-                                          crmReadOnly
-                                              ? undefined
-                                              : () => setProfileEmbeddedRequest({ accountId: String(aid) })
-                                      }
                                       onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                                       onEditAccount={crmReadOnly ? undefined : () => setShowEditAccountModal(true)}
                                       readOnly={crmReadOnly}
@@ -4123,54 +4065,6 @@ export default function CRM({
                               promotionOptions={promotionOptions}
                               canLinkRequestPromotions={canLinkPromos}
                           />
-                          {profileEmbeddedRequest ? (
-                              <div
-                                  className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
-                                  style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
-                                  onClick={() => setProfileEmbeddedRequest(null)}
-                              >
-                                  <div
-                                      className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
-                                      onClick={(e) => e.stopPropagation()}
-                                  >
-                                      <button
-                                          type="button"
-                                          onClick={() => setProfileEmbeddedRequest(null)}
-                                          className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
-                                          style={{ borderColor: colors.border, color: colors.textMuted }}
-                                          aria-label="Close"
-                                      >
-                                          <X size={20} />
-                                      </button>
-                                      <RequestsManager
-                                          key={`overlay-req-${profileEmbeddedRequest.accountId}`}
-                                          embedded
-                                          theme={theme}
-                                          subView="new_request"
-                                          searchParams={profileRequestModalParams}
-                                          setSearchParams={(p: any) =>
-                                              setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
-                                          }
-                                          initialAccountId={profileEmbeddedRequest.accountId}
-                                          onConsumedInitialAccountId={() => {}}
-                                          activeProperty={activeProperty}
-                                          accounts={accounts}
-                                          setAccounts={setAccounts}
-                                          onAfterRequestsMutate={onAfterRequestsMutate}
-                                          onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
-                                          onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
-                                          segmentOptions={segmentOptions}
-                                          accountTypeOptions={accountTypeOptions}
-                                          canDeleteRequest={canDelRequests}
-                                          readOnlyOperational={crmReadOnly}
-                                          currentUser={currentUser}
-                                          currency={currency}
-                                          promotionOptions={promotionOptions}
-                                          canLinkRequestPromotions={canLinkPromos}
-                                      />
-                                  </div>
-                              </div>
-                          ) : null}
                       </>
                   );
               })()

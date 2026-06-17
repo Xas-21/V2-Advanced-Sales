@@ -43,7 +43,6 @@ export interface CRMProfileViewProps {
     salesCalls?: any[];
     currentUser?: any;
     onOpenRequest?: (requestId: string) => void;
-    onOpenAddRequestPicker?: () => void;
     onViewAccountRequests?: () => void;
     onEditAccount?: () => void;
     /** View-only profile: hide all create/edit/delete controls. */
@@ -104,7 +103,6 @@ export default function CRMProfileView({
     salesCalls = [],
     currentUser,
     onOpenRequest,
-    onOpenAddRequestPicker,
     onViewAccountRequests,
     onEditAccount,
     readOnly = false,
@@ -624,16 +622,6 @@ export default function CRMProfileView({
                             style={{ borderColor: colors.border, color: colors.textMain }}
                         >
                             View Requests
-                        </button>
-                    ) : null}
-                    {onOpenAddRequestPicker ? (
-                        <button
-                            type="button"
-                            onClick={onOpenAddRequestPicker}
-                            className="px-3 py-2 rounded border flex items-center gap-2 text-sm font-bold"
-                            style={{ borderColor: colors.primary, color: colors.primary }}
-                        >
-                            <Plus size={16} /> Add Opportunity
                         </button>
                     ) : null}
                     {!readOnly && (
@@ -1256,16 +1244,6 @@ export default function CRMProfileView({
                                             style={{ color: colors.textMain }}
                                         >
                                             View Requests
-                                        </button>
-                                    ) : null}
-                                    {onOpenAddRequestPicker ? (
-                                        <button
-                                            type="button"
-                                            onClick={onOpenAddRequestPicker}
-                                            className="text-xs flex items-center gap-1 hover:opacity-70"
-                                            style={{ color: colors.primary }}
-                                        >
-                                            + Add Opportunity
                                         </button>
                                     ) : null}
                                 </div>

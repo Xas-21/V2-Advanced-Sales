@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, Plus, Building2, Camera, GitMerge, AlertCircle, X } from 'lucide-react';
+import { Search, Plus, Building2, Camera, GitMerge, AlertCircle } from 'lucide-react';
 import CRMProfileView from './CRMProfileView';
 import AddAccountModal from './AddAccountModal';
 import { accountToLead, leadToAccount, contactDisplayName } from './accountLeadMapping';
@@ -37,7 +37,6 @@ export type AccountPerfDateRange = { from: string; to: string };
 import { apiUrl } from './backendApi';
 import ConfirmDialog from './ConfirmDialog';
 import AccountLinkedRequestsModal from './AccountLinkedRequestsModal';
-import RequestsManager from './RequestsManager';
 import {
     canDeleteRequests,
     canLinkRequestPromotions,
@@ -127,8 +126,6 @@ export default function AccountsPage({
     const canLinkPromos = canLinkRequestPromotions(currentUser);
     const canMutate = canMutateOperational(currentUser);
     const [profileRequestsListOpen, setProfileRequestsListOpen] = useState(false);
-    const [profileEmbeddedRequest, setProfileEmbeddedRequest] = useState<{ accountId: string } | null>(null);
-    const [profileRequestModalParams, setProfileRequestModalParams] = useState<Record<string, unknown>>({});
     const [search, setSearch] = useState('');
     const [listTab, setListTab] = useState<AccountsPageTab>('accounts');
     const [listSort, setListSort] = useState<AccountsListSort>('name_az');
@@ -926,11 +923,6 @@ export default function AccountsPage({
                     salesCalls={salesForAcc}
                     currentUser={currentUser}
                     onOpenRequest={onOpenRequest}
-                    onOpenAddRequestPicker={
-                        profileReadOnly
-                            ? undefined
-                            : () => setProfileEmbeddedRequest({ accountId: String(aid) })
-                    }
                     onViewAccountRequests={() => setProfileRequestsListOpen(true)}
                     onEditAccount={
                         profileReadOnly
@@ -1035,54 +1027,6 @@ export default function AccountsPage({
                     promotionOptions={promotionOptions}
                     canLinkRequestPromotions={canLinkPromos}
                 />
-                {profileEmbeddedRequest ? (
-                    <div
-                        className="fixed inset-0 z-[220] flex items-center justify-center p-3 md:p-6"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}
-                        onClick={() => setProfileEmbeddedRequest(null)}
-                    >
-                        <div
-                            className="relative w-full max-w-5xl max-h-[95vh] min-h-0 flex flex-col"
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            <button
-                                type="button"
-                                onClick={() => setProfileEmbeddedRequest(null)}
-                                className="absolute top-2 right-2 z-10 p-2 rounded-lg border hover:bg-white/10"
-                                style={{ borderColor: colors.border, color: colors.textMuted }}
-                                aria-label="Close"
-                            >
-                                <X size={20} />
-                            </button>
-                            <RequestsManager
-                                key={`acct-prof-req-${profileEmbeddedRequest.accountId}`}
-                                embedded
-                                theme={theme}
-                                subView="new_request"
-                                searchParams={profileRequestModalParams}
-                                setSearchParams={(p: any) =>
-                                    setProfileRequestModalParams((prev) => ({ ...prev, ...p }))
-                                }
-                                initialAccountId={profileEmbeddedRequest.accountId}
-                                onConsumedInitialAccountId={() => {}}
-                                activeProperty={activeProperty}
-                                accounts={accounts}
-                                setAccounts={setAccounts}
-                                onAfterRequestsMutate={onAfterRequestsMutate}
-                                onEmbeddedComplete={() => setProfileEmbeddedRequest(null)}
-                                onEmbeddedCancel={() => setProfileEmbeddedRequest(null)}
-                                segmentOptions={segmentOptions}
-                                accountTypeOptions={accountTypeOptions}
-                                canDeleteRequest={canDelRequests}
-                                readOnlyOperational={!canMutate}
-                                currentUser={currentUser}
-                                currency={currency}
-                                promotionOptions={promotionOptions}
-                                canLinkRequestPromotions={canLinkPromos}
-                            />
-                        </div>
-                    </div>
-                ) : null}
             </>
         );
     }
