@@ -19,6 +19,9 @@ services:
           envVarKey: RENDER_EXTERNAL_URL
       - key: CORS_ORIGIN_REGEX
         value: "^https://([a-z0-9-]+\\.)*onrender\\.com$"
+      # Custom domain (e.g. https://as-saas.com): set FRONTEND_URL or CORS_ORIGINS on the API service.
+      - key: FRONTEND_URL
+        sync: false
 
   - type: web
     name: advanced-sales-ui

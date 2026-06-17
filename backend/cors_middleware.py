@@ -35,7 +35,7 @@ def build_cors_settings() -> tuple[list[str], str | None]:
     )
     origins = [o.strip() for o in raw.split(",") if o.strip() and "*" not in o.strip()]
 
-    for key in ("FRONTEND_URL", "RENDER_EXTERNAL_URL"):
+    for key in ("FRONTEND_URL",):
         url = os.getenv(key, "").strip().rstrip("/")
         if url and url not in origins:
             origins.append(url)
