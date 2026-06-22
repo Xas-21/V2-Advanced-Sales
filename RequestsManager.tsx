@@ -78,6 +78,10 @@ import {
     writeNewRequestDraft,
 } from './requestDraftStorage';
 import {
+    includesEventAgendaSection,
+    logRequestDetailEventAgendaRender,
+} from './requestDetailLayout';
+import {
     buildInitialFeedbackAnswers,
     getFeedbackTemplateForRequestType,
     resolveFeedbackTemplatesForProperty,
@@ -4147,7 +4151,7 @@ export default function RequestsManager({
         const detailType = normalizeRequestTypeKey(request.requestType);
         const isEventOnly = detailType === 'event';
         const isEventRooms = detailType === 'event_rooms';
-        const isEventKind = isEventOnly || isEventRooms;
+        const showEventAgendaSection = includesEventAgendaSection(detailType);
         const evWindow = getEventDateWindow(request);
         const agenda = request.agenda || [];
         const packageSummary = formatAgendaPackageSummary(agenda) || request.mealPlan || '—';
@@ -4168,7 +4172,9 @@ export default function RequestsManager({
             : (evWindow.start && evWindow.end ? inclusiveCalendarDays(evWindow.start, evWindow.end) : 0);
         const dayDenomForEventCost = Math.max(1, fin.totalEventDays || (evWindow.start && evWindow.end ? inclusiveCalendarDays(evWindow.start, evWindow.end) : 1));
         const eventCostPerDay = fin.eventCostWithTax / dayDenomForEventCost;
-        const renderAgendaSection = () => (
+        const renderAgendaSection = () => {
+            logRequestDetailEventAgendaRender(request?.id);
+            return (
             <div className="rounded-2xl border bg-current/5 overflow-hidden" style={{ backgroundColor: colors.card, borderColor: colors.border }}>
                 <div className="p-4 border-b bg-white/5 flex items-center gap-2" style={{ borderColor: colors.border }}>
                     <Calendar size={16} className="text-primary" />
@@ -4220,7 +4226,8 @@ export default function RequestsManager({
                     </table>
                 </div>
             </div>
-        );
+            );
+        };
 
         const statCard = (label: string, value: React.ReactNode, borderClass: string = 'border-primary', valueClass?: string) => (
             <div className="min-w-0">
@@ -4656,9 +4663,7 @@ export default function RequestsManager({
                             </div>
                         )}
 
-                        {isEventKind && renderAgendaSection()}
-
-                        {isEventKind && renderAgendaSection()}
+                        {showEventAgendaSection && renderAgendaSection()}
 
                         {(function renderDetailFinancials() {
                             const remainingBalance = Math.max(0, (fin.grandTotalWithTax || 0) - (fin.paidAmount || 0));

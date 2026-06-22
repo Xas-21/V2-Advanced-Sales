@@ -12,7 +12,10 @@
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "testsprite:frontend": "npm run build && vite preview",
-    "test:backend": "cd backend && .\\venv\\Scripts\\pytest.exe tests -v"
+    "test:backend": "cd backend && .\\venv\\Scripts\\pytest.exe tests -v",
+    "test:frontend": "vitest run",
+    "test:request-detail-layout": "node scripts/verify-request-detail-agenda-source.mjs",
+    "test": "npm run test:frontend && npm run test:request-detail-layout && npm run test:backend"
   },
   "dependencies": {
     "clsx": "^2.0.0",
@@ -38,6 +41,7 @@
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.9.3",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "vitest": "^2.1.9"
   }
 }
