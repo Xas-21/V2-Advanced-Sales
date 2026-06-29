@@ -86,6 +86,24 @@ export const CRM_QUARTER_MONTH_BLOCKS: Record<'Q1' | 'Q2' | 'Q3' | 'Q4', number[
     Q4: [10, 11, 12],
 };
 
+function resolveLeadAccountType(lead: any, accounts: any[]): string {
+    const leadAccount = accounts.find((a) => String(a?.id || '') === String(lead?.accountId || ''));
+    const fallbackTag = Array.isArray(lead?.tags) && lead.tags.length ? String(lead.tags[0] || '').trim() : '';
+    return String(leadAccount?.type || lead?.accountType || fallbackTag || 'Unspecified').trim() || 'Unspecified';
+}
+
+function resolveRequestFunnelType(req: any): string {
+    return formatCrmFunnelRequestTypeDisplay(req?.requestType);
+}
+
+function resolveRequestFunnelSegment(req: any): string {
+    return String(req?.segment || '').trim() || 'Uncategorized';
+}
+
+function toggleFunnelFilterSelection(selected: string[], value: string): string[] {
+    return selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value];
+}
+
 function leadMatchesSalesPeriod(
     lead: any,
     period: CrmSalesPeriod,
@@ -827,10 +845,22 @@ export default function CRM({
         [allCreatorScopedLeads, funnelJourneyStageSet]
     );
 
-    const dashboardFilteredLeads = useMemo(
-        () => funnelJourneyLeadsForDashboard,
-        [funnelJourneyLeadsForDashboard]
-    );
+    const [funnelAccountTypeFilter, setFunnelAccountTypeFilter] = useState<string[]>([]);
+    const [funnelRequestTypeFilter, setFunnelRequestTypeFilter] = useState<string[]>([]);
+    const [funnelRequestSegmentFilter, setFunnelRequestSegmentFilter] = useState<string[]>([]);
+    useEffect(() => {
+        setFunnelAccountTypeFilter([]);
+        setFunnelRequestTypeFilter([]);
+        setFunnelRequestSegmentFilter([]);
+    }, [crmSalesPeriod, crmViewMode]);
+
+    const dashboardFilteredLeads = useMemo(() => {
+        if (!funnelAccountTypeFilter.length) return funnelJourneyLeadsForDashboard;
+        const selected = new Set(funnelAccountTypeFilter);
+        return funnelJourneyLeadsForDashboard.filter(
+            (lead) => selected.has(resolveLeadAccountType(lead, accounts))
+        );
+    }, [funnelJourneyLeadsForDashboard, funnelAccountTypeFilter, accounts]);
 
     const dashboardRange = useMemo(() => {
         const y = crmSalesPeriod.year;
@@ -971,16 +1001,54 @@ export default function CRM({
         });
     }, [crmViewMode, scopedRequestsAll, activeProperty?.id, requestInDashboardPeriod, createdByUserFilterId]);
 
+    const dashboardFilteredRequests = useMemo(() => {
+        if (crmViewMode !== 'request') return [];
+        let result = requestCardsForPeriod;
+        if (funnelRequestTypeFilter.length) {
+            const types = new Set(funnelRequestTypeFilter);
+            result = result.filter((req) => types.has(resolveRequestFunnelType(req)));
+        }
+        if (funnelRequestSegmentFilter.length) {
+            const segments = new Set(funnelRequestSegmentFilter);
+            result = result.filter((req) => segments.has(resolveRequestFunnelSegment(req)));
+        }
+        return result;
+    }, [crmViewMode, requestCardsForPeriod, funnelRequestTypeFilter, funnelRequestSegmentFilter]);
+
     const requestCardsByStage = useMemo(() => {
         const buckets: Record<string, any[]> = {};
         requestStages.forEach((s) => { buckets[s.id] = []; });
-        for (const req of requestCardsForPeriod) {
+        for (const req of dashboardFilteredRequests) {
             const sid = requestStatusToStageId(req.status);
             if (!buckets[sid]) buckets[sid] = [];
             buckets[sid].push(req);
         }
         return buckets;
-    }, [requestCardsForPeriod, requestStages]);
+    }, [dashboardFilteredRequests, requestStages]);
+
+    const funnelRequestTypeTotals = useMemo(() => {
+        if (crmViewMode !== 'request') return [];
+        const typeCounts = new Map<string, number>();
+        requestCardsForPeriod.forEach((req: any) => {
+            const requestType = resolveRequestFunnelType(req);
+            typeCounts.set(requestType, (typeCounts.get(requestType) || 0) + 1);
+        });
+        return [...typeCounts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, value]) => ({ name, value }));
+    }, [crmViewMode, requestCardsForPeriod]);
+
+    const funnelRequestSegmentTotals = useMemo(() => {
+        if (crmViewMode !== 'request') return [];
+        const segmentCounts = new Map<string, number>();
+        requestCardsForPeriod.forEach((req: any) => {
+            const segment = resolveRequestFunnelSegment(req);
+            segmentCounts.set(segment, (segmentCounts.get(segment) || 0) + 1);
+        });
+        return [...segmentCounts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, value]) => ({ name, value }));
+    }, [crmViewMode, requestCardsForPeriod]);
 
     const requestAllTimeForPeriodGoals = useMemo(() => {
         if (crmViewMode !== 'request') return [];
@@ -1070,17 +1138,14 @@ export default function CRM({
     }, [dashboardFilteredLeads, dashboardRange, stages, accounts, dashboardStageOrder, scopedRequestsAll, requestRevenue, requestRevenueForAccountView, crmViewMode, requestInDashboardPeriod]);
     const funnelAccountTypeTotals = useMemo(() => {
         const typeCounts = new Map<string, number>();
-        dashboardFilteredLeads.forEach((lead: any) => {
-            const leadAccount = accounts.find((a: any) => String(a?.id || '') === String(lead?.accountId || ''));
-            const fallbackTag = Array.isArray(lead?.tags) && lead.tags.length ? String(lead.tags[0] || '').trim() : '';
-            const accountType =
-                String(leadAccount?.type || lead?.accountType || fallbackTag || 'Unspecified').trim() || 'Unspecified';
+        funnelJourneyLeadsForDashboard.forEach((lead: any) => {
+            const accountType = resolveLeadAccountType(lead, accounts);
             typeCounts.set(accountType, (typeCounts.get(accountType) || 0) + 1);
         });
         return [...typeCounts.entries()]
             .sort((a, b) => b[1] - a[1])
-            .map(([name, value]) => `${name} (${value})`);
-    }, [dashboardFilteredLeads, accounts]);
+            .map(([name, value]) => ({ name, value }));
+    }, [funnelJourneyLeadsForDashboard, accounts]);
 
     const selectedPeriodMonths = useMemo(() => {
         if (crmSalesPeriod.mode === 'year') return Array.from({ length: 12 }, (_, i) => i + 1);
@@ -1176,7 +1241,7 @@ export default function CRM({
         const funnelOrder = ['waiting', 'qualified', 'negotiation', 'won', 'actual'];
         const buckets: Record<string, any[]> = {};
         funnelOrder.forEach((id) => { buckets[id] = []; });
-        for (const req of requestCardsForPeriod) {
+        for (const req of dashboardFilteredRequests) {
             const sid = requestStatusToStageId(req.status);
             if (buckets[sid]) buckets[sid].push(req);
         }
@@ -1197,19 +1262,11 @@ export default function CRM({
         const otbRevenue = [...(buckets['qualified'] || []), ...(buckets['negotiation'] || []), ...(buckets['won'] || [])]
             .reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
         const pipelineRevenue = (buckets['waiting'] || []).reduce((sum: number, r: any) => sum + requestRevenue(r), 0);
-        const nonCancelled = requestCardsForPeriod.filter(
+        const nonCancelled = dashboardFilteredRequests.filter(
             (r: any) => requestStatusToStageId(r.status) !== 'notInterested'
         ).length;
         const definiteActualCount = (buckets['won'] || []).length + (buckets['actual'] || []).length;
         const conversionRate = nonCancelled > 0 ? (definiteActualCount / nonCancelled) * 100 : 0;
-        const typeMap = new Map<string, number>();
-        requestCardsForPeriod.forEach((req: any) => {
-            const t = formatCrmFunnelRequestTypeDisplay(req?.requestType);
-            typeMap.set(t, (typeMap.get(t) || 0) + 1);
-        });
-        const requestTypeData = [...typeMap.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, value]) => ({ name, value }));
         return {
             stageRows: funnelStages,
             totalRequests: totalInFunnel,
@@ -1217,9 +1274,8 @@ export default function CRM({
             otbRevenue,
             pipelineRevenue,
             conversionRate,
-            requestTypeData,
         };
-    }, [crmViewMode, requestCardsForPeriod, requestStages, requestRevenue]);
+    }, [crmViewMode, dashboardFilteredRequests, requestStages, requestRevenue]);
 
     const reqMonthlyTarget = useMemo(() => {
         if (crmViewMode !== 'request') return 0;
@@ -2701,43 +2757,87 @@ export default function CRM({
                                         })}
                                     </div>
                                     <div className="mt-2 border-t pt-2" style={{ borderColor: colors.border }}>
-                                        <div className="text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color: colors.textMuted }}>
-                                            {crmViewMode === 'request' ? 'Request Types In Funnel' : 'Account Types In Funnel'}
-                                        </div>
                                         {crmViewMode === 'request' ? (
-                                            (reqDashboardStats?.requestTypeData || []).length > 0 ? (
-                                                <div className="flex flex-wrap items-center gap-1.5">
-                                                    {(reqDashboardStats?.requestTypeData || []).map((item: any) => (
-                                                        <span
-                                                            key={`req-type-${item.name}`}
-                                                            className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
-                                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
-                                                        >
-                                                            {item.name} ({item.value})
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <div className="text-[10px]" style={{ color: colors.textMuted }}>No request types in this funnel period.</div>
-                                            )
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                {[
+                                                    {
+                                                        label: 'Request Types In Funnel',
+                                                        items: funnelRequestTypeTotals,
+                                                        selected: funnelRequestTypeFilter,
+                                                        onToggle: setFunnelRequestTypeFilter,
+                                                        empty: 'No request types in this funnel period.',
+                                                    },
+                                                    {
+                                                        label: 'Request Segments In Funnel',
+                                                        items: funnelRequestSegmentTotals,
+                                                        selected: funnelRequestSegmentFilter,
+                                                        onToggle: setFunnelRequestSegmentFilter,
+                                                        empty: 'No request segments in this funnel period.',
+                                                    },
+                                                ].map((group) => (
+                                                    <div key={group.label} className="min-w-0">
+                                                        <div className="text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color: colors.textMuted }}>
+                                                            {group.label}
+                                                        </div>
+                                                        {group.items.length > 0 ? (
+                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                                {group.items.map((item) => {
+                                                                    const active = group.selected.includes(item.name);
+                                                                    return (
+                                                                        <button
+                                                                            key={`${group.label}-${item.name}`}
+                                                                            type="button"
+                                                                            onClick={() => group.onToggle((prev) => toggleFunnelFilterSelection(prev, item.name))}
+                                                                            className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                                                                            style={{
+                                                                                borderColor: active ? colors.primary : colors.border,
+                                                                                color: active ? colors.primary : colors.textMain,
+                                                                                backgroundColor: active ? `${colors.primary}22` : colors.card,
+                                                                            }}
+                                                                        >
+                                                                            {item.name} ({item.value})
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-[10px]" style={{ color: colors.textMuted }}>{group.empty}</div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         ) : (
-                                            funnelAccountTypeTotals.length > 0 ? (
-                                                <div className="flex flex-wrap items-center gap-1.5">
-                                                    {funnelAccountTypeTotals.map((badge) => (
-                                                        <span
-                                                            key={`funnel-total-${badge}`}
-                                                            className="px-2 py-0.5 rounded-full text-[10px] font-semibold border"
-                                                            style={{ borderColor: colors.border, color: colors.textMain, backgroundColor: colors.card }}
-                                                        >
-                                                            {badge}
-                                                        </span>
-                                                    ))}
+                                            <>
+                                                <div className="text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color: colors.textMuted }}>
+                                                    Account Types In Funnel
                                                 </div>
-                                            ) : (
-                                                <div className="text-[10px]" style={{ color: colors.textMuted }}>
-                                                    No account types in this funnel period.
-                                                </div>
-                                            )
+                                                {funnelAccountTypeTotals.length > 0 ? (
+                                                    <div className="flex flex-wrap items-center gap-1.5">
+                                                        {funnelAccountTypeTotals.map((item) => {
+                                                            const active = funnelAccountTypeFilter.includes(item.name);
+                                                            return (
+                                                                <button
+                                                                    key={`funnel-total-${item.name}`}
+                                                                    type="button"
+                                                                    onClick={() => setFunnelAccountTypeFilter((prev) => toggleFunnelFilterSelection(prev, item.name))}
+                                                                    className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                                                                    style={{
+                                                                        borderColor: active ? colors.primary : colors.border,
+                                                                        color: active ? colors.primary : colors.textMain,
+                                                                        backgroundColor: active ? `${colors.primary}22` : colors.card,
+                                                                    }}
+                                                                >
+                                                                    {item.name} ({item.value})
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-[10px]" style={{ color: colors.textMuted }}>
+                                                        No account types in this funnel period.
+                                                    </div>
+                                                )}
+                                            </>
                                         )}
                                     </div>
                                 </div>
